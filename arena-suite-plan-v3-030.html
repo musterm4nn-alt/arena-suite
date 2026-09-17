@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Private Arena Conversation Archive — Architecture &amp; Implementation Plan</title>
+<meta name="description" content="Dedicated-browser architecture plan for a private, local-first macOS archive of the operator's own Arena conversations. Electron/Chromium recommended.">
+<style>
+/* Typography: Departure Mono is the primary typeface.
+   LIMIT DISCLOSED (see §2.5): no stable hotlinkable woff2 on departuremono.com was verified
+   during this run (site ships hashed Vite assets). Report therefore declares
+   "Departure Mono" first and falls back to system monospace. Install locally:
+   `brew install font-departure-mono` or OTF from the releases page. No font URL is invented here. */
+:root{
+  --bg:#0e1113; --bg2:#151a1e; --panel:#1a2126; --panel2:#20292f;
+  --ink:#e8e6df; --muted:#a8b0b6; --faint:#7c868d;
+  --line:#2c353c; --accent:#d8ff3e; --accent2:#7df0ff; --warn:#ffb224; --bad:#ff6b6b; --ok:#5dffa4;
+  --mono:"Departure Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --max:1080px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:15px;line-height:1.65;-webkit-font-smoothing:antialiased}
+a{color:var(--accent2);text-underline-offset:3px}
+a:hover{color:#fff}
+.skip{position:absolute;left:-999px;top:0;background:var(--accent);color:#000;padding:8px 14px;z-index:99}
+.skip:focus{left:8px;top:8px}
+header.hero{border-bottom:1px solid var(--line);background:linear-gradient(180deg,#13181c,#0e1113);}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 22px}
+.hero-inner{padding:44px 0 28px}
+.kicker{letter-spacing:.14em;text-transform:uppercase;font-size:12px;color:var(--accent)}
+h1{font-size:clamp(26px,4.4vw,44px);line-height:1.12;margin:.35em 0 .3em;letter-spacing:-.01em}
+.subtitle{color:var(--muted);max-width:70ch}
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0}
+.badge{border:1px solid var(--line);background:var(--bg2);padding:5px 10px;font-size:12.5px;border-radius:2px}
+.badge b{color:var(--accent)}
+.decision{margin:22px 0 0;border:1px solid #3a4520;background:#141708;padding:16px 18px;border-left:6px solid var(--accent)}
+.decision h2{margin:0 0 6px;font-size:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.decision p{margin:.4em 0}
+nav.toc{position:sticky;top:0;z-index:20;background:rgba(14,17,19,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav.toc .wrap{display:flex;gap:4px;overflow-x:auto;padding:10px 22px}
+nav.toc a{white-space:nowrap;font-size:12.5px;color:var(--muted);text-decoration:none;border:1px solid transparent;padding:5px 9px;border-radius:2px}
+nav.toc a:hover,nav.toc a:focus{color:#fff;border-color:var(--line);background:var(--panel)}
+main{padding-bottom:60px}
+section{padding:30px 0 8px;border-bottom:1px dashed var(--line)}
+section:last-child{border-bottom:0}
+h2.sec{font-size:22px;margin:0 0 4px}
+h2.sec .n{color:var(--accent);margin-right:10px}
+h3{font-size:16px;margin:26px 0 8px;color:#fff;letter-spacing:.02em}
+h4{font-size:14px;margin:20px 0 6px;color:var(--accent2)}
+p,li{max-width:78ch}
+.lede{color:var(--muted)}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;display:block;overflow-x:auto}
+thead th{text-align:left;color:var(--accent);font-weight:700;border-bottom:2px solid var(--line);padding:8px;white-space:nowrap}
+tbody td,tbody th{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+tbody th{text-align:left}
+code,pre{font-family:var(--mono)}
+code{background:var(--panel2);padding:1px 6px;border-radius:3px;font-size:.88em}
+pre{background:#0a0d0f;border:1px solid var(--line);padding:14px;overflow-x:auto;font-size:12.8px;line-height:1.6;border-radius:4px}
+pre .c{color:var(--faint)}
+.callout{border:1px solid var(--line);background:var(--bg2);padding:12px 14px;margin:14px 0;border-radius:3px}
+.callout.warn{border-left:6px solid var(--warn)}
+.callout.bad{border-left:6px solid var(--bad)}
+.callout.ok{border-left:6px solid var(--ok)}
+.callout.info{border-left:6px solid var(--accent2)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:860px){.grid2{grid-template-columns:1fr}}
+.ev{display:inline-block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--line);padding:1px 7px;border-radius:20px;margin-right:6px;white-space:nowrap}
+.ev.v{color:#0b0e0a;background:var(--ok);border-color:var(--ok)}
+.ev.s{color:#0b0e0a;background:var(--accent2);border-color:var(--accent2)}
+.ev.h{color:#111;background:var(--warn);border-color:var(--warn)}
+.ev.r{color:var(--accent);border-color:var(--accent)}
+.ev.u{color:var(--muted)}
+details{border:1px solid var(--line);background:var(--bg2);margin:10px 0;border-radius:3px}
+details summary{cursor:pointer;padding:10px 14px;font-weight:700}
+details .body{padding:0 14px 14px;color:var(--ink)}
+ul.tight li,ol.tight li{margin:.25em 0}
+footer{border-top:1px solid var(--line);padding:26px 0 60px;color:var(--muted);font-size:13px}
+.stateline{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.state{border:1px solid var(--line);padding:6px 10px;font-size:12.5px;background:var(--panel)}
+.state b{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent2)}
+.diagram{border:1px solid var(--line);background:#0a0d0f;padding:14px;overflow-x:auto;font-size:12.5px;line-height:1.5}
+.toc-list{columns:2;column-gap:28px;font-size:13.5px}
+@media(max-width:700px){.toc-list{columns:1}}
+.toc-list a{text-decoration:none;color:var(--ink)}
+.toc-list a:hover{color:var(--accent2)}
+hr.sep{border:0;border-top:1px solid var(--line);margin:22px 0}
+.print-only{display:none}
+@media print{
+  :root{--bg:#fff;--bg2:#fff;--panel:#fff;--panel2:#f2f2f2;--ink:#111;--muted:#333;--line:#999}
+  body{background:#fff;color:#111}
+  nav.toc,.no-print{display:none!important}
+  a{color:#111}
+  pre,.diagram,.callout,details{break-inside:avoid}
+  .print-only{display:block}
+}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="hero">
+<div class="wrap hero-inner">
+<div class="kicker">Private · Local-first · macOS arm64 · MCP-operated</div>
+<h1>Private Arena Conversation Archive</h1>
+<p class="subtitle">Architecture &amp; implementation plan for a dedicated-browser macOS app that records the operator's <em>own</em> Arena conversations (battle, direct, side-by-side, Code Arena surfaces) into an encrypted, offline, branch-aware archive. Minimal diagnostics-first GUI; a local MCP surface is the primary interface. Simultaneous multi-account isolation is a hard requirement.</p>
+<div class="badges" aria-label="Key facts">
+<span class="badge"><b>Winner:</b> Electron + Chromium (embedded, app-owned)</span>
+<span class="badge"><b>Min macOS:</b> 14.0 Sonoma, arm64 only</span>
+<span class="badge"><b>DB:</b> SQLCipher · Keychain-held key</span>
+<span class="badge"><b>MCP:</b> loopback Streamable HTTP + stdio shim</span>
+<span class="badge"><b>Capture:</b> CDP Network/Fetch + DOM evidence, not page-patch primary</span>
+</div>
+<div class="decision" role="note" aria-label="Architecture decision">
+<h2>Decision in one paragraph</h2>
+<p>Build a <strong>dedicated Electron/Chromium shell</strong> that owns its browser sessions end-to-end. Each Arena account lives in its own persistent Electron <code>session.fromPartition</code>; capture is done <strong>out-of-band in the browser process</strong> via <code>webContents.debugger</code> (Chrome DevTools Protocol: <code>Network</code> + <code>Fetch</code> domains, <code>Target.setAutoAttach</code> for workers/targets) plus <code>session.webRequest</code> metadata and <code>will-download</code> artifact ownership — with a minimal preload DOM bridge only as <em>second evidence</em> for labels, votes, reveals, and branch state. This is materially deeper than the existing Manifest V3 extension baseline (which depends on page-world patching, sees no response bodies without a user-visible debugger banner, and cannot own partitions or downloads). WKWebView-based options (native Swift, Tauri/Wry) are rejected because they cannot observe <code>https</code> response bodies or service-worker traffic without private-API swizzling. CEF is the credible runner-up on raw interception depth but loses on agent-implementability, Node/MCP ergonomics, and maintenance for a private single-operator project; it is the named fallback.</p>
+<p><span class="ev r">Recommendation</span> <span class="ev u">Unknowns kept visible</span> No Arena endpoint, payload, or transport is claimed as verified. Every architecture-critical assumption has a falsification test in §10.</p>
+</div>
+</div>
+</header>
+<nav class="toc" aria-label="Report sections"><div class="wrap">
+<a href="#s-decision">Decision</a><a href="#s-evidence">Evidence</a><a href="#s-alt">Alternatives</a><a href="#s-arch">Architecture</a><a href="#s-capture">Capture</a><a href="#s-sync">Sync</a><a href="#s-data">Data &amp; trust</a><a href="#s-mcp">MCP</a><a href="#s-analysis">Analysis</a><a href="#s-gates">Gates</a><a href="#s-appx">Appendices</a>
+</div></nav>
+<main id="main"><div class="wrap">
+
+<section id="s-toc" aria-label="Contents">
+<h2 class="sec"><span class="n">00</span>How to read this plan</h2>
+<p class="lede">Depth is allocated per the brief: capture/backfill feasibility first, then trust and provenance, then implementability and MCP coverage, then analysis, then presentation. An implementation agent should read §1, §4, §5, §8, and §10 and be able to start.</p>
+<div class="toc-list"><ol class="tight">
+<li><a href="#s-decision">1 — Decision, trade-offs, reversal conditions</a></li>
+<li><a href="#s-evidence">2 — What was researched, labels, source register</a></li>
+<li><a href="#s-alt">3 — Alternatives compared (incl. Electron vs CEF)</a></li>
+<li><a href="#s-arch">4 — Recommended architecture in detail</a></li>
+<li><a href="#s-capture">5 — Discovery &amp; live capture</a></li>
+<li><a href="#s-sync">6 — Existing-history synchronization</a></li>
+<li><a href="#s-data">7 — Data, identity, provenance, protection</a></li>
+<li><a href="#s-mcp">8 — Full LLM operability (MCP contract)</a></li>
+<li><a href="#s-analysis">9 — Local analysis &amp; later modalities</a></li>
+<li><a href="#s-gates">10 — Implementation sequence &amp; acceptance gates</a></li>
+<li><a href="#s-appx">Appendices — layouts, schemas, states, checks</a></li>
+</ol></div>
+<p><span class="ev v">Verified fact</span> primary doc/observation this run. <span class="ev s">Strong inference</span> indirect, gap named. <span class="ev h">Hypothesis to test</span> unverified + smallest test. <span class="ev r">Recommendation</span> judgment. <span class="ev u">Unknown</span> explicitly unresolved.</p>
+</section>
+
+<section id="s-decision">
+<h2 class="sec"><span class="n">01</span>Decision, trade-offs, reversal conditions</h2>
+<h3>Selected stack (one architecture, no menu)</h3>
+<table><thead><tr><th>Layer</th><th>Choice</th><th>Why this one</th></tr></thead><tbody>
+<tr><th>Browser/session</th><td><strong>Electron (Chromium) embedded shell</strong>, one <code>BrowserWindow</code> per account partition (plus hidden workers as needed)</td><td>Only maintained embedding that gives <em>app-owned</em> CDP body access + per-account <code>BrowserContext</code>-equivalent partitions + owned downloads on macOS without a fork or private API.</td></tr>
+<tr><th>Capture path</th><td><strong>CDP primary</strong> (<code>Network.enable</code>, <code>Fetch.enable(requestStage:Response)</code>, <code>Target.setAutoAttach+setAttachToTarget</code>, <code>Network.getResponseBody / Fetch.getResponseBody / takeResponseBodyAsStream</code>, <code>webSocketFrame*</code>) + <code>webRequest</code> metadata + preload DOM second evidence</td><td>Bodies and streams observed in browser process, early attach, worker/SW targets visible; page patching demoted from primary to corroboration.</td></tr>
+<tr><th>App services</th><td><strong>TypeScript Node in Electron main</strong> (capture orchestrator, sync engine, sanitizer, store writer, job scheduler, MCP server)</td><td>Mainstream, agent-friendly, shares code with MCP SDK and parsers; no second runtime.</td></tr>
+<tr><th>Storage/encryption</th><td><strong>SQLCipher</strong> via <code>better-sqlite3-multiple-ciphers</code> (synchronous, prebuilt arm64) + random 256-bit archive key in macOS Keychain via <code>safeStorage</code>; large artifacts AES-256-GCM files; FTS5 index inside the encrypted DB</td><td>Comparable protection to the brief's SQLCipher requirement with the best-maintained Electron binding; offline FTS without a sidecar index.</td></tr>
+<tr><th>Automation surface</th><td><strong>Loopback Streamable HTTP MCP server</strong> (<code>@modelcontextprotocol/sdk</code>) on <code>127.0.0.1</code> with per-install bearer token + host/origin/DNS-rebind guards; thin <strong>stdio shim</strong> for spawn-based clients</td><td>Every GUI action calls the same service; multiple concurrent agent clients; no hosted backend.</td></tr>
+<tr><th>Analysis runtime</th><td><strong>In-process deterministic statistics</strong> (Node/worker); embeddings deferred behind an explicit gate</td><td>Zero weight-management cost in v1; reproducible without network.</td></tr>
+<tr><th>Packaging target</th><td><strong>macOS 14.0+ arm64 only</strong>, run from source / <code>electron .</code> in dev; ad-hoc local build for daily use (no updater, no store)</td><td>Matches Chromium/Electron floor while pinning one SDK/Keychain/FTS baseline agents can reproduce.</td></tr>
+</tbody></table>
+<h3>Decisive trade-offs (honest costs)</h3>
+<ul>
+<li><strong>One Chromium copy (~200–400 MB on disk, one renderer per active account + GPU/network service).</strong> <span class="ev v">Verified fact</span> Electron embeds Chromium+Node (electronjs.org, releases page consulted). Cost is accepted because the brief forbids duplicated engines and WKWebView cannot deliver bodies; two concurrent accounts ≈ two renderers + shared browser process is the cheapest <em>capable</em> topology. Quotas in §4 cap idle renderers.</li>
+<li><strong>CDP is still a debugging surface, not a tap.</strong> Large-stream buffering, inspector cache eviction (<code>Request content was evicted from inspector cache</code>), and redirect-body gaps are real Chromium behaviors <span class="ev v">Verified fact</span> (Chromium issues consulted). Mitigation: prefer <code>Fetch</code> response-stage pausing + <code>takeResponseBodyAsStream</code> for conversation hosts only, never whole-web interception; spill to disk; treat eviction as a first-class completeness signal, not silent loss (§5).</li>
+<li><strong>Some page-world bridging remains.</strong> Selected labels, blind labels, vote widgets, reveal timing, and branch/regeneration affordances have no guaranteed network counterpart, so a sandboxed preload observer is required. Difference from the baseline: it is <em>corroboration</em>, never the primary transcript path. If the shell relied primarily on page monkey-patching for network, the brief requires saying so — it does not.</li>
+<li><strong>Email-auth compatibility preserved; Google/OAuth/passkeys explicitly out of scope</strong> as required. Ordinary Chromium presents the normal email flow (address → continue → verification link/code, optional name step) <span class="ev v">Verified fact</span> (Arena help center article consulted, §2). No masking beyond a standard UA is planned in v1; bot-challenge handling is pause-and-surface, not evasion tooling.</li>
+</ul>
+<h3>Why this beats the extension baseline materially</h3>
+<table><thead><tr><th>Known exporter pain</th><th>Extension ceiling</th><th>Electron path in this plan</th></tr></thead><tbody>
+<tr><td>Missed/incomplete streams</td><td>Content-script injection races navigation; service-worker chunk reassembly is page-visible only</td><td>CDP attaches at <code>webContents</code> creation + auto-attaches to workers/targets; <code>Fetch</code> response-stage holds the body until copied</td></tr>
+<tr><td>Worker/SW blind spots</td><td><code>chrome.debugger</code> per-tab banner, single attach, no flat worker sessions without user alarm</td><td>Silent app-owned <code>debugger</code> + <code>Target</code> flat sessions; <code>serviceWorkerContext</code> visibility per session</td></tr>
+<tr><td>Early-navigation gaps</td><td>Listeners register after document start</td><td>Attach before first navigation; <code>webRequest.onBeforeRequest</code> metadata from browser start</td></tr>
+<tr><td>Downloads/artifacts need a companion</td><td><code>chrome.downloads</code> sandbox + native-messaging bridge</td><td><code>session.will-download</code> → app-chosen encrypted path, no bridge process</td></tr>
+<tr><td>Two accounts at once</td><td>One cookie jar per profile; containers are not storage-partition equals</td><td><code>persist:arena-acct-&lt;id&gt;</code> partitions isolate cookies, storage, cache, SW, capture, sync, and destructive scope</td></tr>
+</tbody></table>
+<h3>Fallback with trigger (not a menu)</h3>
+<div class="callout warn"><strong>Fallback: CEF (Chromium Embedded Framework) native shell + sidecar services.</strong> Trigger if the falsification spike (§10, Gate B) shows <em>concrete, reproduced</em> loss through maintained Electron surfaces that CEF's <code>CefResourceRequestHandler::GetResourceResponseFilter</code> IO-thread filter demonstrably recovers on the <em>same</em> Arena workflows — e.g., systematic inspector-cache eviction on long streams, or worker-frame attribution Electron cannot resolve. Preserved: partitions via <code>RequestContext</code>, downloads via <code>CefDownloadHandler</code>, CDP via remote-debugging port. Lost: Node/MCP ergonomics (must rebuild sync/store/MCP as sidecars), agent build velocity, prebuilt SQLCipher/FTS bindings; C++/CMake maintenance becomes the project's dominant cost. A custom Chromium fork is <em>not</em> authorized unless CEF's public filter + DevTools surfaces also provably fail on a named observation — the brief's last-resort condition.</div>
+</section>
+
+<section id="s-evidence">
+<h2 class="sec"><span class="n">02</span>What was researched, what remains unknown</h2>
+<h3>Capabilities available during this run</h3>
+<p>Web research (docs, help center, protocol references, package repos) was available. <strong>No authenticated Arena session, no live bundle/route inspection, and no code execution against Arena were available or performed.</strong> Consequently <em>no</em> Arena endpoint, method, payload family, streaming protocol, or model-field claim is marked verified. All Arena-protocol specifics below are <span class="ev h">Hypothesis to test</span> with a named probe; illustrative payloads are labeled <em>illustrative — not observed</em>.</p>
+<h3>Source register (actually consulted)</h3>
+<table><thead><tr><th>Source</th><th>What it supports here</th><th>What it does not prove</th></tr></thead><tbody>
+<tr><td>departuremono.com (fetched HTML head: title, OFL description)</td><td>Font exists, by Helena Zhang, SIL OFL; official site identity</td><td>A stable hotlinkable <code>woff2</code> URL (assets are hashed Vite bundles — unverified)</td></tr>
+<tr><td>github.com/rektdeckard/departure-mono (+ releases v1.500 notes)</td><td>Mirror provenance, version/glyph notes, install routes (<code>brew install font-departure-mono</code>, manual OTF)</td><td>That the mirror is the canonical host (treated as community mirror)</td></tr>
+<tr><td>help.arena.ai — <em>How to Create an Account</em>; <em>Battle Mode</em></td><td>Email sign-up flow (address → continue → optional name → verification link, subject <em>Confirm Your Signup</em>); battle prompt → two responses → vote → reveal</td><td>Current DOM, endpoints, transports, history/pagination contracts</td></tr>
+<tr><td>Electron docs: <code>session</code> (<code>fromPartition/fromPath</code>, <code>will-download</code>, <code>netLog</code>), <code>webRequest</code>, <code>debugger</code></td><td>Partition isolation model, download ownership, metadata-only nature of <code>webRequest</code>, app-owned silent CDP attach API shape</td><td>That any specific Arena transport is capturable (requires owner-session probe)</td></tr>
+<tr><td>CDP references (<code>Fetch/Network/Target/IO</code>), Chromium issues (cache eviction, <code>getResponseBody</code> semantics)</td><td>Body-access mechanics, streaming via <code>takeResponseBodyAsStream</code>, eviction/redirect limits</td><td>Arena's actual framing (SSE/chunked JSON/WS/EventSource)</td></tr>
+<tr><td>WebKit/WKWebView threads (Bug 138169, <code>WKURLSchemeHandler</code> limits), Wry issues (#1087 http interception; CSP <code>ipc://</code> breakage)</td><td>Why WKWebView shells cannot claim deeper-than-extension capture on macOS</td><td>Every Arena CSP header (must be read live)</td></tr>
+<tr><td>CEF API refs (<code>CefResourceRequestHandler/ResponseFilter/DownloadHandler/RequestHandler</code>), CEF repo</td><td>CEF's IO-thread body filter + download + context model (fallback characterization)</td><td>Build cost on this machine (must be measured)</td></tr>
+<tr><td>SQLCipher repo; <code>better-sqlite3-multiple-ciphers</code>; comparison survey (2026)</td><td>Cipher choice + prebuilt arm64 ergonomics for Electron</td><td>Measured throughput on this corpus (must be measured)</td></tr>
+<tr><td>MCP TypeScript SDK docs (Streamable HTTP + stdio), spec note</td><td>Transport choice (loopback Streamable HTTP primary, stdio for spawned clients)</td><td>Client compatibility matrix (test with the operator's clients)</td></tr>
+<tr><td>Electron releases/endoflife + v44 notes; Homebrew electron cask</td><td>Chromium/Node cadence, arm64 support, macOS floor movement (12 dropped in v44)</td><td>Exact future floor (pin at build time)</td></tr>
+</tbody></table>
+<h3>Follow-up references (not consulted as verification — probe live before relying)</h3>
+<p>Arena app bundles/routes observed in the operator's own signed-in sessions; <code>chrome.debugger</code> vs Electron <code>debugger</code> behavioral deltas on Arena's streaming hosts; Arena history/search/pagination behavior; official export completeness if any; CAPTCHA/MFA incidence in the email flow.</p>
+<h3>Typography compliance note</h3>
+<div class="callout info"><strong>Departure Mono — partial verification disclosed.</strong> <span class="ev v">Verified fact</span> The official site and OFL license were fetched. <span class="ev u">Unknown</span> No official stable font-file URL could be verified without inventing one, so this report <em>invents none</em>: it sets <code>font-family:"Departure Mono"</code> first with a full system-mono fallback and documents local install. If the reviewer has the font installed, the report renders in it; otherwise it degrades cleanly. This is the fallback the brief authorizes when verification is unavailable.</div>
+</section>
+
+<section id="s-alt">
+<h2 class="sec"><span class="n">03</span>Alternatives compared</h2>
+<p class="lede">Each candidate is judged on the brief's decisive capabilities: body/stream/WS/EventSource/worker/SW observability; injection timing; target/process lifecycle; concurrent isolated accounts; email-auth compatibility; download ownership; privilege separation; Apple Silicon cost; and drift fitness. “Owns the window” ≠ “deeper capture” — the table states the out-of-band mechanism or its absence.</p>
+<table><thead><tr><th>Candidate</th><th>Out-of-band capture?</th><th>Isolation</th><th>Auth / downloads</th><th>Verdict</th></tr></thead><tbody>
+<tr><th>Native Swift + WKWebView</th><td><strong>No.</strong> <span class="ev v">Verified fact</span> WKWebView does not route <code>http(s)</code> through <code>NSURLProtocol</code> (WebKit Bug 138169); <code>WKURLSchemeHandler</code> cannot claim native schemes without private swizzle, loses bodies/redirects/cookies, no CDP bodies, no SW/target API. Page injection only.</td><td>One data store per configuration; per-account stores need macOS 14 identifier API and still share the body-blindness.</td><td>Normal email flow renders, but capture stays page-world; downloads via navigation delegate, no body tap.</td><td><strong>Reject.</strong> Embedded ≠ deeper. Strictly weaker than the extension on streams.</td></tr>
+<tr><th>Tauri / Wry / WebKit</th><td><strong>No on macOS.</strong> <span class="ev v">Verified fact</span> Wry exposes no <code>http(s)</code> interception on WKWebView (#1087; “you can't”); custom-scheme + JS body-forwarding reintroduces the exact race the brief rejects; CSP-strict pages break <code>fetch(ipc://)</code> fallback (Tauri #15216 pattern).</td><td>No independent cookie/storage per webview on macOS without new identifier plumbing; breakage risk on Arena-like CSP.</td><td>Email flow renders; IPC reliability on hardened pages is the risk; downloads thin.</td><td><strong>Reject.</strong> Lightest binary, shallowest observation.</td></tr>
+<tr><th>Chromium Embedded Framework</th><td><strong>Yes — deepest raw tap.</strong> <span class="ev v">Verified fact</span> <code>GetResourceResponseFilter</code> sees response bytes on the IO thread; <code>OnResourceResponse/OnResourceLoadComplete</code> bracket loads; SW/CefURLRequest sources explicitly surfaced (frame may be null); <code>CefDownloadHandler</code> owns files; <code>RequestContext</code> per account.</td><td>Strong (per-context isolation).</td><td>Full Chromium email flow; best download control.</td><td><strong>Runner-up → named fallback.</strong> Wins raw depth; loses agent velocity (C++/CMake, hand-built Node/MCP bridge, binary-distribution upkeep).</td></tr>
+<tr><th>Extension + native host / companion (baseline)</th><td><strong>No.</strong> <code>webRequest</code> is metadata-only; bodies need <code>chrome.debugger</code> (user-visible banner, single attach, lifecycle tied to the browser, not the app); content scripts race navigation; downloads via <code>chrome.downloads</code> + bridge.</td><td>Profile = one jar; simultaneous isolated accounts not first-class.</td><td>Email works, but capture completeness is the documented pain.</td><td><strong>Ineligible winner by fiat + on merit.</strong> Used only as the comparison harness in Gate B.</td></tr>
+<tr><th>Export/import, no embedded browser</th><td>N/A (no observation)</td><td>Manual per-account files; no live binding</td><td>Depends on an unverified export existing and being complete.</td><td><strong>Reject as primary;</strong> keep as tertiary fallback if a complete official export is ever verified.</td></tr>
+<tr><th><strong>Electron / Chromium (recommended)</strong></th><td><strong>Yes — maintained app-owned CDP.</strong> <span class="ev v">Verified fact</span> <code>webContents.debugger</code> = CDP without the extension banner; <code>Target.setAutoAttach</code> covers workers/targets; <code>Fetch/Network.getResponseBody</code> + <code>takeResponseBodyAsStream</code> return bodies; <code>webSocketFrame*</code> covers sockets; <code>serviceWorkerContext</code> per session.</td><td><strong>First-class:</strong> <code>persist:arena-acct-&lt;uuid&gt;</code> isolates cookies, storage, cache, SW, capture, sync, destructive scope.</td><td>Standard Chromium email flow incl. verification links/codes, popups, redirects; <code>will-download</code> owns artifacts.</td><td><strong>Select.</strong> Deepest <em>maintained, agent-buildable</em> control on macOS arm64.</td></tr>
+</tbody></table>
+<details><summary>Focused comparison: Electron vs CEF (required when both are plausible)</summary><div class="body">
+<table><thead><tr><th>Axis</th><th>Electron</th><th>CEF</th></tr></thead><tbody>
+<tr><th>Body/stream capture</th><td>CDP response-stage hold + stream read; subject to inspector-cache eviction on very large/long streams (must handle as signal).</td><td>IO-thread byte filter; no inspector-cache dependency; strictly more robust on pathological sizes.</td></tr>
+<tr><th>Worker / service-worker</th><td>Auto-attached flat CDP sessions + per-session SW context; attribution via <code>sessionId/targetId</code>.</td><td>Explicitly surfaced with null-frame convention; filter still fires. Slight edge to CEF on attribution edge cases.</td></tr>
+<tr><th>Downloads/artifacts</th><td><code>will-download</code> with save-path control per session. Sufficient for Arena attachments/exports. <span class="ev v">Verified fact</span></td><td><code>CanDownload/OnBeforeDownload</code> equivalent, plus finer pause/cancel. Edge to CEF, not decisive for v1 text.</td></tr>
+<tr><th>Simultaneous accounts</th><td><code>session.fromPartition('persist:…')</code> — one line, well-documented, per-session <code>webRequest/protocol/netLog/cookies</code>. <span class="ev v">Verified fact</span></td><td><code>RequestContext</code> per account — equivalent power, substantially more wiring.</td></tr>
+<tr><th>Packaging / resources</th><td>One Chromium + Node; <code>electron .</code> dev loop agents know; arm64 prebuilds; larger disk than Tauri, single engine (brief-compliant).</td><td>Smaller minimal shell possible but C++ toolchain + <code>libcef</code> distribution + signing upkeep dominate private-project cost.</td></tr>
+<tr><th>Maintenance / drift</th><td>8-week Chromium cadence, TS CDP types, MCP/SQLite npm health; agent can bump + run typed checks.</td><td>Track Chromium branches manually; C++ API churn handled by hand; fewer agent-legible diagnostics.</td></tr>
+<tr><th>Why Electron still wins</th><td colspan="2">CEF's depth advantage materializes only on pathological streams the v1 text corpus is unlikely to hit <span class="ev s">Strong inference</span>; Electron's velocity, partition ergonomics, and MCP/DB binding health dominate the private-project total cost. Gate B exists to overturn this with <em>measured</em> loss, not theory.</td></tr>
+</tbody></table>
+</div></details>
+<details><summary>What “deeper than the window” concretely means in this plan</summary><div class="body">
+<ul class="tight">
+<li>Attach point is the <strong>browser process</strong> (<code>webContents.debugger</code> + <code>Target</code>), registered <strong>before first navigation</strong> and re-armed on every <code>web-contents-created</code> / new-popup / worker event — not a content script racing <code>document_start</code>.</li>
+<li>Bodies come from the <strong>network stack</strong> (<code>Fetch</code>/<code>Network</code> domains), not from re-reading <code>response.text()</code> in page JS. <code>webRequest</code> is used only for metadata/redirect/auth signals because it provably cannot return bodies.</li>
+<li>Downloads are <strong>owned file writes</strong> (<code>will-download</code> → encrypted vault path), not extension downloads + companion stitching.</li>
+<li>What still depends on the page: reveal/vote timing, blind→revealed label mapping, branch/regeneration affordances, and any canvas-only rendering. That bridge is sandboxed, versioned, and corroborating — §5 states the information lost if it fails.</li>
+</ul>
+</div></details>
+</section>
+
+<section id="s-arch">
+<h2 class="sec"><span class="n">04</span>Recommended architecture in detail</h2>
+<h3>Minimum platform</h3>
+<div class="callout ok"><strong>Minimum: macOS 14.0 Sonoma, Apple Silicon (arm64) only.</strong> <span class="ev r">Recommendation</span> Rationale: Electron 44+ requires macOS 13+ <span class="ev v">Verified fact</span> (v44 release notes); pinning one higher at 14.0 gives a single Keychain/<code>safeStorage</code>, hardened-runtime, FTS5, and Node-24 prebuild baseline the agent can reproduce, while the operator's macOS 27 machine stays well inside support. Intel, Rosetta, and older SDKs are explicitly unsupported — no universal binary.</div>
+<h3>Major dependencies (actually to be used; versions pinned at build, not invented here)</h3>
+<table><thead><tr><th>Dependency</th><th>Role</th><th>Health / license / risk note</th></tr></thead><tbody>
+<tr><td><code>electron</code> (stable 43/44 line at build)</td><td>Shell, partitions, CDP, downloads</td><td>Maintained, 8-week Chromium cadence; BSD/CHROMIUM terms; agent-familiar. Risk: cadence churn → pin + typed CDP checks.</td></tr>
+<tr><td><code>@modelcontextprotocol/sdk</code> + <code>zod</code></td><td>MCP server (Streamable HTTP + stdio shim)</td><td>Official SDK, MIT; deprecates old HTTP+SSE — use Streamable HTTP. <span class="ev v">Verified fact</span></td></tr>
+<tr><td><code>better-sqlite3-multiple-ciphers</code></td><td>Synchronous encrypted SQLite + FTS5/JSON</td><td>Prebuilt arm64, SQLCipher-compatible; default pick in 2026 surveys. Risk: native rebuild → gate with <code>@electron/rebuild</code> smoke test.</td></tr>
+<tr><td>Electron <code>safeStorage</code> + Keychain</td><td>Archive-key custody</td><td>OS-backed; no custom KDF to maintain. No key in logs/exports/fixtures — enforced by sanitizer tests.</td></tr>
+<tr><td><code>electron-builder</code> (local builds only) or run-from-source</td><td>Ad-hoc local packaging; no updater</td><td>No store, no telemetry, no hosted backend per brief.</td></tr>
+</tbody></table>
+<p>Deliberately <strong>excluded</strong>: second browser engine, resident Python/ML runtime in v1, cloud SDKs, analytics, ORM (direct SQL + migrations keeps provenance explicit).</p>
+<h3>Process &amp; trust boundaries</h3>
+<div class="diagram" role="img" aria-label="Process diagram">┌─ MAIN (Node, privileged) ─────────────────────────────┐  ┌─ per-account RENDERER (untrusted Arena content) ─┐
+│ orchestrator · CDP capture · sync engine · sanitizer │  │ arena.ai page · preload bridge (contextIsolated)   │
+│ SQLCipher writer · job scheduler · MCP server        │◄─┤ sandbox:true, nodeIntegration:false, no remote file │
+│ holds archive key in memory only; never to renderer  │  │ gets NO key, NO fs, NO MCP token                    │
+└──────────────┬──────────────────────┬─────────────────┘  └───────────────────────────────────────────────────┘
+               │ CDP (debugger)       │ IPC (validated, allow-listed channels only)
+               ▼                      ▼
+        session.fromPartition('persist:arena-acct-&lt;uuid&gt;') × N  — cookies/storage/cache/SW/capture/sync scope
+               │ will-download ──► encrypted vault (main-chosen path)</div>
+<ul>
+<li><strong>Arena-controlled content</strong> (page, workers, SW, remote scripts) can never reach the archive key, local files, privileged IPC, or the MCP port. Preload exposes a <em>minimal append-only evidence pipe</em> (<code>arena:dom-evidence</code>) + no eval bridge; all parsing/sanitizing happens in main.</li>
+<li><strong>Credential rule:</strong> native sync code may transiently reuse the session's own issued tokens in memory (including refresh) but never writes them to disk, exports, fixtures, or logs <span class="ev r">Recommendation</span>. Browser-managed cookie/jar persistence lives inside the partition's Chromium storage, protected by OS file permissions + full-disk encryption; exposure and per-account isolation are tested in Gate A.</li>
+<li><strong>Failure scope:</strong> sign-out, authority loss, ambiguous ownership, challenge, or drift pauses <em>only that account's</em> capture/sync; other partitions continue. No cross-account rebind on similar IDs/titles/text.</li>
+</ul>
+<h3>Session / partition model (simultaneous accounts)</h3>
+<table><thead><tr><th>Concern</th><th>Design</th></tr></thead><tbody>
+<tr><th>Identity</th><td>App-level <code>account_id (uuid)</code> ↔ <code>partition = persist:arena-acct-&lt;uuid&gt;</code> ↔ Chromium storage. Never the default session. Mapping table is the only join between a capture/sync/job row and a partition.</td></tr>
+<tr><th>Isolation unit</th><td>Cookies, local/session storage, cache, SW registration/state, <code>webRequest/protocol/netLog</code> handlers, CDP session set, capture buffers, sync checkpoints, destructive scope — all keyed by <code>account_id</code>.</td></tr>
+<tr><th>Windows</th><td>One visible <code>BrowserWindow</code> per active account (operator uses Arena normally); hidden <code>BrowserWindow</code>/worker for headless sync traversal only when the visible one must not be disturbed. Idle windows suspend (configurable) to bound RAM on 18 GB.</td></tr>
+<tr><th>Auth UX</th><td>Operator signs in with <strong>email flow inside the app's own window</strong> (type address → continue → optional name → open verification link/code from their mail client; popups/redirects allowed per-partition). Google/OAuth/passkeys are neither required nor tested. Trade-off stated: standard Chromium UA (no masking) maximizes email-flow compatibility and minimizes anti-automation friction at the cost of forgoing stealth — correct for owner-driven use.</td></tr>
+<tr><th>Leak guards</th><td>No <code>ProtocolResponse.url</code> without explicit <code>session</code>; no shared custom-protocol cache across partitions (regression test mirrors CVE-2026-70606 pattern <span class="ev v">Verified fact</span>); clipboard/drag between windows carries text only, never session.</td></tr>
+</tbody></table>
+<h3>Resource posture (no invented measurements)</h3>
+<p><span class="ev u">Unknown</span> Archive size and per-hour capture cost cannot be known before owner-session probes. <span class="ev r">Recommendation</span> Ship with practical quotas then measure: max 2 visible + 1 hidden renderer; CDP body cap per response (e.g., spill &gt;32 MB to vault file with hash, exact bytes TBD by probe); per-account capture buffer caps; nightly <code>VACUUM</code>/FTS optimize; diagnostics panel reports renderer RSS, partition cache bytes, DB/WAL bytes, evidence-retention bytes. Agents tune from those readings, not from estimates.</p>
+</section>
+
+<section id="s-capture">
+<h2 class="sec"><span class="n">05</span>Discovery &amp; live capture</h2>
+<h3>Discovery as a maintained capability (not a one-off sniff)</h3>
+<p>First engineering objective: a <strong>protocol catalog</strong> — a versioned inventory of every first-party operation seen in the operator's own sessions — plus <strong>machine-readable diagnostic state</strong> agents can diff. Broad discovery ≠ raw capture: the catalog records <em>metadata and sanitized shapes</em>; bodies are retained only for conversation families via adapters.</p>
+<h4>Traffic classification (applied to all first-party traffic encountered)</h4>
+<table><thead><tr><th>Class</th><th>Examples (families, not endpoints)</th><th>Retention</th></tr></thead><tbody>
+<tr><td>Conversation</td><td>prompt submit, stream chunks, turn finalize, vote, reveal, regenerate/branch, title/rename</td><td>Sanitized bodies via versioned adapters</td></tr>
+<tr><td>History reads</td><td>list/search/paginate, detail fetch, archived views</td><td>Metadata + shape; bodies only during sync jobs</td></tr>
+<tr><td>Auth/account</td><td>email start/verify, session refresh, profile, settings</td><td><strong>Metadata only; bodies never retained.</strong> Tokens/cookies/headers redacted pre-write.</td></tr>
+<tr><td>Assets/config</td><td>JS/CSS/fonts, flags, leaderboard public data</td><td>URL + hash + drift signal only</td></tr>
+<tr><td>Analytics</td><td>telemetry beacons</td><td>Counted, never retained</td></tr>
+<tr><td>Mutations</td><td>vote, rename, delete, regenerate (server-side effect)</td><td>Only when operator-initiated or sync-verified read; suspected unintended mutation → pause + surface</td></tr>
+<tr><td>Unrelated</td><td>third-party, captive-portal, OS</td><td>Dropped at classifier</td></tr>
+</tbody></table>
+<h4>Catalog record (machine-readable, per operation)</h4>
+<pre><span class="c">// illustrative shape — not an observed Arena contract</span>
+{ "op_id": "conv.stream.chunk.v1", "first_party_evidence": "eTLD+1 arena.ai + partition session + cert chain",
+  "transport": "fetch|xhr|websocket|eventsource|unknown", "read_or_mutation": "read|mutation|unknown",
+  "payload_family": "json-lines|sse|ws-frames|html-fragment|unknown", "adapter": "arena-conv/0.3.1",
+  "completeness": "full|partial|missing", "drift_signals": ["new field 'x'", "status 404 on old path"],
+  "account_binding": "account_id", "retention": "sanitized-body|metadata-only|dropped" }</pre>
+<p>Unknown operations stay <code>unknown</code> until investigated. Parser errors retain <em>only</em> the sanitized prefix (≤1 KB), the adapter version, and the failure class — never secrets.</p>
+<h3>Initial text coverage (v1 complete-text release)</h3>
+<ul>
+<li>Modes: battle, direct-model, side-by-side <span class="ev s">Strong inference</span> (help center confirms battle; direct/side-by-side per brief — verify live).</li>
+<li>Turn outcomes: completed, stopped (operator stop <span class="ev v">Verified fact</span> — help article <em>How to Stop a Chat</em> exists), failed/transport-error, partial (observer-missed distinguished from model-stopped).</li>
+<li>History-opened conversations incl. search/pagination/archived views; titles, timestamps, source IDs, branches/revisions/regenerations, participant positions (A-left/B-right or equivalent), completion state — <em>when observable; gaps stay gaps</em>.</li>
+<li>Identity evidence: selected model label, blind participant labels, visible votes, post-vote reveal events with turn ranges and source (UI vs network vs annotation).</li>
+<li>Every observation carries <code>account_id</code>. Cross-account records are never merged on similar text/IDs.</li>
+</ul>
+<h3>How the stack observes (and where fallback loses information)</h3>
+<table><thead><tr><th>Signal</th><th>Primary (browser-process)</th><th>Corroboration (page)</th><th>If corroboration fails</th></tr></thead><tbody>
+<tr><td>Prompt submit + params</td><td>CDP <code>Fetch.requestPaused(responseStage)</code> / <code>Network.requestWillBeSent</code> metadata + body copy</td><td>Preload records composer submit + branch anchor</td><td>Body still captured; branch anchor marked <code>inferred</code></td></tr>
+<tr><td>Stream chunks</td><td><code>Network.dataReceived</code> + <code>getResponseBody/takeResponseBodyAsStream</code>; WS via <code>webSocketFrameReceived/Sent</code>; SSE/XHR reassembly in main</td><td>DOM text snapshot as liveness check</td><td>Transcript marked <code>partial-network-only</code>; DOM checkpoint absent (explicit)</td></tr>
+<tr><td>Stop / fail / retry</td><td>CDP load-finish/error + <code>responseReceived</code> status + cancelled flag</td><td>Stop-button affordance + error banner text</td><td>Outcome falls back to <code>unknown-terminal</code>, never silently <code>complete</code></td></tr>
+<tr><td>Vote / reveal / labels</td><td>Mutation-class network op if any (verified read first)</td><td><strong>Primary for this row:</strong> preload MutationObserver on vote/reveal widgets + DOM snapshot hash</td><td>Identity stays <code>blind-unresolved</code>; no attribution beyond position</td></tr>
+<tr><td>Branch / regenerate</td><td>Detail-fetch bodies showing revision arrays (if verified)</td><td>Branch-switcher DOM state</td><td>Branches stored flat with <code>branch_confidence:low</code></td></tr>
+<tr><td>Downloads/artifacts</td><td><code>will-download</code> owned write → vault + hash</td><td>Link/attachment DOM ref</td><td>Attachment row without bytes, marked <code>bytes-missing</code></td></tr>
+</tbody></table>
+<h3>Completeness states (never silently promote partial → complete)</h3>
+<div class="stateline">
+<span class="state"><b>complete</b>terminal chunk + finalize + DOM agree</span>
+<span class="state"><b>stopped</b>operator stop observed</span>
+<span class="state"><b>failed</b>transport/error status</span>
+<span class="state"><b>partial-observer-gap</b>we missed bytes (eviction/detach)</span>
+<span class="state"><b>partial-navigation</b>target changed mid-stream</span>
+<span class="state"><b>unknown-terminal</b>ended, cause unclear</span>
+<span class="state"><b>pending</b>stream open</span>
+</div>
+<h3>Illustrative path (observation → transcript)</h3>
+<pre><span class="c">// ILLUSTRATIVE — not observed Arena protocol. Shows mechanism only.</span>
+CDP: Fetch.requestPaused {url ~ /conversation-host/*, stage:Response}
+  → Fetch.getResponseBody → chunks ["{\"t\":\"Hel","{\"t\":\"lo\"}", "{\"done\":true}"]
+  → sanitizer strips auth/cookies, keeps sanitized shape sample
+  → adapter arena-conv/0.3.1 reassembles text, detects done:true → turn finalize
+  → DOM evidence {blind:["A","B"], vote:"A", reveal:{A:"observed-model-X"}} corroborates
+  → writer TX: observations(+sanitized sample) → normalized turns → FTS index
+  → transcript query returns branch-aware turns + provenance (account, adapter, completeness)</pre>
+<h3>Smallest vertical slice (prove before building the workspace)</h3>
+<div class="callout ok"><strong>Spike:</strong> two isolated partitions signed in via email; one battle prompt per account; capture stream via CDP to normalized turns with <code>complete</code> state and per-account transcripts retrievable over MCP; one forced failure (stop mid-stream + devtools-open detach) correctly recorded as <code>stopped</code>/<code>partial-observer-gap</code>. No search UI, no sync, no analysis. Falsifies attach timing, body access, isolation, and state discipline in days, not months.</div>
+</section>
+
+<section id="s-sync">
+<h2 class="sec"><span class="n">06</span>Existing-history synchronization</h2>
+<p><span class="ev u">Unknown</span> No listing endpoint, pagination, or history contract is verified. Backfill is therefore assessed independently from live capture, with a primary and fallback chosen on evidence, not assumption.</p>
+<h3>Methods compared</h3>
+<table><thead><tr><th>Method</th><th>Assessment</th></tr></thead><tbody>
+<tr><td><strong>Primary: replay discovered owner-history reads</strong> (authenticated first-party reads, bound to the owning partition's session)</td><td>Preferred <em>if</em> owner-session probes verify: account association (response reflects the signed-in account, not a URL guess), effective read behavior (no server-side mutation — method/name alone proves nothing), stable pagination/detail retrieval. Most robust, least brittle, reuses capture adapters.</td></tr>
+<tr><td><strong>Fallback: automated UI traversal + rendered-history recording</strong> (paginated list/search/archived views driven in the hidden window, DOM + detail bodies recorded)</td><td>Brittle (layout drift, lazy-load, rate limits) but requires no contract. Predictable with checkpoints; keeps provenance (<code>via:ui-traversal</code>).</td></tr>
+<tr><td>Tertiary: official/privacy export import</td><td>Only if an export is verified to exist and its completeness characterized — <span class="ev h">Hypothesis to test</span>. Never assumed complete.</td></tr>
+<tr><td>Future documented API</td><td>Adopt if published; no plan depends on it.</td></tr>
+</tbody></table>
+<div class="callout warn"><strong>Read-verification rule.</strong> A “verified read” means: executed in the owner-session context, against the owning <code>account_id</code> partition, with pre/post state showing no mutation (counts/versions unchanged), recorded in the catalog with adapter version. Until then the op stays <code>read_or_mutation:unknown</code> and sync may not rely on it.</div>
+<h3><code>Sync now</code> semantics (per account or selected accounts)</h3>
+<ul>
+<li><strong>Scope &amp; control:</strong> one account or operator-selected set; optional per-account auto-sync (explicitly enabled, off by default). Visible progress (pages, items, bytes, ETA-from-rate), <strong>pause / cancel / resume</strong> per account and global kill-switch. Cancel leaves checkpoints; resume continues from checkpoint, never from scratch.</li>
+<li><strong>Isolation:</strong> pagination cursors, checkpoints, retries, and dedup markers are namespaced by <code>account_id</code>. Overlapping/repeated pages and pagination instability are expected: dedup key is <code>(account_id, source_conversation_id, revision)</code> — identical text alone never dedups.</li>
+<li><strong>Concurrency:</strong> accounts sync independently; default is <em>sequential across accounts, concurrent within an account's bounded prefetch</em> to avoid cross-account rate-limit entanglement. Parallel multi-account sync is allowed behind a flag after rate behavior is measured, with per-account token buckets.</li>
+<li><strong>Live-capture overlap:</strong> a conversation open live while syncing is reconciled by (source id + revision + completeness): live <code>pending</code> turns are not overwritten by older sync snapshots; sync backfills finalized revisions around them. Conflicts surface as <code>needs-review</code>, never auto-merged across accounts.</li>
+<li><strong>Degradation:</strong> rate-limit (backoff+jitter, per-account), auth expiry (pause that account, surface re-sign-in, others continue), drift/redirect/challenge/suspected mutation (pause that account + snapshot sanitized evidence). Cross-account source-ID collisions → explicit <code>ownership-conflict</code> rows quarantined for operator review.</li>
+<li><strong>“Synchronized” defined:</strong> per account: <em>list coverage</em> (pages walked, cursors exhausted or explicitly bounded), <em>detail coverage</em> (x/y conversations with full revisions), <em>gap list</em> (IDs seen but not retrievable + reason). An agent can inspect all three over MCP. Opening one known conversation proves nothing about full coverage.</li>
+</ul>
+<p>If no reliable listing/pagination/complete-detail representation can be verified, the plan stays honest: sync degrades to <em>bounded traversal + live accumulation from now on</em>, gaps are listed, and the archive's coverage statement says so. No silent completeness.</p>
+</section>
+
+<section id="s-data">
+<h2 class="sec"><span class="n">07</span>Data, identity, provenance, protection</h2>
+<h3>Source-of-truth design (proportionate hybrid)</h3>
+<p><span class="ev r">Recommendation</span> <strong>Normalized records + retained sanitized observations (bounded) — not full event sourcing.</strong> Normalized tables are the query truth; a bounded, encrypted observation store supports reparse after adapter changes; derived indexes/exports are rebuildable and never authoritative.</p>
+<pre><span class="c">-- sketch (SQLite/SQLCipher, FTS5). Keys: (account_id, source_*) — never global dedup.</span>
+accounts(account_id PK, label, partition, created_at, status, identity_snapshot_json)
+conversations(conv_id PK, account_id FK, source_conv_id, mode, title, created_at, updated_at, completeness)
+branches(branch_id PK, conv_id FK, parent_branch_id NULL, label, is_active)
+turns(turn_id PK, branch_id FK, idx, role, participant_pos, completeness, text, created_at)
+participants(part_id PK, conv_id FK, position, blind_label, selected_label)
+identity_observations(obs_id PK, part_id FK, kind, value, source, turn_range, observed_at, adapter)
+source_observations(obs_id PK, conv_id FK NULL, account_id FK, mechanism, adapter, sanitized_sample, hash, observed_at, retention_until)
+artifacts(artifact_id PK, conv_id FK, account_id FK, kind, vault_path, sha256, bytes, provenance_json)
+sync_state(account_id PK, cursor_json, detail_coverage_json, gaps_json, updated_at)
+analysis_runs(run_id PK, cohort_json, method, version, results_ref, created_at)</pre>
+<ul>
+<li><strong>Provenance per normalized fact:</strong> producing <code>account_id</code>/partition, mechanism (<code>cdp-fetch/cdp-network/websocket/dom/import</code>), adapter/parser version, observed-at, completeness/uncertainty. Sanitized samples retained ~90 days (tunable) then GC'd; normalized facts persist.</li>
+<li><strong>Transactions/crash:</strong> WAL inside encrypted DB; capture write = one TX (observations + normalized upsert + FTS); checkpoint-then-advance for sync; migrations versioned with rollback snapshot; backup = timestamped encrypted copy + key-escrow reminder (Keychain, not in backup); restore verified by hash + coverage recount.</li>
+<li><strong>Deletion:</strong> one conversation (rows + FTS + artifacts + observations for that conv), one account's local data (all rows + partition storage wipe + vault subtree), whole archive (DB + vault + caches + MCP token rotation). Deletion is transactional per scope with failure recovery (idempotent job); future syncs treat deleted source IDs as <em>tombstones</em> (do not silently re-import; surface re-appearance as <code>reappeared-after-delete</code>); external exports/backups are <em>listed as residual</em> — their erasure is never promised.</li>
+</ul>
+<h3>Model identity (observed vs inferred — never conflated)</h3>
+<ul>
+<li>Preserve: selected label, blind labels, displayed provider/model strings, post-vote reveals with timestamps/turn ranges, and source (<code>ui|network|import|annotation</code>). Position ≠ provider ≠ marketing name ≠ route ≠ build — stored as separate fields.</li>
+<li>Conflicts/unknowns persist as rows, surfaced in transcripts (<code>blind-unresolved</code>, <code>conflicting-reveal</code>). A later reveal adds a new <code>identity_observation</code> and updates the <em>view</em>; it never rewrites history or extends the label beyond its turn range without evidence.</li>
+</ul>
+<h3>Archive capabilities &amp; security</h3>
+<ul>
+<li><strong>Offline-first:</strong> text search (FTS5) + filters (account, date, mode, observed/revealed model, state, provenance); branch-aware transcripts; versioned machine-readable export (JSON with provenance envelope) + human-readable export (Markdown). Cross-account search allowed; account source always shown; exports scope to one / selected / all accounts without collapsing boundaries.</li>
+<li><strong>Encryption:</strong> DB file fully encrypted (SQLCipher AES-256); key = <code>crypto.randomBytes(32)</code> generated once, held in Keychain, loaded via <code>safeStorage</code> into main memory only. Artifacts: AES-256-GCM files with per-file nonce, key-wrapped by the archive key. FTS index lives <em>inside</em> the encrypted DB (no plaintext sidecar).</li>
+<li><strong>Plaintext exposure audit:</strong> browser storage (partition jars — OS-permissioned, excluded from exports/diagnostics); temp files (vault-staging only, immediate re-encrypt + unlink); logs/crash reports (sanitizer + allow-list fields; journal/WAL inside encrypted container); swap (memory-only key, <code>mlock</code> where available — residual OS risk disclosed); Spotlight (vault + DB directories flagged no-index); Time Machine (encrypted-at-rest blobs only; key never in backup — restore needs Keychain).</li>
+<li><strong>Secret exclusion:</strong> credentials, auth headers, cookies, OAuth codes, CSRF secrets, passwords, signed URLs, unrelated private fields are redacted <em>before</em> persistence or diagnostic emission — including parser-error paths. URLs with secrets are stored as <code>{template, host, hash}</code> (e.g., <code>https://arena.ai/…?s=⟨redacted:sha256:9f…⟩</code>), never raw.</li>
+<li><strong>Privilege separation re-stated:</strong> renderer/preload hold no key, no fs, no MCP token; MCP destructive scope is partition-bound; errors/sign-outs/concurrency preserve isolation (tested in Gate E).</li>
+</ul>
+</section>
+
+<section id="s-mcp">
+<h2 class="sec"><span class="n">08</span>Full LLM operability — local MCP contract</h2>
+<div class="callout info"><strong>Transport &amp; trust:</strong> loopback <strong>Streamable HTTP</strong> MCP on <code>127.0.0.1:&lt;ephemeral&gt;</code> (single MCP endpoint, JSON-RPC), per-install 256-bit bearer token generated at first run and stored in Keychain; <code>Host/Origin</code> allow-list (<code>127.0.0.1/localhost</code> only), DNS-rebind guard (reject foreign <code>Host</code>), no LAN exposure. A <strong>stdio shim</strong> spawns the same service for clients that only speak spawned-servers. Discovery via standard MCP <code>tools/list + resources/list</code>; unavailable ops return typed <code>UNAVAILABLE_STATE</code> with <code>retry_after / required_state</code>. GUI and MCP call the <strong>same service layer</strong> — identical semantics, shared state machine; browser-interaction needs (focus/click during email verification) are explicit tools, not hidden GUI-only steps.</div>
+<h3>Inventory (every GUI capability is an MCP tool; identifiers are <code>account_id</code>-scoped)</h3>
+<table><thead><tr><th>Group</th><th>Tools / resources</th></tr></thead><tbody>
+<tr><th>Archive</th><td><code>archive.search</code> (FTS + filters + pagination), <code>archive.get_transcript</code> (branch-aware + provenance), <code>archive.get_turn</code>, <code>archive.list_conversations</code>; resources <code>archive://transcript/{id}</code>, <code>archive://provenance/{id}</code></td></tr>
+<tr><th>Accounts</th><td><code>accounts.list</code> (visible identity per partition), <code>accounts.status</code> (recording/capture/completeness per account), <code>accounts.pause_recording / resume_recording / stop_all</code> (per-account + global)</td></tr>
+<tr><th>Sync</th><td><code>sync.start</code> (one/selected accounts, idempotency key), <code>sync.progress</code>, <code>sync.cancel</code>, <code>sync.resume</code>; jobs with <code>queued|running|paused|cancelling|cancelled|failed|complete</code></td></tr>
+<tr><th>Analysis</th><td><code>analysis.run_profile</code>, <code>analysis.get_run</code>, <code>analysis.list_runs</code> (cohort-gated; §9)</td></tr>
+<tr><th>Diagnostics</th><td><code>diag.protocol_catalog</code>, <code>diag.evidence_sample</code> (sanitized), <code>diag.drift</code>, <code>diag.failures</code>, <code>diag.recovery_options</code>; resource <code>diag://catalog</code></td></tr>
+<tr><th>Export/delete</th><td><code>export.run</code> (one/selected/all accounts + format), <code>delete.conversation</code>, <code>delete.account_archive</code>, <code>delete.whole_archive</code> — all under the destructive guard below</td></tr>
+</tbody></table>
+<h3>Representative contracts (abridged; full JSON Schemas ship with the server)</h3>
+<pre><span class="c">// transcript query — branch-aware, provenance-attached, paginated</span>
+archive.get_transcript { conv_id, account_id, branch?: "active"|branch_id,
+  include: ["provenance","identity_observations"], page: {cursor?, limit<=200} }
+→ { mode, completeness, branches[], turns[][{idx, role, pos, text, completeness}],
+    identity_view, provenance[{mechanism, adapter, observed_at}], page_info }
+ERR: NOT_FOUND | ACCOUNT_MISMATCH | NOT_YET_SYNCED
+
+<span class="c">// sync job — idempotent, resumable, per-account isolated</span>
+sync.start { account_ids: [uuid], idempotency_key, bounds?: {since?, max_pages?} }
+→ { job_id, per_account: [{account_id, state:queued, checkpoint:null}] }
+sync.progress { job_id } → { state, per_account:[{pages, items, bytes, gaps[], rate_limited?}] }
+ERR: ACCOUNT_SIGNED_OUT | RATE_LIMITED(retry_after) | DRIFT_PAUSED | CHALLENGE_PENDING
+
+<span class="c">// diagnostics — sanitized by construction</span>
+diag.drift {} → { catalog_version, unknown_ops[], adapter_gaps[], suggested_probes[] }
+diag.failures { account_id? } → [{at, class, sanitized_detail, recovery}]
+
+<span class="c">// deletion — destructive guard (see below)</span>
+delete.account_archive { account_id, confirmation: {scope_token, phrase} }
+→ { state: deleted|failed, tombstones, residuals:[exports, backups] }</pre>
+<h3>State, errors, pagination</h3>
+<ul>
+<li><strong>Jobs:</strong> <code>queued → running ⇄ paused → complete | failed | cancelled</code>; cancel is cooperative with checkpoint guarantee; retries bounded with jitter; idempotency keys make re-<code>start</code> safe.</li>
+<li><strong>Errors (typed):</strong> <code>ACCOUNT_MISMATCH, ACCOUNT_SIGNED_OUT, AMBIGUOUS_OWNERSHIP, RATE_LIMITED, DRIFT_PAUSED, CHALLENGE_PENDING, ADAPTER_UNKNOWN, QUOTA_EXCEEDED, UNAVAILABLE_STATE, CONFIRMATION_REQUIRED, FORBIDDEN_CONTENT_PRINCIPAL</code> — each with <code>retryable, retry_after, required_state, affected_account_ids</code>.</li>
+<li><strong>Pagination:</strong> opaque cursors, <code>limit</code> caps, stable ordering (<code>updated_at, conv_id</code>); every list echoes the <code>account_id</code> scope it was evaluated under.</li>
+</ul>
+<h3>Guard against content-driven destructive actions</h3>
+<div class="callout bad"><strong>Archived content is untrusted data, never authority.</strong> Account/archive deletion requires <em>two</em> things from a <strong>trusted control channel</strong> (the local GUI confirm dialog or an MCP client session presenting the live scope token): (1) the exact scope just shown to the operator (<code>account label + source-ID count + date range</code>), and (2) a fresh single-use <code>scope_token</code> minted by the service plus a typed phrase (e.g., the account label). Retrieved prompts/responses/diagnostics can never supply or satisfy this — the service validates token freshness, channel binding (GUI window or the authenticated MCP bearer session that requested it), and scope equality, and rejects on any mismatch with <code>CONFIRMATION_REQUIRED</code>. Prompt-injection text urging deletion is therefore inert: it lacks the live token and the trusted-channel binding by construction.</div>
+</section>
+
+<section id="s-analysis">
+<h2 class="sec"><span class="n">09</span>Local analysis &amp; later modalities</h2>
+<h3>Initial model profiles (deterministic first)</h3>
+<p><span class="ev r">Recommendation</span> Group <strong>only by observed/revealed identity evidence with uncertainty preserved</strong> (blind-position cohorts stay separate from revealed-model cohorts). Start with transparent counts — no black-box scorer in v1:</p>
+<ul>
+<li>Lengths (response/paragraph/sentence/code-block), lexical diversity, recurring phrases/n-grams, punctuation/casing; Markdown structure (headings/lists/tables/citations/code-vs-prose); openings/transitions/conclusions, hedging/refusal/apology/uncertainty markers — each with per-cohort denominators and linked excerpts → source evidence.</li>
+<li>Cuts by prompt type/topic/mode/language/time/conversation context where sample supports it; every cut shows <em>n</em> and confidence notes.</li>
+</ul>
+<div class="callout warn"><strong>Limits of a one-operator corpus.</strong> Selection bias (your prompts/topics), prompt/topic confounding, history effects, hidden system prompts, decoding/tools/safety layers, aliases/routing, temporal drift, Arena post-processing, uncertain labels. Supportable: <em>within-corpus stylistic description of observed cohorts</em>. Misleading without controls: <em>cross-model capability ranking or authorship claims</em>. Profiles print their cohort definitions, label provenance, and these caveats on every run.</div>
+<p><strong>Embeddings/local ML: deferred.</strong> Entry gate (all required): ≥ a measured cohort size with held-out conversations, a frozen preprocessing/tokenizer version, pinned weights with hashes acquirable offline once, and a reproducibility checklist (seed, split, negative controls). Until then the packaging/RAM/reproducibility cost on 18 GB is unjustified. If admitted: weights in vault (hashed, versioned), offline-only inference, per-run provenance.</p>
+<h3>Later similarity / fingerprinting experiments (hypotheses, not proof)</h3>
+<ul>
+<li>Similarity to the archive is a <strong>confidence-qualified hypothesis</strong>, never identity proof. Inferred identity lives in <code>analysis_runs</code>, never in <code>identity_observations</code>.</li>
+<li>Require: leakage-resistant splits (near-duplicate/branch-aware grouping — related branches never split across train/test), held-out conversations, prompt/topic controls, negative + unknown-class handling, calibration, reproducible seeds, and a predeclared <em>continue / revise / abandon</em> rule. No universal sample thresholds are invented here; each experiment predeclares its minimum evidence and stops when results lack scientific utility.</li>
+</ul>
+<h3>Incremental modality support (text first)</h3>
+<table><thead><tr><th>Stage</th><th>Shared infra reused</th><th>Modality-specific</th></tr></thead><tbody>
+<tr><td>1. Search responses + citations</td><td>Catalog + adapters + provenance</td><td>Citation URL set (sanitized), fetch-time snapshot flag; quota on snapshot bytes</td></tr>
+<tr><td>2. Code/web outputs, previews, DB metadata, tool events</td><td>Artifact vault + hash + sync jobs</td><td>File-tree records, preview-HTML sandbox flag, tool-event envelope schema</td></tr>
+<tr><td>3–4. Images / video + workflow artifacts</td><td>Vault encryption + GC</td><td>Dimensions/duration/metadata tables; thumbnail derivation log; large-file spill rules</td></tr>
+<tr><td>5. Agent sessions + tool traces</td><td>Turn/branch model extended</td><td>Trace-step table (tool, args-hash, redacted I/O refs)</td></tr>
+<tr><td>6. Uploaded attachments + derivatives</td><td>Source/derived relation</td><td><code>derived_from</code> edges, re-derivation policy, drift per extractor</td></tr>
+</tbody></table>
+<p>Each stage ships its own adapter version, quota, incomplete-capture states, and drift signals. No speculative universal artifact framework is built in v1.</p>
+</section>
+
+<section id="s-gates">
+<h2 class="sec"><span class="n">10</span>Implementation sequence &amp; acceptance gates</h2>
+<p class="lede">Evidence earns the next phase. The first spike is designed to <strong>falsify</strong> the Electron choice, not demo a happy path. No calendar estimates per the brief — only order, deliverables, machine checks, falsifiers, and continue/change/stop rules.</p>
+<table><thead><tr><th>Gate</th><th>Deliverable → machine check → falsifier → decision</th></tr></thead><tbody>
+<tr><th>A. Browser viability</th><td>Email sign-in completes owner-driven in-app (incl. verification link/code, redirects, popups) in <strong>two simultaneous <code>persist:</code> partitions</strong> with zero cookie/storage/cache/SW leakage (probe: distinct sentinel values per partition; automated cross-read must fail). Known CDP/webRequest/download hooks attached with coverage log + RSS/cache budget. <strong>Falsifier:</strong> email flow blocked by stack (not by credentials) or cross-partition read succeeds → <em>stop, change stack</em>.</td></tr>
+<tr><th>B. Capture-depth viability</th><td>Same Arena workflows recorded by <strong>both</strong> the Electron spike and the existing extension baseline; diff on: stream completeness (hash equality), worker/SW frames, missed events across navigation/target change, reveal/vote capture, artifact bytes. <strong>Pass:</strong> Electron strictly recovers ≥1 baseline loss class with no new loss. <strong>Falsifier:</strong> parity-or-worse on all five → <em>stop Electron, escalate to CEF probe</em>.</td></tr>
+<tr><th>C. Capture correctness</th><td>Fixtures (synthetic SSE/chunked/WS/EventSource/reconnect/late-reveal suites) + owner-session runs: streaming, stopped/failed/partial, branches/positions, late identity, per-account binding reconcile with zero silent promotion, zero duplication, zero cross-account contamination (property tests on adapters + TX tests). <strong>Falsifier:</strong> any silent <code>partial→complete</code> promotion → <em>stop, fix state machine</em>.</td></tr>
+<tr><th>D. Backfill viability</th><td>Owner-association + read-only behavior verified and cataloged; interruption/overlap/re-run/concurrent-account/live-overlap suites pass; <code>sync.start/progress/cancel/resume</code> over MCP per account with checkpoints. <strong>Falsifier:</strong> no verifiable read and traversal too brittle (drift &gt; threshold) → <em>change to bounded-traversal + live-accumulation scope</em>.</td></tr>
+<tr><th>E. Data &amp; trust integrity</th><td>Chaos suite: sanitizer failures (incl. error paths), account change/sign-out mid-job, source-ID collision injection, crash-kill + restore, migration, backup/restore, per-scope deletion — all preserve isolation, secret-exclusion (grep corpus for token patterns: must be empty), and tombstone semantics. <strong>Falsifier:</strong> any secret in DB/diagnostics or cross-account rebind → <em>stop ship</em>.</td></tr>
+<tr><th>F. Agent operation</th><td>An LLM with only the MCP surface completes: search → transcript + provenance → sync → export → drift diagnosis → recovery; destructive-prompt injection suite (archived text urging deletion) is inert without live scope token (<code>CONFIRMATION_REQUIRED</code>). No essential workflow is GUI-only. <strong>Falsifier:</strong> any GUI-only capability or successful content-authorized delete → <em>stop, close the gap</em>.</td></tr>
+<tr><th>G. Analytical validity</th><td>Profiles emit cohorts, <em>n</em>s, label provenance, and limits on every run; later experiments meet predeclared calibration/split/control criteria or are auto-marked <em>abandoned</em>. <strong>Falsifier:</strong> claim beyond cohort support → <em>revise or abandon experiment</em>.</td></tr>
+</tbody></table>
+<h3>Major risks (signal → fallback → loss)</h3>
+<table><thead><tr><th>Risk</th><th>Detection signal</th><th>Fallback</th><th>Capability loss</th></tr></thead><tbody>
+<tr><td>Arena transport/framing drift</td><td><code>unknown_ops</code> spike, adapter miss rate, DOM/network divergence</td><td>Pin adapter, quarantine unknown, DOM-liveness transcript marked partial</td><td>Full-text completeness until adapter updated</td></tr>
+<tr><td>CDP eviction on long streams</td><td><code>evicted-from-cache</code> events, byte-count mismatch</td><td>Response-stage hold + stream spill; CEF escalation per trigger</td><td>Zero silent loss; some turns stay <code>partial-observer-gap</code></td></tr>
+<tr><td>Chromium/Electron cadence churn</td><td>Typed CDP/smoke failures after bump</td><td>Pin last-good Electron; scheduled bump lane</td><td>Delayed security/feature uptake</td></tr>
+<tr><td>Native-module rebuild pain</td><td><code>@electron/rebuild</code> smoke red on arm64</td><td>Pin prebuilt set; documented rebuild lane</td><td>Blocked upgrades until green</td></tr>
+<tr><td>Rate-limit / challenge / auth expiry</td><td>429/auth/challenge classifiers fire</td><td>Per-account backoff + pause + surface</td><td>Sync latency; live capture unaffected</td></tr>
+</tbody></table>
+</section>
+
+<section id="s-appx">
+<h2 class="sec"><span class="n">AX</span>Appendices</h2>
+<h3>A. Directory layout (agent-scaffoldable)</h3>
+<pre>arena-archive/
+  app/            # Electron main: partitions, CDP capture, sync engine, jobs, sanitizer
+  preload/        # sandboxed DOM-evidence bridge (allow-listed channels only)
+  renderer/       # minimal diagnostics-first UI (calls MCP/local services, no privilege)
+  mcp/            # Streamable-HTTP server + stdio shim + JSON Schemas + auth guards
+  store/          # SQLCipher schema, migrations, FTS, vault encryption, backup/restore
+  adapters/       # arena-conv/* versioned parsers + fixtures + property tests
+  analysis/       # deterministic profiles; experiments/ gated
+  scripts/        # setup, rebuild smoke, diagnostics collectors, chaos suite
+  docs/           # this plan + runbooks (agent-readable)</pre>
+<h3>B. Job &amp; capture state machines</h3>
+<p><code>Sync:</code> queued → running ⇄ paused → complete | failed | cancelled (cancel checkpoints; resume idempotent). <code>Capture per turn:</code> pending → complete | stopped | failed | partial-observer-gap | partial-navigation | unknown-terminal. <code>Recording per account:</code> active ⇄ paused → stopped (pause halts new observation + finishes TX; stop detaches CDP and seals buffers).</p>
+<h3>C. Sanitizer allow-list (what may persist)</h3>
+<p>Conversation text/structure, sanitized URL templates + hashes, status codes, timing, adapter versions, vote/reveal labels, DOM snapshot hashes (not raw cookies/headers). Everything else — auth headers, cookies, set-cookie, tokens, CSRF, passwords, signed query secrets, third-party bodies — is redacted pre-write, including error paths. Test: secret-pattern grep over DB + diagnostics + fixtures must be empty.</p>
+<h3>D. MCP destructive-scope token sketch</h3>
+<pre><span class="c">// illustrative — control-plane only, never from archive content</span>
+scope_token = { scope:"account:uuid | whole-archive", shown:{label, n_convs, range},
+                nonce, expires_in:"5m", channel_binding: mcp_bearer_hash | gui_window_id }
+delete.* requires (scope_token fresh + typed phrase == shown label) else CONFIRMATION_REQUIRED</pre>
+<h3>E. Agent's first five commands (post-scaffold)</h3>
+<pre>npm install                  # deps incl. prebuilt arm64 SQLCipher binding
+npx @electron/rebuild --only better-sqlite3-multiple-ciphers
+npm run typecheck &amp;&amp; npm run test:adapters &amp;&amp; npm run test:sanitizer
+npm run dev                  # electron ., two partitions, MCP on 127.0.0.1
+npm run diag:coverage        # partition isolation + CDP attach + quota report</pre>
+<h3>F. Final review — implementation-agent readability check</h3>
+<table><thead><tr><th>Required answer</th><th>Where</th></tr></thead><tbody>
+<tr><td>Eligible dedicated-browser choice, deps, trade-offs, deeper-than-extension mechanisms, reversal trigger</td><td>§1, §3, §4, §10-B + fallback box</td></tr>
+<tr><td>What was researched vs unknown + how to test</td><td>§2 + every <span class="ev h">Hypothesis</span> + §10 probes</td></tr>
+<tr><td>Capture/backfill mechanisms, coverage limits, drift/failure behavior</td><td>§5, §6, §10-C/D</td></tr>
+<tr><td>Ownership, partition, credential, process, privilege boundaries + simultaneous isolation</td><td>§4, §7, §8-guard, §10-A/E</td></tr>
+<tr><td>Data model, provenance, identity, encryption, recovery, deletion</td><td>§7 + Appx A–D</td></tr>
+<tr><td>Complete automation contract + content-driven-delete protection</td><td>§8</td></tr>
+<tr><td>Staged gates, analysis plan, modality path</td><td>§9, §10</td></tr>
+</tbody></table>
+<p>Consistency attestations: the winner is <strong>not</strong> an extension/debugger-extension/native-host/companion; Google/OAuth/passkeys were <strong>not</strong> treated as requirements; simultaneous multi-account isolation is covered in architecture (§4), data model (§7), MCP (§8), sync (§6), and tests (§10-A/B/E/F).</p>
+<hr class="sep">
+<p class="print-only">Printed from the single-file plan. Interactive navigation available on screen.</p>
+</section>
+
+</div></main>
+<footer><div class="wrap">
+<p>Private plan · single-operator · no telemetry · no hosted backend · no store submission. Evidence labels mark verification scope; illustrative protocol shapes are not Arena observations. Typography: Departure Mono primary (local install; see §2.5), system-mono fallback. Report is a single self-contained HTML file with inline styles and no runtime dependencies.</p>
+<p>Sources consulted are registered in §2; consequential Arena-protocol claims remain hypotheses with probes. Nothing in this plan required agreeing with an expected stack — the Electron selection, CEF fallback trigger, and WKWebView/Tauri rejections follow from the cited mechanisms.</p>
+</div></footer>
+</body>
+</html>

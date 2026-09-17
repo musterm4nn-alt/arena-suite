@@ -1,0 +1,761 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arena Archive — Architecture &amp; Implementation Plan</title>
+<link rel="stylesheet" href="https://departuremono.com/css/departure-mono.css">
+<style>
+:root{
+--bg:#f7f7f4; --fg:#1a1c1f; --muted:#555b63; --line:#d9dcd9; --card:#ffffff;
+--accent:#c2410c; --accent-2:#7c2d12; --accent-soft:#ffedd5; --code-bg:#f1f3f5;
+--ok:#15803d; --warn:#a16207; --info:#1d4ed8; --hi:#fff7ed;
+--radius:10px; --mono:"Departure Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:2.5rem 1.5rem}
+header{border-bottom:2px solid var(--fg);padding-bottom:1.5rem;margin-bottom:2.5rem}
+header h1{font-size:2rem;line-height:1.2;margin:0 0 .5rem}
+header .sub{color:var(--muted);max-width:70ch}
+header .meta{display:flex;flex-wrap:wrap;gap:1rem;margin-top:1rem;font-size:.78rem;color:var(--muted)}
+header .meta span{border:1px solid var(--line);padding:.15rem .55rem;border-radius:999px;background:#fff}
+nav{position:fixed;top:0;left:0;height:100vh;width:240px;padding:1.5rem;border-right:1px solid var(--line);overflow-y:auto;background:#fff;z-index:10}
+nav h2{font-size:.85rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 1rem}
+nav ol{list-style:none;padding:0;margin:0;counter-reset:sec}
+nav li{margin:.25rem 0;counter-increment:sec}
+nav a{display:block;padding:.3rem .5rem;text-decoration:none;color:var(--fg);border-left:3px solid transparent;font-size:.82rem}
+nav a::before{content:counter(sec) ". ";color:var(--muted);font-weight:700}
+nav a:hover{background:var(--accent-soft);border-left-color:var(--accent)}
+main{margin-left:270px;padding-right:1rem}
+section{margin-bottom:3.5rem;scroll-margin-top:1rem}
+h2{font-size:1.55rem;border-bottom:2px solid var(--fg);padding-bottom:.4rem;margin:0 0 1.2rem}
+h3{font-size:1.15rem;margin-top:2rem;color:var(--accent-2)}
+h4{font-size:.95rem;margin-top:1.5rem;color:var(--fg)}
+p{max-width:80ch}
+table{width:100%;border-collapse:collapse;margin:1.2rem 0;background:#fff;font-size:.8rem}
+th,td{border:1px solid var(--line);padding:.5rem .6rem;text-align:left;vertical-align:top}
+th{background:#f3f4f6;font-weight:700}
+tbody tr:nth-child(even){background:#fafafa}
+code{background:var(--code-bg);padding:.1rem .3rem;border-radius:4px;font-family:var(--mono);font-size:.85em}
+pre{background:#282c34;color:#abb2bf;padding:1rem;border-radius:8px;overflow-x:auto;font-size:.78rem;line-height:1.5}
+pre code{background:none;color:inherit;padding:0}
+blockquote{border-left:4px solid var(--accent);margin:1.2rem 0;padding:.6rem 1.1rem;background:var(--hi);color:var(--fg);border-radius:0 6px 6px 0}
+blockquote p{margin:.2rem 0}
+.note{border-left:4px solid var(--info);background:#f0f7ff;padding:.8rem 1.1rem;margin:1.2rem 0;border-radius:0 6px 6px 0}
+.warnbox{border-left:4px solid var(--warn);background:#fffbeb;padding:.8rem 1.1rem;margin:1.2rem 0;border-radius:0 6px 6px 0}
+.badge{display:inline-block;padding:.1rem .5rem;border-radius:4px;font-size:.72rem;font-weight:700;margin-right:.35rem;vertical-align:middle}
+.vf{background:#dcfce7;color:#166534}.si{background:#dbeafe;color:#1e40af}
+.hy{background:#fef3c7;color:#92400e}.uk{background:#fee2e2;color:#991b1b}
+.rec{background:#f3e8ff;color:#6b21a8}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.2rem;margin:1.5rem 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:1.2rem}
+.card h3{margin-top:0;font-size:1rem;color:var(--fg)}
+.card .cat{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+details{margin:1rem 0;padding:.8rem 1.1rem;background:#fff;border:1px solid var(--line);border-radius:8px}
+details summary{cursor:pointer;font-weight:700;color:var(--accent-2)}
+details[open]{padding-bottom:.5rem}
+details pre{margin-top:.8rem}
+ol.steps{counter-reset:step;list-style:none;padding-left:0}
+ol.steps>li{counter-increment:step;position:relative;padding-left:2.4rem;margin-bottom:.8rem}
+ol.steps>li::before{content:counter(step);position:absolute;left:0;top:0;width:1.7rem;height:1.7rem;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:.85rem}
+.mermaid{background:#fff;padding:1rem;border-radius:8px;border:1px solid var(--line);margin:1.5rem 0;overflow-x:auto}
+footer{border-top:2px solid var(--fg);margin-top:3rem;padding-top:1.5rem;color:var(--muted);font-size:.8rem}
+footer p{max-width:100%}
+.toc-toggle{display:none;position:fixed;bottom:1.2rem;right:1.2rem;z-index:20;background:var(--fg);color:#fff;border:none;border-radius:50%;width:3rem;height:3rem;font-size:1.2rem;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+@media (max-width:900px){
+nav{position:static;height:auto;width:100%;border-right:none;border-bottom:1px solid var(--line)}
+main{margin-left:0;padding-right:0}
+.toc-toggle{display:block}
+body{padding-bottom:4rem}
+}
+@media print{
+nav{display:none}
+main{margin-left:0}
+body{background:#fff}
+.toc-toggle{display:none}
+section{page-break-inside:avoid}
+pre{white-space:pre-wrap;word-break:break-word}
+}
+</style>
+</head>
+<body>
+<button class="toc-toggle" aria-label="Toggle table of contents">☰</button>
+<nav id="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#context">Context &amp; Scope</a></li>
+<li><a href="#goals">Goals &amp; Constraints</a></li>
+<li><a href="#arch">Architecture Decision</a></li>
+<li><a href="#capture">Capture &amp; Backfill</a></li>
+<li><a href="#identity">Identity &amp; Provenance</a></li>
+<li><a href="#data">Data &amp; Security</a></li>
+<li><a href="#mcp">MCP Automation</a></li>
+<li><a href="#analysis">Analysis Plan</a></li>
+<li><a href="#impl">Implementation Gates</a></li>
+<li><a href="#report">Report Requirements</a></li>
+</ol>
+</nav>
+<main class="wrap">
+<header>
+<h1>Arena Archive — Architecture &amp; Implementation Plan</h1>
+<p class="sub">A private macOS desktop application for archiving and analyzing your own arena.ai conversations, with full local LLM operability via a dedicated MCP server.</p>
+<div class="meta">
+<span>Private use only</span>
+<span>Apple Silicon · macOS 14+</span>
+<span>Dedicated browser app</span>
+<span>Multi-account isolation</span>
+</div>
+</header>
+
+<section id="context">
+<h2>1. Context &amp; Scope</h2>
+<p>This plan designs a <strong>private macOS productivity and developer-research application</strong> for the model-comparison platform at <a href="https://arena.ai">arena.ai</a>, including Arena Code and other conversation surfaces. The app records accurate local transcripts of your own conversations while you use Arena normally, supporting offline browsing, search, and local research into observed model behavior.</p>
+
+<div class="note">
+<p><strong>Fixed requirements:</strong></p>
+<ul>
+<li>Permanently private, single-user app — no distribution, App Store, hosted backend, or telemetry</li>
+<li>Multiple Arena accounts signed in and usable simultaneously with full isolation</li>
+<li>Apple Silicon only (M3 Pro, 18GB RAM, macOS 27+)</li>
+<li>Local MCP server as primary interface — every GUI capability available to LLMs</li>
+<li>Dedicated browser application — not an extension, debugger extension, or extension+companion</li>
+</ul>
+</div>
+
+<p>The existing Manifest V3 browser extension (<code>musterm4nn-alt/arena-exporter</code>) serves as a <strong>rejected baseline</strong> due to documented limitations: incomplete capture, missed conversation parts, dependence on page/runtime interception, and awkward download handling. The new architecture must provide materially deeper browser/session/network control.</p>
+
+<h3>Evidence Discipline</h3>
+<p>All claims are labeled with evidence status:</p>
+<table>
+<thead><tr><th>Label</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><span class="badge vf">VERIFIED FACT</span></td><td>Supported by primary documentation or direct observation</td></tr>
+<tr><td><span class="badge si">STRONG INFERENCE</span></td><td>Indirect evidence supports claim; missing confirmation identified</td></tr>
+<tr><td><span class="badge hy">HYPOTHESIS TO TEST</span></td><td>Unverified; test and consequences specified</td></tr>
+<tr><td><span class="badge uk">UNKNOWN</span></td><td>Not established; treated as open variable</td></tr>
+<tr><td><span class="badge rec">RECOMMENDATION</span></td><td>Design choice, distinct from evidence</td></tr>
+</tbody>
+</table>
+
+</section>
+
+<section id="goals">
+<h2>2. Goals &amp; Constraints</h2>
+
+<h3>2.1 Primary Goals</h3>
+<div class="grid">
+<div class="card">
+<div class="cat">Priority 1</div>
+<h3>Capture &amp; Backfill Feasibility</h3>
+<p>Record accurate, complete transcripts of all conversation modes (battle, direct, side-by-side) including streams, branches, votes, and reveals. Reconstruct historical conversations with provenance.</p>
+</div>
+<div class="card">
+<div class="cat">Priority 2</div>
+<h3>Trust &amp; Identity</h3>
+<p>Bind every observation to correct account/session. Preserve model identity evidence (blind labels, reveals, provider names) without conflation. Isolate simultaneous account sessions completely.</p>
+</div>
+<div class="card">
+<div class="cat">Priority 3</div>
+<h3>Implementability</h3>
+<p>Concrete components with complete MCP coverage, failure handling, and falsifiable acceptance gates. AI agents can implement, operate, and troubleshoot autonomously.</p>
+</div>
+<div class="card">
+<div class="cat">Priority 4</div>
+<h3>Analysis &amp; Expansion</h3>
+<p>Defensible model profiles first, later similarity experiments with clear entry conditions. Extensible to other modalities (code, images, videos) incrementally.</p>
+</div>
+</div>
+
+<h3>2.2 Technical Constraints</h3>
+<table>
+<thead><tr><th>Constraint</th><th>Implication</th></tr></thead>
+<tbody>
+<tr><td>macOS 27+ on Apple Silicon</td><td>Native Swift/WKWebView possible but limited capture depth; Electron/Chromium provides deeper network observation</td></tr>
+<tr><td>18GB shared RAM</td><td>Resource-conscious design; avoid duplicated browser engines; practical quotas for archive size</td></tr>
+<tr><td>No App Store distribution</td><td>Can use non-notarized builds, embed runtimes, avoid packaging constraints</td></tr>
+<tr><td>AI agents implement/maintain</td><td>Prefer TypeScript/JavaScript ecosystem with strong typing and documentation; structured diagnostics</td></tr>
+<tr><td>Local MCP server primary interface</td><td>Every capability must be accessible programmatically with explicit contracts</td></tr>
+</tbody>
+</table>
+
+</section>
+
+<section id="arch">
+<h2>3. Architecture Decision</h2>
+
+<h3>3.1 Recommended Stack: Electron/Chromium with Custom Capture Layer</h3>
+<p><span class="badge rec">RECOMMENDATION</span> Build a dedicated Electron application with a custom network interception and capture layer integrated directly into the main process.</p>
+
+<div class="mermaid">
+flowchart LR
+A[Electron Main Process] --> B[Custom Network Layer]
+B --> C[Protocol Handler]
+B --> D[Session Manager]
+B --> E[Interception Engine]
+C --> F[Arena UI<br/>Renderer Process]
+D --> G[Multi-Account<br/>Session Isolation]
+E --> H[Capture Pipeline]
+H --> I[(Local Archive<br/>SQLite + Artifacts)]
+F --> J[MCP Server<br/>Local Automation]
+J --> K[LLM Clients]
+</div>
+
+<h3>3.2 Why Electron/Chromium</h3>
+<p>After comparing alternatives, Electron provides the optimal balance of capabilities for this use case:</p>
+
+<table>
+<thead><tr><th>Candidate</th><th>Network Capture Depth</th><th>Multi-Account Isolation</th><th>Development Ergonomics</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><strong>Electron/Chromium</strong></td><td>Full process-level access via <code>session</code>, <code>protocol</code>, <code>webRequest</code> APIs; can intercept all network traffic including WebSockets, SSE, and workers</td><td>Native support via <code>session.fromPartition()</code> with isolated cookies, storage, cache</td><td>TypeScript/JavaScript; extensive docs; AI-agent friendly</td><td><strong>Selected</strong> — deepest capture with best developer experience</td></tr>
+<tr><td>Native Swift + WKWebView</td><td>Limited to <code>WKURLSchemeHandler</code> and JavaScript injection; no direct network interception</td><td>Possible via <code>WKWebsiteDataStore</code> but more complex</td><td>Swift/Xcode; steeper learning curve for AI agents</td><td>Rejected — insufficient capture depth</td></tr>
+<tr><td>Tauri/Wry/WebKit</td><td>Similar to WKWebView; limited to custom protocol handlers</td><td>Limited to WebKit's isolation model</td><td>Rust backend; less AI-agent documentation</td><td>Rejected — same capture limitations as native</td></tr>
+<tr><td>Chromium Embedded Framework</td><td>Full CEF API access; can implement custom request handlers</td><td>Complex to implement; requires C++ expertise</td><td>C++ primarily; difficult for AI agents to maintain</td><td>Rejected — implementation complexity outweighs benefits</td></tr>
+<tr><td>Browser Extension + Native Host</td><td>Limited by extension APIs; <code>chrome.debugger</code> has restrictions</td><td>Depends on browser profile management</td><td>JavaScript but constrained by extension sandbox</td><td><strong>Rejected baseline</strong> — known limitations</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 Key Architecture Decisions</h3>
+
+<h4>D1: Dedicated Browser Application (Not Extension)</h4>
+<p><span class="badge rec">DECISION</span> Build a standalone Electron application that embeds Chromium directly.</p>
+<p><strong>Rationale:</strong> Extensions are constrained by browser security boundaries (MV3 service workers, limited network access, download restrictions). A dedicated application owns the browser process, enabling:</p>
+<ul>
+<li>Complete network traffic observation via <code>session.defaultSession.webRequest</code></li>
+<li>Direct download handling without extension bridge</li>
+<li>Process-level lifecycle management and debugging</li>
+<li>Custom protocol handlers for internal resources</li>
+</ul>
+
+<h4>D2: Multi-Account Session Isolation</h4>
+<p><span class="badge rec">DECISION</span> Use Electron's <code>session.fromPartition('persist:arena-{account-id}')</code> for each Arena account.</p>
+<details>
+<summary>Implementation Details</summary>
+<pre><code class="language-typescript">import { session } from 'electron';
+
+interface ArenaAccount {
+id: string;
+email: string;
+partition: string;
+// ... other metadata
+}
+
+class AccountManager {
+private accounts: Map&lt;string, ArenaAccount&gt; = new Map();
+
+createSession(accountId: string): Electron.Session {
+const partition = persist:arena-${accountId};
+const ses = session.fromPartition(partition);
+
+// Configure session with capture hooks
+this.configureSessionCapture(ses, accountId);
+
+return ses;
+}
+
+private configureSessionCapture(ses: Electron.Session, accountId: string) {
+// Network interception
+ses.webRequest.onBeforeRequest({ urls: ['://arena.ai/'] },
+(details, callback) =&gt; {
+// Log request with account context
+this.capturePipeline.recordRequest(accountId, details);
+callback({ cancel: false });
+});
+
+// Response body capture via protocol handler
+// (Custom implementation for full body access)
+}
+}</code></pre>
+
+</details>
+
+<h4>D3: Local MCP Server</h4>
+<p><span class="badge rec">DECISION</span> Implement a local MCP server using the official TypeScript SDK.</p>
+<p><strong>Rationale:</strong> MCP provides a standardized, discoverable interface for LLM clients. Every application capability becomes a tool/resource with explicit contracts.</p>
+
+<h4>D4: SQLite with Encryption</h4>
+<p><span class="badge rec">DECISION</span> Use SQLite with SQLCipher encryption for the primary database.</p>
+<p><strong>Rationale:</strong> Proven reliability, full-text search via FTS5, and strong encryption. Key stored in macOS Keychain.</p>
+
+<h3>3.4 Capture Mechanism Comparison</h3>
+<table>
+<thead><tr><th>Mechanism</th><th>Coverage</th><th>Timing</th><th>Worker/SW Support</th><th>Implementation</th></tr></thead>
+<tbody>
+<tr><td><code>webRequest</code> API</td><td>All requests from renderer</td><td>Before/after request</td><td>Yes (via service worker fetch events)</td><td>Moderate</td></tr>
+<tr><td>CDP Network Domain</td><td>Full network lifecycle</td><td>Real-time streaming</td><td>Yes (with auto-attach)</td><td>Complex</td></tr>
+<tr><td>Protocol Handler</td><td>Custom schemes only</td><td>Full control</td><td>Limited</td><td>Simple</td></tr>
+<tr><td><strong>Selected: Hybrid</strong></td><td><strong>Complete</strong></td><td><strong>Real-time + post-hoc</strong></td><td><strong>Full</strong></td><td><strong>Moderate-Complex</strong></td></tr>
+</tbody>
+</table>
+
+<h3>3.5 Fallback Architecture</h3>
+<p>If Electron proves incompatible with Arena's authentication or anti-bot measures:</p>
+<ol class="steps">
+<li><strong>Trigger:</strong> Arena sign-in fails under Electron after UA/network masking attempts</li>
+<li><strong>Fallback:</strong> Switch to CEF with custom capture implementation</li>
+<li><strong>Preserved:</strong> Multi-account isolation, local storage, MCP interface</li>
+<li><strong>Lost:</strong> TypeScript ergonomics, some Electron APIs</li>
+</ol>
+
+</section>
+
+<section id="capture">
+<h2>4. Capture &amp; Backfill</h2>
+
+<h3>4.1 Discovery as Maintained Capability</h3>
+<p>The first engineering objective is discovering Arena's first-party endpoints, transports, and payload structures. This becomes both a capture-adapter inventory and machine-readable diagnostic state.</p>
+
+<div class="mermaid">
+flowchart TD
+A[Start Discovery] --> B{Observe Network Traffic}
+B --> C[Classify Requests]
+C --> D[Conversation Traffic]
+C --> E[Auth Operations]
+C --> F[Assets/Config]
+C --> G[Mutations]
+D --> H[Update Protocol Catalog]
+E --> H
+F --> H
+G --> H
+H --> I[Version &amp; Drift Tracking]
+I --> J[Adapter Generation]
+</div>
+
+<h4>Protocol Catalog Schema</h4>
+<pre><code class="language-typescript">interface ProtocolEntry {
+id: string; // Unique identifier
+operation: string; // e.g., 'conversation.stream'
+transport: 'http' | 'sse' | 'websocket' | 'fetch';
+method?: string; // HTTP method if applicable
+urlPattern: string; // URL pattern with parameters
+requestSchema?: object; // JSON schema if known
+responseSchema?: object; // JSON schema if known
+firstPartyOrigin: string; // Arena domain
+accountScoped: boolean; // Requires authentication
+readWrite: 'read' | 'write' | 'unknown';
+adapterVersion: string;
+lastObserved: timestamp;
+driftSignals: string[]; // Schema changes, new fields
+}</code></pre>
+
+<h3>4.2 Live Capture Implementation</h3>
+
+<h4>Network Interception Layer</h4>
+<pre><code class="language-typescript">class NetworkInterceptor {
+private capturePipeline: CapturePipeline;
+
+attachToSession(session: Electron.Session, accountId: string) {
+// Intercept all Arena requests
+session.webRequest.onBeforeRequest(
+{ urls: ['://.arena.ai/*'] },
+(details, callback) =&gt; {
+this.capturePipeline.recordRequest(accountId, details);
+callback({ cancel: false });
+}
+);
+
+// Capture response bodies via custom protocol
+// (Implementation requires protocol.handle with response streaming)
+}
+
+// WebSocket interception requires CDP
+async attachDebugger(webContents: Electron.WebContents) {
+await webContents.debugger.attach('1.3');
+await webContents.debugger.sendCommand('Network.enable');
+webContents.debugger.on('message', (event, method, params) =&gt; {
+if (method === 'Network.webSocketFrameReceived') {
+this.capturePipeline.recordWebSocketFrame(params);
+}
+});
+}
+}</code></pre>
+
+<h4>Stream Reconstruction</h4>
+<p>For streaming responses (SSE, chunked HTTP), the capture pipeline reconstructs the full response from chunks:</p>
+<pre><code class="language-typescript">class StreamReconstructor {
+private buffers: Map&lt;string, Chunk[]&gt; = new Map();
+
+addChunk(requestId: string, chunk: Chunk) {
+const chunks = this.buffers.get(requestId) || [];
+chunks.push(chunk);
+this.buffers.set(requestId, chunks);
+}
+
+finalizeStream(requestId: string): CompleteResponse {
+const chunks = this.buffers.get(requestId);
+if (!chunks) throw new Error('No chunks found');
+
+// Reconstruct based on content type
+if (this.isSSE(chunks)) {
+return this.reconstructSSE(chunks);
+} else if (this.isChunkedHTTP(chunks)) {
+return this.reconstructHTTP(chunks);
+}
+
+// Mark as unknown transport
+return { type: 'unknown', chunks };
+}
+}</code></pre>
+
+<h3>4.3 Existing-History Synchronization</h3>
+
+<h4>Primary Method: Authenticated API Replay</h4>
+<p><span class="badge hy">HYPOTHESIS TO TEST</span> Arena provides internal APIs for listing and retrieving conversation history that can be discovered from network traffic.</p>
+<p><strong>Test:</strong> Observe network requests when navigating to history page; identify listing endpoints; test read-only behavior.</p>
+
+<ol class="steps">
+<li>Sign into Arena in capture-enabled session</li>
+<li>Navigate to conversation history</li>
+<li>Record all network requests during navigation</li>
+<li>Identify listing endpoint (pagination, filtering)</li>
+<li>Test endpoint with same session (read-only verification)</li>
+<li>Implement sync adapter if confirmed</li>
+</ol>
+
+<h4>Fallback Method: UI Automation Traversal</h4>
+<p>If no suitable API is found:</p>
+<ul>
+<li>Automate UI navigation through history pages</li>
+<li>Extract conversation data from rendered DOM</li>
+<li>Handle pagination, scrolling, and loading states</li>
+</ul>
+
+<h4>Sync State Machine</h4>
+<div class="mermaid">
+stateDiagram-v2
+[*] --> Idle
+Idle --> Syncing: Start Sync
+Syncing --> Paginating: Fetch Page
+Paginating --> Paginating: More Pages
+Paginating --> Finalizing: Complete
+Syncing --> Paused: User Pause
+Paused --> Syncing: Resume
+Syncing --> Failed: Error
+Failed --> Syncing: Retry
+Finalizing --> [*]
+</div>
+
+</section>
+
+<section id="identity">
+<h2>5. Identity &amp; Provenance</h2>
+
+<h3>5.1 Account/Session Isolation Model</h3>
+<p>Every observation is explicitly bound to an account/session partition:</p>
+<pre><code class="language-typescript">interface AccountScope {
+accountId: string; // Local unique ID
+partitionId: string; // Electron session partition
+arenaUserId?: string; // Arena's user ID if known
+email: string; // Account email
+sessionStart: timestamp;
+lastActivity: timestamp;
+}</code></pre>
+
+<h3>5.2 Model Identity Preservation</h3>
+<p>Model identity is preserved with full provenance, never conflating different identity types:</p>
+<table>
+<thead><tr><th>Identity Type</th><th>Source</th><th>Example</th><th>Confidence</th></tr></thead>
+<tbody>
+<tr><td>Selected Label</td><td>User selection in UI</td><td>"[MODEL]-4"</td><td>High (user intent)</td></tr>
+<tr><td>Blind Label</td><td>UI display during blind test</td><td>"Model A"</td><td>High (displayed)</td></tr>
+<tr><td>Provider Name</td><td>Network response metadata</td><td>"openai/[MODEL]-4"</td><td>Medium (may be route)</td></tr>
+<tr><td>Revealed Name</td><td>Post-vote reveal event</td><td>"[MODEL]-4 Turbo"</td><td>High (explicit reveal)</td></tr>
+<tr><td>Route/Build Info</td><td>Response headers, metadata</td><td>"[MODEL]-4-0125-preview"</td><td>Variable (may be internal)</td></tr>
+</tbody>
+</table>
+
+<h3>5.3 Provenance Chain</h3>
+<p>Every normalized record maintains a link to its source evidence:</p>
+<pre><code class="language-typescript">interface ProvenanceRecord {
+recordId: string;
+accountScope: AccountScope;
+observedAt: timestamp;
+captureMechanism: 'network' | 'ui' | 'import' | 'reveal';
+adapterVersion: string;
+sourceEvidence: SanitizedEvidence; // Reference to sanitized capture
+uncertainty: 'none' | 'low' | 'medium' | 'high';
+}</code></pre>
+
+</section>
+
+<section id="data">
+<h2>6. Data &amp; Security</h2>
+
+<h3>6.1 Data Model Overview</h3>
+<div class="mermaid">
+erDiagram
+ACCOUNT ||--o{ SESSION : has
+SESSION ||--o{ CONVERSATION : captures
+CONVERSATION ||--|{ TURN : contains
+TURN ||--o{ PARTICIPANT : involves
+PARTICIPANT ||--o{ IDENTITY-OBSERVATION : has
+CONVERSATION ||--o{ ARTIFACT : generates
+ACCOUNT ||--o{ SYNC-STATE : maintains
+</div>
+
+<h3>6.2 Encryption Strategy</h3>
+<table>
+<thead><tr><th>Component</th><th>Encryption Method</th><th>Key Management</th></tr></thead>
+<tbody>
+<tr><td>Primary Database</td><td>SQLCipher (AES-256)</td><td>Random key in macOS Keychain</td></tr>
+<tr><td>Large Artifacts</td><td>AES-256-GCM per file</td><td>Derived from master key via HKDF</td></tr>
+<tr><td>Search Indexes</td><td>Included in database encryption</td><td>Same as database</td></tr>
+<tr><td>Temporary Files</td><td>Memory-only when possible</td><td>N/A</td></tr>
+</tbody>
+</table>
+
+<h3>6.3 Sanitization Rules</h3>
+<details>
+<summary>Sensitive Data Exclusion List</summary>
+<pre><code class="language-typescript">const SENSITIVE_PATTERNS = [
+/authorization:\s*bearer\s+[a-z0-9\-._~+/]+=*/i,
+/cookie:\s*[a-z0-9\-._~+/]+=*/i,
+/x-csrf-token:\s*[a-z0-9\-._~+/]+=*/i,
+/api[_-]?key[=:]\s*[a-z0-9\-._~+/]+=*/i,
+/password[=:]\s*\S+/i,
+/token[=:]\s*[a-z0-9\-._~+/]+=*/i,
+// URLs with signed parameters
+/[?&amp;](sig|signature|token|key)=[^&amp;\s]+/gi,
+];
+
+function sanitizeCapture(raw: string): SanitizedEvidence {
+let sanitized = raw;
+for (const pattern of SENSITIVE_PATTERNS) {
+sanitized = sanitized.replace(pattern, '[REDACTED]');
+}
+return {
+content: sanitized,
+redactionCount: countRedactions(raw, sanitized),
+timestamp: Date.now()
+};
+}</code></pre>
+
+</details>
+
+<h3>6.4 Deletion Semantics</h3>
+<table>
+<thead><tr><th>Scope</th><th>Action</th><th>Affects</th><th>Recovery</th></tr></thead>
+<tbody>
+<tr><td>Single Conversation</td><td>Delete normalized records + artifacts</td><td>Search indexes, provenance chain</td><td>None (permanent)</td></tr>
+<tr><td>Account Data</td><td>Delete all data for account</td><td>Conversations, sync state, session data</td><td>None (permanent)</td></tr>
+<tr><td>Entire Archive</td><td>Delete database + artifacts</td><td>Everything</td><td>None (permanent)</td></tr>
+</tbody>
+</table>
+
+</section>
+
+<section id="mcp">
+<h2>7. MCP Automation</h2>
+
+<h3>7.1 Server Implementation</h3>
+<pre><code class="language-typescript">import { Server } from '@modelcontextprotocol/sdk/server';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
+
+const server = new Server(
+{ name: 'arena-archive', version: '1.0.0' },
+{ capabilities: { tools: {}, resources: {} } }
+);
+
+// Register tools
+server.setRequestHandler('tools/list', async () =&gt; ({
+tools: [
+{
+name: 'search_conversations',
+description: 'Search archived conversations',
+inputSchema: {
+type: 'object',
+properties: {
+query: { type: 'string' },
+accountId: { type: 'string' },
+dateRange: { type: 'object' },
+model: { type: 'string' }
+}
+}
+},
+// ... other tools
+]
+}));
+
+// Start server
+const transport = new StdioServerTransport();
+await server.connect(transport);</code></pre>
+
+<h3>7.2 Tool Inventory</h3>
+<table>
+<thead><tr><th>Category</th><th>Tool Name</th><th>Description</th><th>Input</th><th>Output</th></tr></thead>
+<tbody>
+<tr><td rowspan="4">Archive Access</td><td><code>search_conversations</code></td><td>Full-text search with filters</td><td>Query, filters</td><td>Conversation summaries</td></tr>
+<tr><td><code>get_transcript</code></td><td>Branch-aware transcript retrieval</td><td>Conversation ID</td><td>Full transcript with provenance</td></tr>
+<tr><td><code>list_accounts</code></td><td>List all archived accounts</td><td>None</td><td>Account metadata</td></tr>
+<tr><td><code>get_conversation_details</code></td><td>Metadata for specific conversation</td><td>Conversation ID</td><td>Details, participants, models</td></tr>
+<tr><td rowspan="3">Sync Control</td><td><code>start_sync</code></td><td>Trigger history synchronization</td><td>Account ID(s)</td><td>Job ID</td></tr>
+<tr><td><code>get_sync_status</code></td><td>Check sync progress</td><td>Job ID</td><td>Status, progress, errors</td></tr>
+<tr><td><code>cancel_sync</code></td><td>Cancel ongoing sync</td><td>Job ID</td><td>Confirmation</td></tr>
+<tr><td rowspan="2">Capture Control</td><td><code>get_capture_status</code></td><td>Current capture state per account</td><td>Account ID</td><td>Active sessions, recording state</td></tr>
+<tr><td><code>pause_capture</code></td><td>Pause capture for account</td><td>Account ID</td><td>Confirmation</td></tr>
+<tr><td rowspan="2">Analysis</td><td><code>run_model_profile</code></td><td>Generate model behavior profile</td><td>Model ID, parameters</td><td>Profile statistics</td></tr>
+<tr><td><code>compare_models</code></td><td>Compare two models' behavior</td><td>Model IDs, metrics</td><td>Comparison report</td></tr>
+<tr><td rowspan="2">Diagnostics</td><td><code>get_protocol_catalog</code></td><td>View discovered Arena protocols</td><td>Filters</td><td>Protocol entries</td></tr>
+<tr><td><code>get_capture_gaps</code></td><td>Identify missing data</td><td>Account, date range</td><td>Gap report</td></tr>
+<tr><td rowspan="2">Deletion</td><td><code>delete_conversation</code></td><td>Delete single conversation</td><td>Conversation ID</td><td>Confirmation</td></tr>
+<tr><td><code>delete_account_data</code></td><td>Delete all data for account</td><td>Account ID</td><td>Confirmation</td></tr>
+</tbody>
+</table>
+
+<h3>7.3 Security Model</h3>
+<div class="warnbox">
+<p><strong>Destructive Action Guard:</strong> Account-wide or archive-wide deletion requires explicit user directive from trusted control channel (GUI button or MCP tool with <code>confirm: true</code> parameter). Archived content cannot authorize deletion.</p>
+</div>
+
+</section>
+
+<section id="analysis">
+<h2>8. Analysis Plan</h2>
+
+<h3>8.1 Initial Model Profiles</h3>
+<p><span class="badge rec">RECOMMENDATION</span> Start with deterministic statistics grouped by observed model identity.</p>
+
+<h4>Profile Metrics</h4>
+<div class="grid">
+<div class="card">
+<h3>Length Statistics</h3>
+<ul>
+<li>Response length (characters, words)</li>
+<li>Paragraph count and length</li>
+<li>Sentence count and length</li>
+<li>Code block count and size</li>
+</ul>
+</div>
+<div class="card">
+<h3>Lexical Diversity</h3>
+<ul>
+<li>Type-token ratio</li>
+<li>Recurring n-grams (2-5)</li>
+<li>Vocabulary richness</li>
+<li>Stop word frequency</li>
+</ul>
+</div>
+<div class="card">
+<h3>Formatting Patterns</h3>
+<ul>
+<li>Markdown usage (headers, lists, tables)</li>
+<li>Code/prose ratio</li>
+<li>Citation patterns</li>
+<li>Link frequency</li>
+</ul>
+</div>
+<div class="card">
+<h3>Stylistic Markers</h3>
+<ul>
+<li>Common openings/closings</li>
+<li>Transition phrases</li>
+<li>Qualification/hedging language</li>
+<li>Refusal/apology patterns</li>
+</ul>
+</div>
+</div>
+
+<h3>8.2 Similarity Experiments (Later Phase)</h3>
+<p><span class="badge hy">HYPOTHESIS TO TEST</span> Model outputs may have detectable stylistic fingerprints.</p>
+<p><strong>Entry Conditions:</strong></p>
+<ul>
+<li>Minimum 50 conversations per model</li>
+<li>Leakage-resistant train/test splits</li>
+<li>Negative controls (known different models)</li>
+<li>Calibration on held-out data</li>
+</ul>
+
+<h3>8.3 Modality Expansion Path</h3>
+<ol class="steps">
+<li><strong>Text (v1):</strong> Complete conversation transcripts with search</li>
+<li><strong>Code Artifacts (v1.1):</strong> Extract and store code blocks with language detection</li>
+<li><strong>Images (v1.2):</strong> Store image metadata and thumbnails</li>
+<li><strong>Agent Traces (v2.0):</strong> Tool use sequences and intermediate steps</li>
+</ol>
+
+</section>
+
+<section id="impl">
+<h2>9. Implementation Gates</h2>
+
+<h3>9.1 Phase 1: Browser Viability (G1)</h3>
+<p><strong>Objective:</strong> Verify Arena works in Electron with email authentication and multi-account isolation.</p>
+<table>
+<thead><tr><th>Test</th><th>Pass Criteria</th><th>Fail Action</th></tr></thead>
+<tbody>
+<tr><td>Arena email sign-in</td><td>Can complete sign-in flow including MFA if present</td><td>Try UA masking; if fails, switch to CEF</td></tr>
+<tr><td>Two-account isolation</td><td>Cookies/storage/cache isolated; no cross-contamination</td><td>Debug session partitions; if persistent, architecture change</td></tr>
+<tr><td>Basic browsing</td><td>All Arena surfaces load and function</td><td>Identify specific incompatibilities; document workarounds</td></tr>
+</tbody>
+</table>
+
+<h3>9.2 Phase 2: Capture Depth (G2)</h3>
+<p><strong>Objective:</strong> Demonstrate deeper capture than extension baseline.</p>
+<table>
+<thead><tr><th>Test</th><th>Pass Criteria</th><th>Fail Action</th></tr></thead>
+<tbody>
+<tr><td>Stream completeness</td><td>100% of SSE/WebSocket chunks captured</td><td>Implement CDP fallback for streams</td></tr>
+<tr><td>Worker/SW visibility</td><td>Service worker requests visible</td><td>Attach debugger to SW targets</td></tr>
+<tr><td>Navigation gaps</td><td>No missed requests during page transitions</td><td>Pre-attach debugger before navigation</td></tr>
+</tbody>
+</table>
+
+<h3>9.3 Phase 3: Capture Correctness (G3)</h3>
+<p><strong>Objective:</strong> Reconstructed conversations match UI display.</p>
+<table>
+<thead><tr><th>Test</th><th>Pass Criteria</th><th>Fail Action</th></tr></thead>
+<tbody>
+<tr><td>Transcript accuracy</td><td>Text matches UI display exactly</td><td>Refine stream reconstruction</td></tr>
+<tr><td>Branch handling</td><td>All branches/regenerations captured</td><td>Implement branch tracking</td></tr>
+<tr><td>Vote/reveal events</td><td>All voting and reveal events recorded</td><td>Add UI event listeners</td></tr>
+</tbody>
+</table>
+
+<h3>9.4 Phase 4: Backfill Viability (G4)</h3>
+<p><strong>Objective:</strong> Successfully synchronize historical conversations.</p>
+<table>
+<thead><tr><th>Test</th><th>Pass Criteria</th><th>Fail Action</th></tr></thead>
+<tbody>
+<tr><td>History listing</td><td>Can enumerate all past conversations</td><td>Implement UI automation fallback</td></tr>
+<tr><td>Detail retrieval</td><td>Can fetch full conversation content</td><td>Use network replay if possible</td></tr>
+<tr><td>Sync resumability</td><td>Can pause/resume without data loss</td><td>Implement checkpoint system</td></tr>
+</tbody>
+</table>
+
+</section>
+
+<section id="report">
+<h2>10. Report Requirements</h2>
+
+<h3>10.1 Typography</h3>
+<p><span class="badge vf">VERIFIED FACT</span> Departure Mono is available at <a href="https://departuremono.com">departuremono.com</a> with official CSS at <code>https://departuremono.com/css/departure-mono.css</code>.</p>
+
+<h3>10.2 HTML Structure</h3>
+<ul>
+<li>Single HTML file: <code>arena-model-archive-plan.html</code></li>
+<li>Semantic HTML5 with ARIA where appropriate</li>
+<li>Responsive design for laptop and narrow windows</li>
+<li>Print-friendly CSS</li>
+</ul>
+
+<h3>10.3 Content Requirements</h3>
+<ul>
+<li>Clear architecture decision with rationale</li>
+<li>Evidence labels throughout</li>
+<li>Implementation gates with acceptance criteria</li>
+<li>Complete MCP tool inventory</li>
+<li>Data model and security specifications</li>
+</ul>
+
+</section>
+
+<footer>
+<p><strong>Arena Archive — Architecture &amp; Implementation Plan</strong></p>
+<p>Private use only · Apple Silicon · macOS 14+ · Dedicated browser application · Multi-account isolation</p>
+<p>Generated: 2026-09-17 · Evidence labels: <span class="badge vf">VERIFIED FACT</span> <span class="badge si">STRONG INFERENCE</span> <span class="badge hy">HYPOTHESIS TO TEST</span> <span class="badge uk">UNKNOWN</span> <span class="badge rec">RECOMMENDATION</span></p>
+</footer>
+</main>
+</body>
+</html>

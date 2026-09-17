@@ -1,0 +1,1793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arena Model Archive — Architecture &amp; Implementation Plan</title>
+<meta name="description" content="Architecture and implementation plan for a private macOS application that owns a dedicated browser for Arena, records the owner's conversations with provenance, and exposes the archive to an LLM through MCP.">
+<meta name="color-scheme" content="light">
+<style>
+/* ---------- Typeface ---------- */
+@font-face{
+  font-family:'Departure Mono';
+  src:url('https://departuremono.com/assets/DepartureMono-Regular.woff2') format('woff2'),
+      url('https://departuremono.com/assets/DepartureMono-Regular.woff') format('woff'),
+      url('https://departuremono.com/assets/DepartureMono-Regular.otf') format('opentype');
+  font-weight:400;font-style:normal;font-display:swap;
+}
+:root{
+  --font:'Departure Mono',ui-monospace,'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;
+  --paper:#f7f6f2;
+  --paper-2:#ffffff;
+  --ink:#16171a;
+  --ink-2:#3c4048;
+  --ink-3:#6a7078;
+  --rule:#d6d3ca;
+  --rule-2:#e8e6df;
+  --accent:#2f3fa8;      /* Electron / recommended */
+  --accent-soft:#eaecfa;
+  --warn:#8a5a00;        /* CEF / fallback */
+  --warn-soft:#fbf1de;
+  --danger:#9a2b2b;      /* rejected */
+  --danger-soft:#f8e9e9;
+  --ok:#1d6b47;
+  --ok-soft:#e6f2ec;
+  --radius:2px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  font-family:var(--font);
+  font-size:14px;
+  line-height:1.72;
+  color:var(--ink);
+  background:var(--paper);
+  background-image:linear-gradient(var(--rule-2) 1px,transparent 1px);
+  background-size:100% 34px;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 96px}
+a{color:var(--accent);text-underline-offset:3px}
+a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- Masthead ---------- */
+header.masthead{border-bottom:2px solid var(--ink);padding:38px 0 22px;margin-bottom:26px}
+.kicker{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
+h1{font-size:clamp(22px,3.4vw,36px);line-height:1.22;margin:0 0 10px;font-weight:400;letter-spacing:-.01em}
+h1 .sub{display:block;color:var(--ink-2);font-size:clamp(13px,1.6vw,17px);margin-top:10px}
+.docmeta{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:16px;font-size:11.5px;color:var(--ink-3)}
+.docmeta b{color:var(--ink-2);font-weight:400}
+
+/* ---------- Layout ---------- */
+.layout{display:grid;grid-template-columns:minmax(0,1fr);gap:28px}
+@media (min-width:1040px){
+  .layout{grid-template-columns:236px minmax(0,1fr);align-items:start}
+  nav.toc{position:sticky;top:18px;max-height:calc(100vh - 36px);overflow:auto}
+}
+nav.toc{border:1px solid var(--rule);background:var(--paper-2);padding:14px 14px 16px;font-size:12px}
+nav.toc h2{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px;font-weight:400}
+nav.toc ol{list-style:none;margin:0;padding:0;counter-reset:t}
+nav.toc li{margin:0 0 5px;counter-increment:t}
+nav.toc a{display:block;text-decoration:none;color:var(--ink-2);padding:2px 4px;border-left:2px solid transparent}
+nav.toc a::before{content:counter(t,decimal-leading-zero) "  ";color:var(--ink-3)}
+nav.toc a:hover{background:var(--accent-soft);color:var(--accent)}
+nav.toc a[aria-current="true"]{border-left-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+
+/* ---------- Sections ---------- */
+section{background:var(--paper-2);border:1px solid var(--rule);padding:22px 24px 26px;margin:0 0 22px}
+section>h2{font-size:19px;line-height:1.3;margin:0 0 6px;font-weight:400;letter-spacing:-.005em}
+section>h2 .num{color:var(--accent);margin-right:10px}
+.lede{color:var(--ink-2);margin:0 0 18px;max-width:82ch}
+h3{font-size:14.5px;margin:26px 0 8px;font-weight:400;letter-spacing:.01em;border-bottom:1px solid var(--rule-2);padding-bottom:5px}
+h4{font-size:12.5px;margin:18px 0 6px;font-weight:400;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+p{margin:0 0 12px;max-width:88ch}
+ul,ol{margin:0 0 12px;padding-left:20px;max-width:88ch}
+li{margin:0 0 5px}
+code{font-family:var(--font);font-size:.93em;background:var(--paper);border:1px solid var(--rule-2);padding:0 3px;border-radius:var(--radius)}
+pre{margin:0 0 14px;padding:14px 14px;background:#fbfaf7;border:1px solid var(--rule);border-left:3px solid var(--accent);overflow-x:auto;font-size:12px;line-height:1.6}
+pre code{background:none;border:0;padding:0}
+pre .c{color:var(--ink-3)}
+pre .k{color:var(--accent)}
+pre .s{color:var(--ok)}
+.tbl-scroll{overflow-x:auto;border:1px solid var(--rule);margin:0 0 16px}
+table{border-collapse:collapse;width:100%;font-size:12px;min-width:560px;background:var(--paper-2)}
+caption{caption-side:top;text-align:left;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);padding:8px 10px;background:var(--paper);border-bottom:1px solid var(--rule)}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--rule-2)}
+thead th{background:var(--paper);border-bottom:1px solid var(--rule);font-weight:400;color:var(--ink-2);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td.y{color:var(--ok)}
+td.n{color:var(--danger)}
+td.p{color:var(--warn)}
+
+/* ---------- Evidence badges ---------- */
+.badge{display:inline-block;font-size:10.5px;line-height:1.5;letter-spacing:.04em;padding:1px 7px;border:1px solid currentColor;white-space:nowrap;vertical-align:1px}
+.badge::before{margin-right:5px}
+.b-vf{color:var(--ok);background:var(--ok-soft)}
+.b-vf::before{content:"\25A3"}          /* filled square */
+.b-si{color:var(--accent);background:var(--accent-soft)}
+.b-si::before{content:"\25D0"}          /* half circle */
+.b-ht{color:var(--warn);background:var(--warn-soft)}
+.b-ht::before{content:"\25C7"}          /* open diamond */
+.b-rc{color:#4b2e83;background:#f0ecf9}
+.b-rc::before{content:"\25C6"}          /* filled diamond */
+.b-uk{color:var(--ink-3);background:var(--paper)}
+.b-uk::before{content:"\25CB"}          /* open circle */
+.b-pv{color:#5c4a86;background:#f3f0fa}
+.b-pv::before{content:"\29C9"}          /* two joined squares */
+.b-ok{color:var(--ok);background:var(--ok-soft)}
+.b-ok::before{content:"\2714"}          /* check mark */
+.b-warn{color:var(--warn);background:var(--warn-soft)}
+.b-warn::before{content:"\25B3"}        /* open triangle */
+.legend{display:flex;flex-wrap:wrap;gap:8px 10px;padding:12px;border:1px dashed var(--rule);background:var(--paper);margin:0 0 18px;font-size:11px}
+
+/* ---------- Callouts ---------- */
+.decision{border:2px solid var(--ink);background:var(--paper-2);padding:18px 20px;margin:0 0 20px}
+.decision .tag{display:inline-block;font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;background:var(--ink);color:var(--paper);padding:2px 8px;margin-bottom:10px}
+.decision h3{border:0;margin:0 0 8px;font-size:16px}
+.decision p:last-child{margin-bottom:0}
+.callout{border:1px solid var(--rule);border-left:4px solid var(--rule);background:var(--paper);padding:12px 14px;margin:0 0 16px}
+.callout>*:last-child{margin-bottom:0}
+.callout.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.callout.danger{border-left-color:var(--danger);background:var(--danger-soft)}
+.callout.ok{border-left-color:var(--ok);background:var(--ok-soft)}
+.callout .h{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);display:block;margin-bottom:6px}
+
+/* ---------- Diagrams ---------- */
+.diagram{margin:0 0 18px;border:1px solid var(--rule);background:var(--paper);padding:16px;overflow-x:auto}
+.diagram figcaption{font-size:11px;color:var(--ink-3);margin-top:10px;letter-spacing:.06em}
+.lanes{display:grid;gap:10px;min-width:640px}
+.lane{border:1px solid var(--ink);background:var(--paper-2);padding:10px 12px}
+.lane>.lane-h{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
+.lane.untrusted{border-style:dashed;background:repeating-linear-gradient(45deg,#fff,#fff 8px,#faf7f2 8px,#faf7f2 16px)}
+.lane.privileged{border-width:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.box{border:1px solid var(--ink-2);padding:6px 9px;font-size:11.5px;background:var(--paper-2);flex:1 1 150px;min-width:0}
+.box b{display:block;font-weight:400}
+.box span{color:var(--ink-3);font-size:10.5px}
+.box.hot{border-color:var(--accent);background:var(--accent-soft)}
+.box.dead{border-color:var(--danger);color:var(--danger);background:var(--danger-soft);text-decoration:line-through}
+.arrow{text-align:center;color:var(--ink-3);font-size:11px;letter-spacing:.1em}
+.pipe{display:flex;flex-wrap:nowrap;align-items:stretch;gap:0;min-width:820px}
+.stage{flex:1 1 0;border:1px solid var(--ink-2);border-right:0;padding:8px;font-size:11px;background:var(--paper-2)}
+.stage:last-child{border-right:1px solid var(--ink-2)}
+.stage b{display:block;font-weight:400;margin-bottom:4px}
+.stage span{color:var(--ink-3)}
+.pipe .arrow{align-self:center;padding:0 4px;border:1px solid var(--ink-2);border-right:0;background:var(--paper);flex:0 0 auto}
+
+/* ---------- Misc ---------- */
+.grid2{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{border:1px solid var(--rule);padding:12px 14px;background:var(--paper)}
+.card h4{margin-top:0}
+details{border:1px solid var(--rule);background:var(--paper);padding:0;margin:0 0 12px}
+details>summary{cursor:pointer;padding:9px 12px;font-size:12px;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"\25B8  ";color:var(--accent)}
+details[open]>summary::before{content:"\25BE  "}
+details>.body{padding:0 14px 12px;border-top:1px solid var(--rule-2)}
+dl.defs{margin:0 0 14px}
+dl.defs dt{font-size:12px;margin-top:10px}
+dl.defs dd{margin:2px 0 0 0;color:var(--ink-2);max-width:88ch}
+footer.colophon{border-top:2px solid var(--ink);padding-top:16px;font-size:11.5px;color:var(--ink-3)}
+.taglist{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.tag{font-size:10.5px;border:1px solid var(--rule);padding:1px 6px;background:var(--paper);color:var(--ink-2)}
+.small{font-size:11.5px;color:var(--ink-3)}
+hr.sep{border:0;border-top:1px solid var(--rule);margin:22px 0}
+.skip{position:absolute;left:-9999px}
+.skip:focus{left:8px;top:8px;background:var(--ink);color:var(--paper);padding:6px 10px;z-index:9}
+
+/* ---------- Print ---------- */
+@media print{
+  :root{--paper:#fff;--paper-2:#fff}
+  body{background:#fff;font-size:9.4pt;line-height:1.5}
+  .wrap{max-width:none;padding:0}
+  nav.toc{display:none}
+  .layout{display:block}
+  section{break-inside:avoid-page;border:0;border-top:1.5pt solid #000;padding:0 0 10pt;margin:0 0 12pt}
+  header.masthead{border-bottom:1.5pt solid #000}
+  pre,.tbl-scroll,.diagram,.callout,.decision,details{break-inside:avoid}
+  details{page-break-inside:avoid}
+  details:not([open])>.body{display:block}
+  a{color:#000;text-decoration:none}
+  .badge{border:1pt solid currentColor}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to report content</a>
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">Private macOS application · Architecture &amp; implementation plan · v1</p>
+  <h1>Arena Model Archive
+    <span class="sub">A dedicated-browser, account-partitioned, provenance-first archive for the owner's own Arena conversations — with a complete MCP surface for autonomous LLM operation and deterministic local model-behavior analysis.</span>
+  </h1>
+  <div class="docmeta">
+    <span><b>Status</b> Final deliverable (plan only; application not implemented)</span>
+    <span><b>Platform</b> Apple Silicon (M3 Pro, 18 GB unified memory)</span>
+    <span><b>Distribution</b> Private, single owner · no App Store · no backend · no telemetry</span>
+    <span><b>Primary typeface</b> Departure Mono (SIL OFL, Helena Zhang) with monospace fallback</span>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Table of contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#s1">Executive architecture decision</a></li>
+    <li><a href="#s2">Verified vs. unknown</a></li>
+    <li><a href="#s3">Why Electron · reversal condition</a></li>
+    <li><a href="#s4">Electron vs. CEF</a></li>
+    <li><a href="#s5">Other alternatives</a></li>
+    <li><a href="#s6">Process &amp; trust architecture</a></li>
+    <li><a href="#s7">Multi-account partitions</a></li>
+    <li><a href="#s8">Discovery &amp; protocol catalog</a></li>
+    <li><a href="#s9">Live capture pipeline</a></li>
+    <li><a href="#s10">Completeness &amp; reconciliation</a></li>
+    <li><a href="#s11">History backfill &amp; sync</a></li>
+    <li><a href="#s12">Data &amp; provenance model</a></li>
+    <li><a href="#s13">Model identity evidence</a></li>
+    <li><a href="#s14">Encryption, security, deletion</a></li>
+    <li><a href="#s15">MCP / LLM interface</a></li>
+    <li><a href="#s16">Deterministic analysis</a></li>
+    <li><a href="#s17">Fingerprinting &amp; later modalities</a></li>
+    <li><a href="#s18">Evidence-gated sequence</a></li>
+    <li><a href="#s19">Testing &amp; falsification</a></li>
+    <li><a href="#s20">Risks, reversal, capability loss</a></li>
+    <li><a href="#s21">Platform floor, resources, repo layout</a></li>
+    <li><a href="#s22">Source register</a></li>
+  </ol>
+</nav>
+
+<main id="main">
+
+<section id="s1" aria-labelledby="h-s1">
+<h2 id="h-s1"><span class="num">01</span>Executive architecture decision</h2>
+
+<div class="decision">
+  <span class="tag">Recommendation — v1 architecture</span>
+  <h3>Electron + Chromium, TypeScript application layer, one persistent Session partition per Arena account, main-process CDP/network observation, SQLCipher archive, stdio MCP server.</h3>
+  <p>The application <em>owns</em> its browser runtime. Each Arena account gets its own persistent Electron <code>Session</code> partition and its own <code>WebContents</code>. Capture is performed <strong>outside page JavaScript</strong> by main-process Chrome DevTools Protocol attachment, supplemented by Electron's per-session <code>webRequest</code>, per-session <code>netLog</code> for gap forensics, per-session service-worker introspection, and per-session download interception. Page-side DOM instrumentation is permitted only as <em>secondary, independent</em> evidence for reconciliation — never as the primary transport. The remote Arena renderer is untrusted: no Node, no IPC, no archive access, no MCP access.</p>
+</div>
+
+<p><b>What this plan is.</b> A complete architecture and acceptance-gated implementation plan for one private macOS application. It specifies the browser ownership model, capture mechanisms, isolation model, sanitization, normalized provenance data model, sync, encryption, deletion, MCP contract, and analysis layers, with explicit falsification gates and a documented reversal path.</p>
+
+<p><b>What this plan is not.</b> It is not a claim that Arena's wire protocol has been reverse-engineered. No authenticated Arena session was connected while producing this document. Arena-specific behavior — endpoint families, pagination, stream transport, message schema, reveal payloads, backfill reads — is <span class="badge b-ht">Hypothesis to test</span> and is gated behind owner-session acceptance tests defined in <a href="#s19">§19</a>. Nothing in this document asserts that an Arena endpoint is read-only.</p>
+
+<div class="legend" role="list" aria-label="Evidence label legend">
+  <span class="badge b-vf" role="listitem">Verified fact</span>
+  <span class="badge b-si" role="listitem">Strong inference</span>
+  <span class="badge b-ht" role="listitem">Hypothesis to test</span>
+  <span class="badge b-rc" role="listitem">Recommendation</span>
+  <span class="badge b-uk" role="listitem">Unknown</span>
+  <span class="badge b-pv" role="listitem">Previous-run evidence</span>
+  <span class="small">Labels are distinguished by glyph and text, not by color alone.</span>
+</div>
+
+<h3>The argument in seven lines</h3>
+<ol>
+  <li><b>Owning the window is not the same as deeper capture.</b> The architecture must state, per option, exactly which capture mechanisms exist <em>outside</em> page JavaScript. See <a href="#s5">§5</a>.</li>
+  <li><b>Electron exposes a main-process CDP transport</b> (<code>webContents.debugger</code>) plus per-partition session APIs — a materially larger observation surface than an MV3 extension, and account-partitioned by construction. <span class="badge b-vf">Verified fact</span></li>
+  <li><b>CEF exposes one deeper primitive</b> — <code>CefResourceRequestHandler::GetResourceResponseFilter</code>, invoked for requests whose <code>browser</code>/<code>frame</code> are <code>NULL</code>, explicitly including service-worker-originated requests. <span class="badge b-vf">Verified fact</span> This is the single strongest reason to escalate.</li>
+  <li><b>Therefore the decision is conditional, not dogmatic.</b> Electron is chosen <em>for v1</em>; a defined falsification spike can flip the decision to CEF. The reversal condition is stated verbatim in <a href="#s3">§3.4</a>.</li>
+  <li><b>Two accounts must be simultaneously live and mutually non-interfering</b>, with identity scoped into every record's uniqueness rules. See <a href="#s7">§7</a>.</li>
+  <li><b>Capture is not truth.</b> Completeness, provenance, and confidence are first-class columns, and inferred content is never labeled complete. See <a href="#s10">§10</a>.</li>
+  <li><b>The LLM interface is the primary interface.</b> Every GUI capability has an MCP equivalent, implemented on the same service layer. See <a href="#s15">§15</a>.</li>
+</ol>
+
+<div class="callout danger">
+  <span class="h">Rejected as primary architecture</span>
+  <p>Manifest V3 extensions, <code>chrome.debugger</code> extensions, extension + native messaging, and extension + companion daemon are <b>not</b> eligible primary architectures. The owner's existing <code>arena-exporter</code> recorder remains useful only as the rejected baseline and as an A/B comparison target in the Phase 1 spike. See <a href="#s5">§5.5</a>.</p>
+</div>
+</section>
+
+<section id="s2" aria-labelledby="h-s2">
+<h2 id="h-s2"><span class="num">02</span>What is verified vs. what is unknown</h2>
+<p class="lede">Every architecture-defining claim in this document carries one label. Claims re-verified by fetching the primary source during <em>this</em> run are <span class="badge b-vf">Verified fact</span>. Claims from the interrupted previous run that were <em>not</em> re-fetched here are <span class="badge b-pv">Previous-run evidence</span> and are treated as strong-but-unconfirmed.</p>
+
+<div class="tbl-scroll">
+<table>
+<caption>Table 2.1 — Verification ledger</caption>
+<thead><tr><th>Claim</th><th>Label</th><th>Basis / what would falsify it</th></tr></thead>
+<tbody>
+<tr><td>Electron <code>session.fromPartition('persist:…')</code> returns a persistent <code>Session</code> shared by all pages using the same partition string; non-prefixed partitions are in-memory.</td><td><span class="badge b-vf">Verified fact</span></td><td>Electron Session documentation, fetched this run. Falsified by an isolation test showing shared cookie/localStorage state between two distinct partition strings.</td></tr>
+<tr><td>Electron <code>Session</code> emits <code>will-download</code> (with <code>DownloadItem</code>, originating <code>webContents</code>, and possibly-null initiating frame) and can cancel via <code>preventDefault()</code>; exposes <code>clearData</code> with a <code>serviceWorkers</code> data type, <code>netLog</code>, <code>webRequest</code>, <code>serviceWorkers</code>, <code>getStoragePath()</code>, and <code>registerPreloadScript()</code>.</td><td><span class="badge b-vf">Verified fact</span></td><td>Electron Session documentation, fetched this run.</td></tr>
+<tr><td>Electron <code>webContents.debugger</code> is a main-process object with <code>attach(protocolVersion)</code>, <code>detach()</code>, <code>detach</code>/<code>message</code> events, and <code>sendCommand(...)</code>; the documented example uses <code>Network.requestWillBeSent</code> and <code>Network.enable</code>.</td><td><span class="badge b-vf">Verified fact</span></td><td>Electron <code>debugger</code> documentation, fetched this run. This establishes an instrumentation transport, <em>not</em> Arena capture correctness.</td></tr>
+<tr><td>CEF <code>CefResourceRequestHandler::GetResourceResponseFilter</code> runs on the IO thread and is documented for requests where <code>browser</code> and <code>frame</code> may be <code>NULL</code>, "for requests originating from service workers or CefURLRequest"; <code>OnResourceLoadComplete</code> reports status and <code>received_content_length</code>.</td><td><span class="badge b-vf">Verified fact</span></td><td><code>cef_resource_request_handler.h</code>, fetched this run. Falsified by a spike showing streamed Arena response bodies are unreachable through a response filter.</td></tr>
+<tr><td>MCP defines stdio and Streamable HTTP; clients <em>SHOULD</em> support stdio; stdio messages are newline-delimited JSON-RPC with logging on <code>stderr</code> only; HTTP servers <em>MUST</em> validate <code>Origin</code> and <em>SHOULD</em> bind localhost; cancellation uses an MCP <code>CancelledNotification</code>.</td><td><span class="badge b-vf">Verified fact</span></td><td>MCP specification 2025-11-25 "Transports", fetched this run.</td></tr>
+<tr><td>SQLCipher is a modified SQLite build (not a loadable plugin) providing transparent page-level AES-256-CBC encryption with per-page random IVs and per-page HMAC-SHA512 integrity, passphrase key derivation via PBKDF2-HMAC-SHA512 with a per-database random salt, support for supplying <em>raw binary key data</em>, encrypted WAL/journal pages, and <em>unencrypted transient temp files unless file-based temp storage is disabled</em>.</td><td><span class="badge b-vf">Verified fact</span></td><td>Zetetic SQLCipher design page, fetched this run.</td></tr>
+<tr><td>Electron's security checklist requires: no Node integration for remote content, context isolation on, sandboxing on, <code>setPermissionRequestHandler</code> for remote-content sessions, <code>webSecurity</code> untouched, navigation and new-window restriction, IPC sender validation, prefer custom protocols over <code>file://</code>, and never exposing raw IPC to untrusted web content.</td><td><span class="badge b-vf">Verified fact</span></td><td>Electron security tutorial, fetched this run. Directly shapes <a href="#s6">§6</a>.</td></tr>
+<tr><td>Electron exposes main-process/session service-worker querying and observation.</td><td><span class="badge b-pv">Previous-run evidence</span></td><td>Previous run inspected the ServiceWorkers / ServiceWorkerMain docs; not re-fetched here. Phase 1 must prove which service-worker traffic is <em>observable</em>, not merely queryable.</td></tr>
+<tr><td>CDP <code>Target</code>-domain auto-attach and worker-target coverage are reachable through Electron's debugger transport for Arena's real target graph.</td><td><span class="badge b-uk">Unknown</span></td><td>Method names and availability must be confirmed against the current protocol version during Phase 1 before being relied upon. <b>Do not present as fact.</b></td></tr>
+<tr><td>Arena's actual stream transport for generations (streamed fetch/SSE/WebSocket), message schema, pagination, and history reads.</td><td><span class="badge b-uk">Unknown</span></td><td>Requires a signed-in owner session. Not invented anywhere in this document.</td></tr>
+<tr><td>Whether any Arena history endpoint is non-mutating.</td><td><span class="badge b-uk">Unknown</span></td><td>Requires the owner-session non-mutation test in <a href="#s11">§11.4</a>. GET and a friendly name prove nothing.</td></tr>
+<tr><td>WKWebView's <code>WKURLSchemeHandler</code> cannot intercept internally-handled schemes (an exception is thrown), and multiple <code>WKProcessPool</code> instances are deprecated/ineffective.</td><td><span class="badge b-pv">Previous-run evidence</span></td><td>Previous run read the WebKit configuration header and Apple's documentation. Sufficient to disqualify WKWebView as <em>primary</em>; see <a href="#s5">§5.1</a>.</td></tr>
+<tr><td>Tauri/Wry uses the system WebKit webview on macOS.</td><td><span class="badge b-pv">Previous-run evidence</span></td><td>Previous run consulted Tauri's webview-versions reference. Sufficient to inherit WKWebView's capture limitations.</td></tr>
+<tr><td>Arena documents account-backed history, email/account workflows, and Code Arena conversations.</td><td><span class="badge b-pv">Previous-run evidence</span></td><td>Arena Help Center pages from the previous run. Product-level context only; not protocol evidence.</td></tr>
+<tr><td>Departure Mono is a monospaced pixel font by Helena Zhang under the SIL OFL; the official site stylesheet references <code>/assets/DepartureMono-Regular.woff2</code>.</td><td><span class="badge b-pv">Previous-run evidence</span></td><td>Previous run inspected <code>departuremono.com</code>. This report loads only that path; if it fails, the monospace fallback stack is used and no substitute source is invented.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">
+<span class="h">Typographic disclosure</span>
+<p>Only the <em>Regular</em> weight of Departure Mono was observed on the official site, so this document uses a single weight with letter-spacing and scale for hierarchy rather than inventing bold/italic asset URLs. If the remote <code>woff2</code> does not load in a given environment, the fallback stack (<code>ui-monospace</code>, SF Mono, Menlo, Consolas, Liberation Mono) is used and the document remains fully usable.</p>
+</div>
+</section>
+
+<section id="s3" aria-labelledby="h-s3">
+<h2 id="h-s3"><span class="num">03</span>Why Electron is recommended, and the exact reversal condition</h2>
+
+<h3>3.1 The decision rule</h3>
+<p><span class="badge b-rc">Recommendation</span> Choose the architecture that maximizes <em>observable capture completeness for architecture-critical Arena traffic</em> first, then minimize implementation and maintenance cost. Capture correctness dominates footprint, startup time, and binary size for this product, because an archive that silently misses stream bodies is worthless as a research corpus regardless of how pleasant it is to run.</p>
+<p>Electron wins on the composite because it is the only option that simultaneously provides: Chromium web-platform fidelity (so Arena behaves normally), a maintained main-process instrumentation transport, per-partition persistent browser state as a first-class primitive, per-partition network observation and netlog forensics, per-partition download control, and a TypeScript ecosystem an AI coding agent can maintain without a C++ toolchain.</p>
+
+<h3>3.2 Capture mechanisms outside page JavaScript (Electron)</h3>
+<p>This is the table the architecture must be judged on. Every row is a mechanism that does not require Arena's own JavaScript to cooperate.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 3.1 — Out-of-page capture mechanisms available in the recommended design</caption>
+<thead><tr><th>Mechanism</th><th>Where it runs</th><th>What it can observe</th><th>Label</th></tr></thead>
+<tbody>
+<tr><td><code>webContents.debugger</code> → CDP <code>Network</code> domain (<code>Network.enable</code>, <code>requestWillBeSent</code>, <code>responseReceived</code>, <code>dataReceived</code>, <code>loadingFinished</code>, <code>loadingFailed</code>)</td><td>Main process, per <code>WebContents</code></td><td>Request/response metadata and body-retrieval commands for network requests initiated by the page; the documented Electron example itself demonstrates receiving <code>Network.requestWillBeSent</code> and issuing <code>Network.enable</code>.</td><td><span class="badge b-vf">Verified fact</span> (transport) <span class="badge b-ht">Hypothesis to test</span> (Arena completeness)</td></tr>
+<tr><td>CDP <code>Fetch</code> domain</td><td>Main process</td><td>Optional interception/pause-and-resume per request, and body access at pause points.</td><td><span class="badge b-ht">Hypothesis to test</span> — confirm behavior through Electron's debugger transport</td></tr>
+<tr><td>CDP <code>WebSocket</code> domain</td><td>Main process</td><td>WebSocket frame payloads <em>if</em> Arena uses WebSockets; requires the <code>Network</code> domain enabled.</td><td><span class="badge b-ht">Hypothesis to test</span></td></tr>
+<tr><td>CDP <code>Target</code> domain / target lifecycle events</td><td>Main process</td><td>Target (frame, worker, service-worker) creation and destruction; enables attaching to new Arena surfaces as they appear.</td><td><span class="badge b-uk">Unknown</span> — verify exact auto-attach method against the current protocol version before relying on it</td></tr>
+<tr><td><code>session.webRequest</code> (<code>onBeforeRequest</code>, <code>onBeforeSendHeaders</code>, <code>onHeadersReceived</code>, <code>onCompleted</code>, <code>onErrorOccurred</code>)</td><td>Main process, <em>per partition</em></td><td>Request/response existence, status, timing, headers — partition-scoped, independent of any page. Not a response-body source.</td><td><span class="badge b-vf">Verified fact</span> (API exists) <span class="badge b-si">Strong inference</span> (sufficient as a completeness cross-check)</td></tr>
+<tr><td><code>session.netLog.startLogging(path)</code> / <code>stopLogging()</code></td><td>Main process, <em>per partition</em></td><td>A browser-level network log written to disk for offline gap forensics — the highest-fidelity diagnostic when the live pipeline misses something.</td><td><span class="badge b-vf">Verified fact</span> (API exists) <span class="badge b-si">Strong inference</span> (resolves capture-gap root causes)</td></tr>
+<tr><td><code>session.serviceWorkers</code> / <code>ServiceWorkerMain</code></td><td>Main process, <em>per partition</em></td><td>Registration and lifecycle observation of service workers. Observing a worker ≠ observing its <code>fetch</code> bodies.</td><td><span class="badge b-pv">Previous-run evidence</span> <span class="badge b-ht">Hypothesis to test</span></td></tr>
+<tr><td><code>session</code> <code>will-download</code> + <code>DownloadItem</code></td><td>Main process, <em>per partition</em></td><td>Direct download control with URL, originating webContents, initiating origin, and cancel/redirect hooks.</td><td><span class="badge b-vf">Verified fact</span></td></tr>
+<tr><td><code>webContents</code> <code>will-navigate</code>, <code>will-redirect</code>, <code>setWindowOpenHandler</code></td><td>Main process</td><td>Navigation and popup interception — required for email verification redirects, OAuth-ish landing pages, and challenge flows.</td><td><span class="badge b-pv">Previous-run evidence</span> (standard Electron surface)</td></tr>
+<tr><td>Minimal preload in the Arena partition, registered with <code>session.registerPreloadScript()</code>, exposing <em>nothing</em> via <code>contextBridge</code></td><td>Isolated world of the Arena renderer</td><td>Rendered-UI observations (DOM mutations, visible labels, revealed names) as <em>secondary independent evidence</em>, invisible and unreachable from Arena's page scripts.</td><td><span class="badge b-si">Strong inference</span> — relies on context isolation being on, which Electron's checklist requires and defaults to</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small"><b>Deliberate non-mechanism.</b> Page-world monkey-patching of <code>fetch</code>/<code>XMLHttpRequest</code>/<code>EventSource</code> is <em>not</em> part of the primary design. It is exactly what an extension must do and what an adversarial or simply evolving page can defeat.</p>
+
+<h3>3.3 Why not a lighter stack</h3>
+<p><span class="badge b-si">Strong inference</span> Electron's runtime cost is real and duplicated (Chromium per app, one renderer per active partition, plus main and helper processes). For an M3 Pro with 18 GB of unified memory running at most two live Arena partitions plus a small diagnostics UI and an MCP server, that cost is affordable and bounded by explicit quotas (<a href="#s21">§21.2</a>). The counterfactual — a lighter native shell with a materially weaker interception surface — is the failure mode this project exists to avoid.</p>
+
+<h3 id="reversal">3.4 The reversal condition (verbatim, non-negotiable)</h3>
+<div class="callout warn">
+<span class="h">Escalation gate — Electron → CEF</span>
+<p>If the Phase 1 falsification spike demonstrates that Electron cannot reliably capture an <b>architecture-critical class of Arena traffic</b> through maintained CDP / Session surfaces — specifically any of: (a) streamed generation response bodies for a supported mode, (b) worker- or service-worker-originated first-party request/response pairs, (c) an Arena surface whose traffic never appears in <code>Network</code> events or in <code>netLog</code>, or (d) target-graph attachment across Arena navigations — <b>and</b> a focused CEF spike using <code>CefResourceRequestHandler::GetResourceResponseFilter</code> demonstrably observes that same class, then the architecture switches to CEF for v1. The switch is a documented, budgeted reversal, not a failure.</p>
+<p>A custom Chromium fork is a <b>last resort only</b>: permitted solely if a specific required capability is impossible through maintained Electron <em>and</em> CEF surfaces. It is not recommended here, because no known requirement currently exceeds those surfaces.</p>
+</div>
+<p><b>Cost asymmetry to record honestly.</b> Reversing after Phase 3 means discarding the Electron capture package (roughly the browser binding layer and capture coordinator) while keeping the domain model, sanitizer, protocol catalog, storage, sync, MCP, and analysis packages intact — <em>provided</em> they were written against internal interfaces rather than Electron types. That constraint is enforced in <a href="#s21">§21.3</a>.</p>
+</section>
+
+<section id="s4" aria-labelledby="h-s4">
+<h2 id="h-s4"><span class="num">04</span>Electron vs. CEF — the serious contenders</h2>
+<p class="lede">This is where the report spends its detail. Both are Chromium-based, both can host a dedicated browser, both can isolate per account. The difference is <em>where</em> the observation hook sits and <em>who</em> has to maintain it.</p>
+
+<h3>4.1 The one primitive that matters</h3>
+<p><span class="badge b-vf">Verified fact</span> CEF's <code>CefResourceRequestHandler</code> runs on the IO thread and, among its callbacks, offers <code>GetResourceResponseFilter(browser, frame, request, response)</code> returning a <code>CefResponseFilter</code> — a streaming response-body filter. The header documentation repeatedly states that <code>browser</code> and <code>frame</code> "may be NULL for requests originating from service workers or CefURLRequest". That is the difference: CEF can hand you <em>bytes</em> for requests that have no page frame at all.</p>
+<p><span class="badge b-si">Strong inference</span> Electron's maintained public surfaces give equivalent <em>byte-level</em> access most reliably for frame-initiated traffic via CDP, and give partition-scoped metadata, netlog forensics, and download control for everything else. Whether that combination covers Arena's worker/service-worker-originated generation traffic is precisely the empirical question Phase 1 exists to answer.</p>
+
+<div class="tbl-scroll">
+<table>
+<caption>Table 4.1 — Focused comparison</caption>
+<thead><tr><th>Dimension</th><th>Electron / Chromium + CDP</th><th>CEF + native resource filtering</th></tr></thead>
+<tbody>
+<tr><td>Deepest documented body hook</td><td>CDP <code>Network</code>/<code>Fetch</code> body commands issued from the main process; plus <code>netLog</code> on disk.</td><td><code>GetResourceResponseFilter</code> → <code>CefResponseFilter</code>, IO thread, explicitly including NULL-frame (service worker / <code>CefURLRequest</code>) requests.</td></tr>
+<tr><td>Worker / service-worker-originated traffic</td><td><span class="badge b-ht">Hypothesis to test</span> Session exposes service-worker introspection; body capture depends on CDP worker-target reachability.</td><td><span class="badge b-si">Strong inference</span> Structurally favored: the filter is documented for requests with no frame.</td></tr>
+<tr><td>Streamed responses</td><td>Chunked events plus body assembly; must be reassembled and proven.</td><td>Byte-stream filter is inherently incremental; assembly is simpler in principle.</td></tr>
+<tr><td>WebSocket</td><td>CDP <code>WebSocket</code> domain frames, <em>if</em> reachable through Electron's transport.</td><td>Not a response filter concern; WebSockets are a separate CEF surface.</td></tr>
+<tr><td>Target lifecycle / early attachment</td><td>Attach at <code>WebContents</code> creation, before navigation where practical; target events for new surfaces. Exact auto-attach method must be confirmed.</td><td>Request handler is installed at the request-context level, so it precedes navigation by construction.</td></tr>
+<tr><td>Per-account isolation</td><td><code>session.fromPartition('persist:…')</code> — cookies, localStorage, IndexedDB, cache, service workers, downloads, all partition-scoped.</td><td><code>CefRequestContext</code> per account; also full isolation, but configured and wired in C++.</td></tr>
+<tr><td>Email sign-in / OTP / CAPTCHA / popups</td><td>Native Chromium behavior; window-open and navigation handlers to keep flows inside the app.</td><td>Native Chromium behavior; requires C++ lifecycle handler work.</td></tr>
+<tr><td>Downloads &amp; artifacts</td><td><code>will-download</code> per partition with <code>preventDefault()</code> and redirect capability.</td><td>Download handler callbacks in C++; equivalent capability, more code.</td></tr>
+<tr><td>Security boundary</td><td>Sandboxed renderers, context isolation, no Node in Arena renderers; documented 20-item checklist to satisfy.</td><td>Same Chromium sandbox model; application must implement its own renderer policy and process separation.</td></tr>
+<tr><td>Apple Silicon</td><td>Prebuilt arm64 artifacts; no local toolchain required to build.</td><td>Prebuilt CEF distributions exist; a local Xcode/CMake toolchain is still required to build <em>your</em> wrapper.</td></tr>
+<tr><td>Build / packaging complexity</td><td>Node + a bundler; native modules limited to SQLCipher binding and possibly a small helper.</td><td>CMake + Xcode, framework bundling, CEF version management, Objective-C++ shell, app sandbox/entitlement and notarization wiring.</td></tr>
+<tr><td>Agent maintainability</td><td><span class="badge b-ok">High</span> TypeScript end-to-end; the AI coding agent can read, patch, test, and diagnose without a C++ loop.</td><td><span class="badge b-warn">Lower</span> C++/Obj-C++ changes require compile-debug cycles and are materially harder for an agent to validate autonomously.</td></tr>
+<tr><td>Drift diagnostics</td><td><code>netLog</code> + capture manifest + rendered-UI reconciliation produce a machine-readable gap list.</td><td>Equivalent possible, but the diagnostics tooling is bespoke and must be built.</td></tr>
+<tr><td>Cost of being wrong</td><td>Reversible up to the end of Phase 3 by swapping the capture package.</td><td>Choosing CEF first is not reversible cheaply; the implementation cost is paid whether or not it was needed.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>4.2 Why Electron first despite CEF's deeper hook</h3>
+<ol>
+<li><b>Option value.</b> Electron's extra cost is a spike. CEF's extra cost is a permanent build surface, permanently on an M3 Pro development machine maintained largely by autonomous agents.</li>
+<li><b>Diagnostics depth.</b> <span class="badge b-vf">Verified fact</span> <code>session.netLog</code> gives a browser-level record for offline forensics. That single API substantially reduces the "why did we miss it?" debugging burden that made the extension approach painful.</li>
+<li><b>Partition primitive.</b> <span class="badge b-vf">Verified fact</span> Persistent partitions are one string away, per account, covering cookies, storage, cache, and service workers together.</li>
+<li><b>Risk of CEF's advantage being unnecessary.</b> Arena may deliver generations over ordinary frame-initiated streamed responses — the case CDP handles comfortably. Paying CEF's tax preemptively would be speculative.</li>
+</ol>
+
+<div class="callout">
+<span class="h">How to keep the option open</span>
+<p>The capture package (<code>packages/capture</code>) and browser package (<code>packages/browser</code>) are the <em>only</em> modules permitted to name Electron types. Everything downstream consumes a transport-neutral <code>CaptureEvent</code> union. If the spike reverses the decision, those two packages are replaced by a CEF implementation emitting the same union, and the rest of the system is untouched.</p>
+</div>
+</section>
+
+<section id="s5" aria-labelledby="h-s5">
+<h2 id="h-s5"><span class="num">05</span>Other alternatives, and the exact capture surface each one has</h2>
+<p class="lede">Each alternative is judged on the same question: <b>what capture mechanisms exist outside page JavaScript?</b> Being native, or being lightweight, does not by itself deepen capture.</p>
+
+<div class="tbl-scroll">
+<table>
+<caption>Table 5.1 — Qualitative architecture comparison (no arbitrary numeric scores)</caption>
+<thead><tr>
+<th>Capability</th><th>Swift + WKWebView</th><th>Electron + CDP</th><th>Tauri / Wry (WebKit)</th><th>CEF + response filter</th><th>Extension + companion</th><th>Export/import only</th>
+</tr></thead>
+<tbody>
+<tr><th>HTTPS response-body visibility</th><td class="n">Weak</td><td class="y">Strong</td><td class="n">Weak</td><td class="y">Strongest</td><td class="p">Partial</td><td class="n">None</td></tr>
+<tr><th>fetch / XHR</th><td class="p">Only via WKURLSchemeHandler, and not for schemes WebKit handles internally</td><td class="y">CDP Network/Fetch, main process</td><td class="n">Same WKWebView limits</td><td class="y">IO-thread filter</td><td class="p">Page-world patch</td><td class="n">—</td></tr>
+<tr><th>Streamed responses</th><td class="n">Not reliably observable</td><td class="p">Observable; reassembly must be proven</td><td class="n">Not reliably</td><td class="y">Byte-stream filter</td><td class="p">Often missed — reported failure mode</td><td class="n">—</td></tr>
+<tr><th>EventSource / SSE</th><td class="n">Weak</td><td class="p">Network-visible if frame-initiated</td><td class="n">Weak</td><td class="y">Yes</td><td class="p">Fragile</td><td class="n">—</td></tr>
+<tr><th>WebSocket</th><td class="n">Weak</td><td class="p">CDP WebSocket domain (verify reachability)</td><td class="n">Weak</td><td class="p">Separate surface</td><td class="p">Fragile</td><td class="n">—</td></tr>
+<tr><th>Worker / service-worker coverage</th><td class="n">Weak</td><td class="p">Session introspection; body capture unproven</td><td class="n">Weak</td><td class="y">Documented for NULL-frame requests</td><td class="n">Poor — service workers outlive page scripts</td><td class="n">—</td></tr>
+<tr><th>Target lifecycle &amp; early attachment</th><td class="p">Delegate-based, limited pre-navigation hooks</td><td class="y">Attach per WebContents; target events</td><td class="p">Limited</td><td class="y">Request-context-level, precedes navigation</td><td class="p">Post-load; lifecycle suspensions</td><td class="n">—</td></tr>
+<tr><th>DOM instrumentation</th><td class="y">Full</td><td class="y">Full (CDP DOM + isolated preload)</td><td class="y">Full</td><td class="y">Via CDP or injected script</td><td class="y">Full (content script)</td><td class="n">—</td></tr>
+<tr><th>Account / session isolation</th><td class="p"><code>WKWebsiteDataStore</code> per profile; multiple <code>WKProcessPool</code> instances deprecated/ineffective</td><td class="y">Persistent partitions per account</td><td class="p">System WebKit</td><td class="y">Request context per account</td><td class="p">Container/profile tricks; weak guarantees</td><td class="n">—</td></tr>
+<tr><th>Email auth / OTP / CAPTCHA / popups</th><td class="y">Compatible</td><td class="y">Compatible, controlled</td><td class="y">Compatible</td><td class="y">Compatible</td><td class="p">Compatible but lifecycle-fragile</td><td class="n">—</td></tr>
+<tr><th>Downloads / artifacts</th><td class="p">Delegate-based</td><td class="y"><code>will-download</code> per partition</td><td class="p">Limited</td><td class="y">Download handler</td><td class="p">Awkward artifact management (reported)</td><td class="n">—</td></tr>
+<tr><th>Security boundary</th><td class="y">Native, strong</td><td class="y">Sandbox + context isolation, must be configured</td><td class="y">Strong</td><td class="y">Strong, must be implemented</td><td class="p">Broad permissions surface</td><td class="y">Strongest</td></tr>
+<tr><th>Apple Silicon / footprint</th><td class="y">Best</td><td class="p">Duplicated Chromium runtime</td><td class="y">Best (system WebKit)</td><td class="p">Duplicated Chromium runtime</td><td class="y">No extra runtime</td><td class="y">No extra runtime</td></tr>
+<tr><th>Build complexity</th><td class="p">Xcode/Swift</td><td class="y">Low</td><td class="y">Low</td><td class="n">High</td><td class="y">Low</td><td class="y">None</td></tr>
+<tr><th>Agent maintainability</th><td class="p">Medium</td><td class="y">High</td><td class="y">High</td><td class="n">Low</td><td class="p">Medium</td><td class="y">High</td></tr>
+<tr><th>Drift diagnostics</th><td class="n">Weak</td><td class="y">netLog + capture manifest + gap list</td><td class="n">Weak</td><td class="p">Bespoke</td><td class="p">Weak</td><td class="n">None</td></tr>
+<tr><th>Deeper than existing extension?</th><td class="n">No</td><td class="y">Yes, materially</td><td class="n">No</td><td class="y">Yes, materially</td><td class="n">— (it is the baseline)</td><td class="n">No</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>5.1 Swift + WKWebView</h3>
+<p><span class="badge b-pv">Previous-run evidence</span> Apple's <code>WKURLSchemeHandler</code> is documented for <em>custom</em> URL schemes, and WebKit's own configuration header states that registering a handler for a scheme WebKit handles internally throws. It is therefore not a general interception hook for ordinary Arena HTTPS traffic. <span class="badge b-pv">Previous-run evidence</span> Multiple <code>WKProcessPool</code> instances are deprecated and no longer produce isolation. <b>Do not read "native" as "deeper".</b> Native integration, memory footprint, and macOS polish are genuine advantages; the core requirement — reliable response-body observation for Arena's real traffic — is not met by the public surface. Disqualified as primary; retained as a possible future thin client for <em>viewing</em> archive data, never for capture.</p>
+
+<h3>5.2 Tauri / Wry</h3>
+<p><span class="badge b-pv">Previous-run evidence</span> On macOS, Tauri/Wry uses the system WebKit webview. The small footprint is real and attractive, but Tauri inherits WKWebView's interception limits unless substantial custom native interception machinery is added — at which point the footprint advantage is spent and the maintenance profile approaches CEF's without CEF's documented response filter. <b>Not selected. Lightness is not the priority; capture correctness is.</b></p>
+
+<h3>5.3 CEF</h3>
+<p>Retained as the escalation target (<a href="#s3">§3.4</a>), not eliminated. See <a href="#s4">§4</a>.</p>
+
+<h3>5.4 Explicit export / import with no embedded browser</h3>
+<p>Structurally the safest and cheapest option, and worth keeping as a permanent <em>complementary</em> capability (<code>archive.import</code> / <code>export.create</code> in <a href="#s15">§15</a>). It cannot satisfy the product requirement, because the owner wants to <em>use Arena normally inside the application while it records</em>, and because any official export facility's availability, schema, and completeness are outside our control. Retained as an import adapter for future official exports and as a recovery path.</p>
+
+<h3>5.5 Extension + native companion (rejected baseline)</h3>
+<p>The owner's existing <code>arena-exporter</code> extension embodies the rejected pattern. Its reported failure modes map directly onto architectural causes that a dedicated browser fixes:</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 5.2 — Reported extension failures → architectural cause → dedicated-browser remedy</caption>
+<thead><tr><th>Reported symptom</th><th>Architectural cause</th><th>Remedy in this design</th></tr></thead>
+<tbody>
+<tr><td>Incomplete / missed capture</td><td>Observation lives in page world; service-worker and background traffic are invisible to page scripts; MV3 lifecycle suspension.</td><td>Main-process CDP + per-partition <code>webRequest</code> + <code>netLog</code>; observation independent of page JS lifetime.</td></tr>
+<tr><td>Missing parts of streams</td><td>Patch must be installed before the first <code>fetch</code>; races with application bootstrap; chunk reassembly in page context.</td><td>Attach before navigation where practical; reassemble from transport events in the main process; completeness recorded rather than assumed.</td></tr>
+<tr><td>Dependence on page/runtime interception</td><td>Single point of failure owned by the remote site.</td><td>Transport is primary; DOM/UI observation is a second, independent evidence stream used for reconciliation.</td></tr>
+<tr><td>Extension lifecycle weaknesses</td><td>Suspend/reload/reset cycles lose in-flight state.</td><td>Capture is an application process with crash recovery, durable queues, and checkpoints.</td></tr>
+<tr><td>Awkward artifact/download management</td><td>Extension cannot own filesystem paths cleanly; needs companion mechanisms.</td><td>Partition-scoped <code>will-download</code> with explicit cancel/redirect into the encrypted blob store.</td></tr>
+<tr><td>Need for companion mechanisms</td><td>Extension privilege ceiling.</td><td>No companion needed; one process tree owns browser, capture, storage, and MCP.</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small">Google OAuth, passkeys, and other third-party sign-in methods are <b>not requirements</b> and are not used as criteria anywhere in Table 5.1. Arena's email-based sign-in, driven by the owner in the embedded browser, is the required and sufficient authentication path.</p>
+</section>
+
+<section id="s6" aria-labelledby="h-s6">
+<h2 id="h-s6"><span class="num">06</span>Process and trust architecture</h2>
+<p class="lede">The remote Arena renderer is untrusted content. <span class="badge b-vf">Verified fact</span> Electron's own security guidance is explicit that displaying arbitrary remote content in Electron is a severe-risk scenario and prescribes: no Node integration for remote content, context isolation, sandboxing, a permission handler for remote-content sessions, <code>webSecurity</code> untouched, restricted navigation and window creation, validated IPC senders, custom protocols instead of <code>file://</code>, and no raw IPC exposed to untrusted web content. Every one of those is adopted below as a hard rule.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 900 470" width="100%" role="img" aria-label="Trust boundary diagram showing untrusted Arena renderers isolated from privileged application services, encrypted storage, and the MCP server.">
+  <defs>
+    <pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#dcd8cd" stroke-width="2"/>
+    </pattern>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#3c4048"/>
+    </marker>
+  </defs>
+  <style>
+    .lb{font-family:var(--font);font-size:10px;fill:#6a7078;letter-spacing:.12em}
+    .bx{fill:#fff;stroke:#16171a;stroke-width:1.4}
+    .bx2{fill:#fff;stroke:#3c4048;stroke-width:1}
+    .bxh{fill:#eaecfa;stroke:#2f3fa8;stroke-width:1.4}
+    .bxe{fill:#f8e9e9;stroke:#9a2b2b;stroke-width:1.2}
+    .tx{font-family:var(--font);font-size:11.5px;fill:#16171a}
+    .txs{font-family:var(--font);font-size:9.5px;fill:#6a7078}
+    .ln{stroke:#3c4048;stroke-width:1.2;fill:none;marker-end:url(#ah)}
+    .lnx{stroke:#9a2b2b;stroke-width:1.2;stroke-dasharray:4 3;fill:none}
+  </style>
+
+  <rect x="8" y="8" width="884" height="140" fill="url(#hatch)" stroke="#9a2b2b" stroke-width="1.6" stroke-dasharray="7 4"/>
+  <text class="lb" x="18" y="26">UNTRUSTED ZONE — REMOTE CONTENT · NO NODE · NO IPC · NO KEY ACCESS · NO MCP</text>
+  <rect class="bx" x="24" y="38" width="270" height="96"/><text class="tx" x="34" y="58">Arena renderer — Account A</text>
+  <text class="txs" x="34" y="76">partition persist:arena-&lt;a-uuid&gt;</text>
+  <text class="txs" x="34" y="92">nodeIntegration:false · sandbox:true</text>
+  <text class="txs" x="34" y="108">contextIsolation:true · CSP enforced</text>
+  <text class="txs" x="34" y="124">no contextBridge surface at all</text>
+  <rect class="bx" x="314" y="38" width="270" height="96"/><text class="tx" x="324" y="58">Arena renderer — Account B</text>
+  <text class="txs" x="324" y="76">partition persist:arena-&lt;b-uuid&gt;</text>
+  <text class="txs" x="324" y="92">same hardening rules</text>
+  <text class="txs" x="324" y="108">popups/challenges stay in-partition</text>
+  <text class="txs" x="324" y="124">independent capture coordinator</text>
+  <rect class="bx" x="604" y="38" width="272" height="96"/><text class="tx" x="614" y="58">Owner interaction only</text>
+  <text class="txs" x="614" y="76">email verification · OTP · MFA</text>
+  <text class="txs" x="614" y="92">CAPTCHA / challenge · redirects</text>
+  <text class="txs" x="614" y="108">This is the one action that</text>
+  <text class="txs" x="614" y="124">cannot be automated or MCP-driven.</text>
+
+  <rect x="8" y="164" width="884" height="112" fill="#fff" stroke="#2f3fa8" stroke-width="2"/>
+  <text class="lb" x="18" y="182">PRIVILEGED BOUNDARY — MAIN PROCESS · ALLOWLISTED, STRONGLY TYPED, SENDER-VALIDATED</text>
+  <rect class="bxh" x="24" y="192" width="200" height="72"/><text class="tx" x="34" y="212">Browser host</text>
+  <text class="txs" x="34" y="230">Session per account</text>
+  <text class="txs" x="34" y="246">nav / window-open policy</text>
+  <rect class="bxh" x="238" y="192" width="200" height="72"/><text class="tx" x="248" y="212">Capture coordinator ×N</text>
+  <text class="txs" x="248" y="230">CDP attach · sendCommand</text>
+  <text class="txs" x="248" y="246">netLog · will-download</text>
+  <rect class="bxh" x="452" y="192" width="200" height="72"/><text class="tx" x="462" y="212">Sanitizer + parsers</text>
+  <text class="txs" x="462" y="230">fail-closed redaction</text>
+  <text class="txs" x="462" y="246">adapter versioning</text>
+  <rect class="bxh" x="666" y="192" width="210" height="72"/><text class="tx" x="676" y="212">Application services</text>
+  <text class="txs" x="676" y="230">accounts · sync · jobs · delete</text>
+  <text class="txs" x="676" y="246">single impl. for GUI + MCP</text>
+
+  <line class="ln" x1="159" y1="140" x2="159" y2="188"/>
+  <line class="ln" x1="449" y1="140" x2="449" y2="188"/>
+  <text class="txs" x="56" y="158">CDP events (one-way, outward)</text>
+  <text class="txs" x="470" y="158">CDP events (one-way, outward)</text>
+  <text class="txs" x="240" y="158">netLog · downloads</text>
+  <line class="lnx" x1="740" y1="140" x2="740" y2="188"/>
+  <text class="txs" x="756" y="158">never: keys, fs, MCP</text>
+
+  <rect x="8" y="292" width="430" height="164" fill="#fff" stroke="#16171a" stroke-width="1.6"/>
+  <text class="lb" x="18" y="310">ENCRYPTED AT REST</text>
+  <rect class="bx2" x="24" y="320" width="190" height="58"/><text class="tx" x="34" y="340">SQLCipher archive</text>
+  <text class="txs" x="34" y="358">normalized state + FTS5</text>
+  <text class="txs" x="34" y="370">WAL pages encrypted</text>
+  <rect class="bx2" x="228" y="320" width="196" height="58"/><text class="tx" x="238" y="340">Encrypted blob store</text>
+  <text class="txs" x="238" y="358">per-blob AES-GCM key</text>
+  <text class="txs" x="238" y="370">derived from archive key</text>
+  <rect class="bxe" x="24" y="392" width="400" height="52"/><text class="tx" x="34" y="412">macOS Keychain — random 32-byte archive key</text>
+  <text class="txs" x="34" y="430">never in config, logs, fixtures, exports, diagnostics, or the DB</text>
+
+  <rect x="452" y="292" width="440" height="164" fill="#fff" stroke="#16171a" stroke-width="1.6"/>
+  <text class="lb" x="462" y="310">AGENT + OPERATOR INTERFACES</text>
+  <rect class="bx2" x="466" y="320" width="196" height="56"/><text class="tx" x="476" y="340">MCP server (stdio)</text>
+  <text class="txs" x="476" y="358">newline-delimited JSON-RPC</text>
+  <text class="txs" x="476" y="370">child of the agent, not a daemon</text>
+  <rect class="bx2" x="676" y="320" width="202" height="56"/><text class="tx" x="686" y="340">Minimal diagnostics UI</text>
+  <text class="txs" x="686" y="358">same service layer as MCP</text>
+  <text class="txs" x="686" y="370">capture gaps · drift · jobs</text>
+  <rect class="bx2" x="466" y="390" width="412" height="54"/><text class="tx" x="476" y="410">Optional analysis worker</text>
+  <text class="txs" x="476" y="428">deterministic profiles · quota-bounded · no network</text>
+
+  <line class="ln" x1="338" y1="286" x2="338" y2="292"/>
+  <line class="ln" x1="600" y1="286" x2="600" y2="292"/>
+  <line class="ln" x1="672" y1="292" x2="672" y2="286"/>
+  <line class="ln" x1="560" y1="350" x2="676" y2="350"/>
+  <line class="ln" x1="562" y1="414" x2="676" y2="414"/>
+</svg>
+<figcaption>Figure 6.1 — Trust boundaries. Remote Arena content can emit CDP events outward and nothing inward. Storage is encrypted with a Keychain-held random key. GUI and MCP share one service layer.</figcaption>
+</figure>
+
+<h3>6.1 Hard rules for the Arena renderers</h3>
+<ul>
+<li><code>nodeIntegration: false</code>, <code>nodeIntegrationInWorker: false</code>, <code>sandbox: true</code>, <code>contextIsolation: true</code>, <code>webSecurity</code> untouched, <code>experimentalFeatures</code> off, <code>allowRunningInsecureContent</code> off.</li>
+<li><b>No privileged preload in Arena content.</b> A session-registered preload may exist for DOM observation, but it must expose <em>zero</em> <code>contextBridge</code> surface. Observation is one-way (a message to main only, on a channel Arena cannot read) — and if that channel cannot be proven unreachable, the preload is dropped and only transport capture is used.</li>
+<li>A per-partition <code>setPermissionRequestHandler</code> that denies everything except what Arena demonstrably requires, recorded in the protocol catalog.</li>
+<li>App UI is served through a privileged custom protocol, never <code>file://</code>.</li>
+<li>Navigation and <code>setWindowOpenHandler</code> allowlists are per-account: Arena first-party origins plus the authentication/mail flows the owner needs, with popups kept in the owning partition.</li>
+<li>Electron fuses are set to disable <code>runAsNode</code> and CLI inspection paths; the shipped binary is not a general script runner.</li>
+<li><b>Archive, storage, MCP, and key modules are never importable from a renderer.</b> They are separate packages with an enforced dependency-direction rule; violating imports fail the build, not a review.</li>
+</ul>
+
+<h3>6.2 IPC discipline</h3>
+<p>IPC exists only between the trusted app UI renderer and main. It is an allowlist of named channels with typed payloads validated on both sides, every handler asserting the sender frame's origin. There is <em>no</em> generic invoke passthrough. The MCP server does not use IPC at all: it is a separate process/interface that calls the same in-process service layer as the GUI — never a parallel implementation with divergent behavior.</p>
+</section>
+
+<section id="s7" aria-labelledby="h-s7">
+<h2 id="h-s7"><span class="num">07</span>Simultaneous multi-account partition design</h2>
+<p class="lede">Two or more Arena accounts must be signed in and usable <em>at the same time</em>. This is not an account switcher: each account is an independently failing subsystem.</p>
+
+<figure class="diagram">
+<div class="lanes" role="img" aria-label="Two isolated account partitions, each with its own session, view, capture coordinator, sync cursor and destructive scope.">
+  <div class="lane privileged">
+    <div class="lane-h">Application core (single)</div>
+    <div class="row">
+      <div class="box"><b>Encrypted archive</b><span>rows keyed by (account_id, source_id)</span></div>
+      <div class="box"><b>Protocol catalog</b><span>shared schema, per-account observations</span></div>
+      <div class="box"><b>Job scheduler</b><span>per-account concurrency budget</span></div>
+      <div class="box"><b>MCP + UI service layer</b><span>every call carries account scope</span></div>
+    </div>
+  </div>
+  <div class="arrow">▲ one account-scoped service facade per partition ▲</div>
+  <div class="lane">
+    <div class="lane-h">Account A partition</div>
+    <div class="row">
+      <div class="box hot"><b>Session persist:arena-&lt;a-uuid&gt;</b><span>cookies · localStorage · sessionStorage · cache · service workers</span></div>
+      <div class="box hot"><b>WebContents / view</b><span>own navigation &amp; popup policy</span></div>
+      <div class="box hot"><b>Capture coordinator A</b><span>CDP attach · netLog A · will-download A</span></div>
+      <div class="box"><b>Sync cursor A</b><span>checkpoint · coverage gaps · job budget</span></div>
+      <div class="box"><b>Destructive scope A</b><span>deletion requires separate intent token</span></div>
+    </div>
+  </div>
+  <div class="lane">
+    <div class="lane-h">Account B partition</div>
+    <div class="row">
+      <div class="box hot"><b>Session persist:arena-&lt;b-uuid&gt;</b><span>no shared cookie jar with A</span></div>
+      <div class="box hot"><b>WebContents / view</b><span>independent window-open allowlist</span></div>
+      <div class="box hot"><b>Capture coordinator B</b><span>separate CDP session &amp; netLog B</span></div>
+      <div class="box"><b>Sync cursor B</b><span>resumable independently of A</span></div>
+      <div class="box"><b>Destructive scope B</b><span>never affected by A's operations</span></div>
+    </div>
+  </div>
+</div>
+<figcaption>Figure 7.1 — Partition isolation. Failure in one lane pauses only that lane.</figcaption>
+</figure>
+
+<h3>7.1 Isolation inventory</h3>
+<p><span class="badge b-vf">Verified fact</span> <code>session.fromPartition('persist:…')</code> yields a persistent session shared by all pages using the same partition string; a non-prefixed partition is in-memory. Each account therefore receives a distinct persistent partition string, and <code>clearData</code> can target that partition's data types — including <code>serviceWorkers</code>, <code>cache</code>, <code>cookies</code>, <code>indexedDB</code>, and <code>localStorage</code> — without touching the other account.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 7.1 — Per-account isolation requirements and mechanism</caption>
+<thead><tr><th>Must be isolated</th><th>Mechanism</th><th>Proof required</th></tr></thead>
+<tbody>
+<tr><td>Cookies</td><td>Distinct persistent partition</td><td>Spike: sign in A and B, assert no cookie for B's identity is visible from A's <code>webContents</code>; assert <code>clearData</code> on A leaves B signed in.</td></tr>
+<tr><td>localStorage / sessionStorage</td><td>Distinct persistent partition</td><td>Spike: write a sentinel key in A, assert absence in B after reload.</td></tr>
+<tr><td>HTTP cache</td><td>Distinct persistent partition</td><td>Spike: clear cache in A; assert B's authenticated responses still resolve without re-auth.</td></tr>
+<tr><td>Service-worker state</td><td>Distinct partition + <code>serviceWorkers</code> introspection</td><td>Spike: enumerate workers per partition; assert worker sets are disjoint.</td></tr>
+<tr><td>Browser session/partition object</td><td>One <code>Session</code> and one coordinator per account</td><td>Unit test: no coordinator can resolve another account's <code>Session</code> handle.</td></tr>
+<tr><td>Capture pipeline</td><td>Separate CDP attachment, queue, and netLog per account; events tagged at ingest</td><td>Test: an event injected into A's pipeline cannot be attributed to B.</td></tr>
+<tr><td>Authentication authority</td><td>Per-account identity record bound to the partition; sign-in state observed per partition only</td><td>Test: A signing out does not change B's auth state or authority.</td></tr>
+<tr><td>Provenance</td><td><code>account_id</code> on every record and observation</td><td>Schema test: no scoped table accepts a row without account scope.</td></tr>
+<tr><td>History sync state</td><td>Per-account cursor, job, and coverage ledger</td><td>Test: cancel A's sync; B's cursor and job are untouched.</td></tr>
+<tr><td>Destructive-action scope</td><td>Intent token encodes exact account scope; confirmation must match</td><td>Test: an intent token minted for A cannot delete B's rows.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>7.2 Identifier hygiene</h3>
+<p>Partition names use the form <code>persist:arena-&lt;internal-account-uuid&gt;</code>, never an email address or any other owner-identifying string. The mapping from the owner-facing label (which may be the account email, stored encrypted and only for display) to the internal UUID lives in the archive DB, not in the filesystem path.</p>
+
+<h3>7.3 Cross-account source-ID collisions</h3>
+<div class="callout danger">
+<span class="h">Non-negotiable</span>
+<p>Arena source identifiers (conversation IDs, message IDs) are <b>scoped</b>, not global. The stable local identity is always an internal UUID. Uniqueness is <code>(account_id, source_namespace, source_id)</code>. Two records with identical text, identical timestamps, and identical source IDs from different accounts <b>must not</b> merge; if the same <code>source_id</code> appears under two accounts, that is recorded as a <code>SOURCE_ID_CONFLICT</code> observation pair, never resolved silently. Conversely, identical text within one account is also insufficient proof of duplication — dedup requires matching identity observations, not text hashes.</p>
+</div>
+
+<h3>7.4 Independent failure</h3>
+<ul>
+<li>A signs out → A's capture authority becomes <code>UNAUTHENTICATED</code>, A's sync pauses, A's queued events are retained and marked <code>AWAITING_REAUTH</code>. B continues unaffected.</li>
+<li>A hits a CAPTCHA/challenge → A reports <code>NEEDS_OWNER_INTERACTION</code> with a deep link to A's view. B unaffected.</li>
+<li>A's parser drifts → only A's affected protocol family is degraded; B keeps full capture.</li>
+<li>A's identity appears to change → A halts and requires explicit owner verification before rebinding. No automatic rebind, ever.</li>
+<li>MCP client disconnects → long-running jobs continue server-side with explicit continuation and cancellation semantics (<a href="#s15">§15.6</a>).</li>
+</ul>
+</section>
+
+<section id="s8" aria-labelledby="h-s8">
+<h2 id="h-s8"><span class="num">08</span>Discovery and the protocol catalog</h2>
+<p class="lede">Discovery is a maintained product capability, not a one-off reverse-engineering session. Every first-party interaction the owner performs is observed, classified, and recorded as a catalog entry with drift status.</p>
+
+<h3>8.1 Catalog entry</h3>
+<pre><code><span class="c">// packages/protocol/src/catalog.ts</span>
+<span class="k">export type</span> TransportClass =
+  | <span class="s">'fetch'</span> | <span class="s">'xhr'</span> | <span class="s">'eventsource'</span> | <span class="s">'websocket'</span>
+  | <span class="s">'document'</span> | <span class="s">'asset'</span> | <span class="s">'worker-fetch'</span> | <span class="s">'unknown'</span>;
+
+<span class="k">export type</span> MutationClass = <span class="s">'read'</span> | <span class="s">'suspected-mutation'</span> | <span class="s">'unknown'</span>;
+
+<span class="k">export type</span> DriftStatus =
+  | <span class="s">'stable'</span>          <span class="c">// shape matches the pinned adapter</span>
+  | <span class="s">'schema-drift'</span>     <span class="c">// shape changed; adapter version mismatch</span>
+  | <span class="s">'endpoint-missing'</span> <span class="c">// previously observed, now absent</span>
+  | <span class="s">'endpoint-new'</span>     <span class="c">// observed for the first time</span>
+  | <span class="s">'unclassified'</span>;
+
+<span class="k">export interface</span> ProtocolCatalogEntry {
+  catalogId: string;               <span class="c">// internal UUID</span>
+  adapterId: string;               <span class="c">// e.g. 'arena.text-generation.v1'</span>
+  adapterVersion: number;          <span class="c">// bumped whenever the parser changes</span>
+  firstPartyOrigin: string;        <span class="c">// Arena web origin — never a credential</span>
+  urlFamily: string;               <span class="c">// sanitized template: path shape + {param} placeholders</span>
+  httpMethods: string[];           <span class="c">// recorded only where safe to record</span>
+  transportClass: TransportClass;
+  mutationClass: MutationClass;    <span class="c">// 'read' only after the non-mutation test passes</span>
+  requestSchemaFamily: string;     <span class="c">// structural fingerprint, not a captured body</span>
+  responseSchemaFamily: string;
+  captureMechanism: CaptureMechanism;
+  sanitizationStatus: <span class="s">'clean'</span> | <span class="s">'redacted'</span> | <span class="s">'failed-closed'</span>;
+  evidenceStatus: <span class="s">'observed'</span> | <span class="s">'inferred'</span> | <span class="s">'reconstructed-from-ui'</span>;
+  confidence: <span class="s">'low'</span> | <span class="s">'medium'</span> | <span class="s">'high'</span>;
+  firstObservedAt: string;         <span class="c">// ISO-8601</span>
+  lastObservedAt: string;
+  observedByAccounts: string[];    <span class="c">// internal account UUIDs</span>
+  driftStatus: DriftStatus;
+  completenessNotes: string;
+  usedByWorkflows: string[];       <span class="c">// 'battle' | 'direct-chat' | 'history' | 'reveal' | ...</span>
+}
+</code></pre>
+
+<h3>8.2 What the catalog is for</h3>
+<ul>
+<li><b>Coverage accounting.</b> The set of catalog entries with <code>evidenceStatus: 'observed'</code> defines what the archive claims to understand. Anything outside it is a declared gap, surfaced by <code>diagnostics.capture_gaps</code>.</li>
+<li><b>Drift detection.</b> When a response no longer matches <code>responseSchemaFamily</code>, the entry flips to <code>schema-drift</code>, the adapter is marked degraded, and ingestion continues into <code>UNKNOWN_OBSERVATION</code> rather than dropping data.</li>
+<li><b>Mutation safety.</b> <code>mutationClass</code> becomes <code>'read'</code> only after the owner-session non-mutation test in <a href="#s11">§11.4</a> passes for that specific operation. Until then sync refuses to use it as a backfill adapter.</li>
+<li><b>Agent maintainability.</b> A coding agent reads the catalog to learn the current wire surface without ever needing credentials, and can regenerate fixtures from the retained sanitized evidence.</li>
+</ul>
+
+<div class="callout">
+<span class="h">Owner-data boundary — vocabulary discipline</span>
+<p>This system performs <b>authenticated first-party reads using the owner's own Arena session inside the owner's own browser partition</b>, and it maintains ordinary browser automation/anti-bot compatibility by behaving like a real browser. It does <b>not</b> perform access-control workarounds. Not every undocumented endpoint is a "bypass"; that term is reserved for deliberately circumventing authorization, which is out of scope by policy. A conversation ID or URL alone does not establish ownership: every backfill and capture operation is bound to a verified account/session partition, and no attempt is made to read data not belonging to the authenticated owner.</p>
+</div>
+
+<h3>8.3 Sanitization happens before durability</h3>
+<p>Raw evidence exists only to support parser debugging, drift detection, reparsing, and provenance. It is sanitized <em>before</em> any durable write. The application must never persist a credential-dumping HAR.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 8.1 — Sanitization policy</caption>
+<thead><tr><th>Category</th><th>Disposition</th></tr></thead>
+<tbody>
+<tr><td><code>authorization</code>, <code>cookie</code>, <code>set-cookie</code>, <code>x-csrf-*</code>, proxy/auth headers</td><td class="n">Removed at ingest; only a boolean presence flag for the header <em>name</em> may be retained</td></tr>
+<tr><td>Passwords, OTPs, verification codes, OAuth codes, bearer tokens</td><td class="n">Never retained in any form, in any artifact</td></tr>
+<tr><td>Sensitive query parameters (tokens, signatures, expiries)</td><td class="n">Replaced with <code>&lt;redacted&gt;</code> in URL templates</td></tr>
+<tr><td>Unrelated private response fields (PII, billing, other users)</td><td class="n">Dropped by schema allowlist, not denylist</td></tr>
+<tr><td>Conversation/message text, model labels, positions, votes, timestamps, structure</td><td class="y">Retained — this is the research corpus</td></tr>
+<tr><td>URL shape, method, status, timing, content-type, sizes, transport class</td><td class="y">Retained — needed for catalog and drift</td></tr>
+<tr><td>Body digests</td><td class="y">Retained for identity/reconciliation; a digest is not reversible</td></tr>
+<tr><td><code>netLog</code> output</td><td class="p">Restricted diagnostic artifact: may contain sensitive material, is <em>never</em> ingested into the archive, excluded from export, covered by deletion, and off by default</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Fail closed.</b> If the sanitizer cannot classify a payload — new field, unexpected encoding, oversized body, parse error — the pipeline persists a sanitized <em>unknown</em> observation (digest, shape, sizes, catalog reference) and refuses to persist the raw bytes. A sanitizer failure is never a reason to keep raw evidence "just in case".</p>
+</section>
+
+<section id="s9" aria-labelledby="h-s9">
+<h2 id="h-s9"><span class="num">09</span>Live capture architecture</h2>
+
+<figure class="diagram">
+<div class="pipe" role="img" aria-label="Capture pipeline: attach, observe, tag, sanitize, parse, reconcile, persist.">
+  <div class="stage"><b>1 · Attach</b><span>Per-account <code>WebContents</code>; CDP <code>Network</code> (+ <code>Fetch</code>, <code>WebSocket</code>, target lifecycle as proven) enabled before/at first navigation. <code>webRequest</code> and optional <code>netLog</code> active at partition level.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>2 · Observe</b><span>Request/response metadata, streaming chunks, socket frames, downloads, worker/target events. One-way out of the untrusted renderer.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>3 · Tag</b><span>Stamp <code>account_id</code>, partition, target/session id, monotonic sequence, wall clock, capture mechanism, observation id.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>4 · Sanitize</b><span>Fail-closed redaction. Emits <code>SanitizedObservation</code> + digest. Raw bytes die here unless explicitly promoted to restricted evidence.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>5 · Classify + parse</b><span>Match against protocol catalog; run versioned adapter. Unknown → <code>UNKNOWN_OBSERVATION</code>, adapter degraded.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>6 · Reconcile</b><span>Merge transport evidence with independent rendered-UI evidence. Idempotent; never downgrades stronger provenance.</span></div>
+  <div class="arrow">▸</div>
+  <div class="stage"><b>7 · Persist</b><span>Transactional write: normalized rows + FTS update + immutable observation + completeness state. Blobs to encrypted store.</span></div>
+</div>
+<figcaption>Figure 9.1 — Capture pipeline. Stages 4–6 are transport-neutral and survive a switch to CEF unchanged.</figcaption>
+</figure>
+
+<h3>9.1 Attachment strategy</h3>
+<ul>
+<li><b>Earliest practical.</b> Enable CDP domains at <code>WebContents</code> creation, before the first navigation, so a generation request is never pre-dated by our own attach.</li>
+<li><b>Re-attach defensively.</b> Handle <code>detach</code> events (explicit detach, DevTools invocation, crash) with bounded re-attach and a recorded gap covering the detached interval.</li>
+<li><b>Follow the target graph.</b> New frames, popups, and workers must inherit capture policy. <span class="badge b-uk">Unknown</span> The exact CDP auto-attach method must be confirmed against the current protocol version during Phase 1; until confirmed, the fallback is per-<code>WebContents</code> attach plus explicit handling of contents created by the window-open handler.</li>
+<li><b>Survive navigation.</b> Capture state is keyed by logical operation, not by page lifetime, so a mid-generation navigation or reload does not orphan the stream.</li>
+</ul>
+
+<h3>9.2 Streaming reconstruction</h3>
+<p><span class="badge b-ht">Hypothesis to test</span> Arena may stream generations over streamed fetch, SSE, or WebSockets, and it may differ by mode. The design is transport-agnostic: a <code>StreamAssembler</code> accepts ordered chunks tagged with <code>(account_id, target_id, request_id, sequence)</code>, tolerates gaps by recording them, and produces a reconstruction digest. If Arena uses SSE, the reconstructor must handle multi-line events, <code>retry:</code>, and interleaved commentary events. If WebSocket, it must handle fragmentation and bidirectional frames. None of these specifics are asserted here; they are the spike's output.</p>
+<p><b>Stopped and failed generations are signal, not noise.</b> A stop produces a distinguishable terminal event; a backend failure a different one; a network drop a third. Each yields a different <code>completion_state</code> and a different completeness claim (<a href="#s10">§10</a>).</p>
+
+<h3>9.3 Downloads and generated artifacts</h3>
+<p><span class="badge b-vf">Verified fact</span> The partition-scoped <code>will-download</code> event fires with the <code>DownloadItem</code>, the originating <code>webContents</code>, and the initiating frame (which may be <code>null</code>), and may be cancelled via <code>preventDefault()</code>. Artifacts are therefore either (a) allowed to download into a quarantine directory and then encrypted into the blob store, or (b) intercepted and re-fetched through the owner's session. Filenames are treated as untrusted strings; MIME sniffing and size caps apply before any blob write.</p>
+
+<h3>9.4 Secondary rendered-UI evidence</h3>
+<p>A DOM observation channel exists so that transport evidence can be <em>corroborated or contradicted</em> by what the owner actually saw: visible model labels, blind labels, participant positions, post-vote reveals, stop-button state, error banners. It is recorded as a separate observation type with its own evidence mechanism, never merged into transport observations, and never allowed to fabricate text that transport capture did not deliver. Where UI text is the only source, the record is explicitly <code>UI_ONLY_RECONSTRUCTION</code> with lower completeness — <em>never</em> silently presented as complete.</p>
+</section>
+
+<section id="s10" aria-labelledby="h-s10">
+<h2 id="h-s10"><span class="num">10</span>Capture completeness and reconciliation</h2>
+<p class="lede">The archive's value depends on never confusing "we inferred this" with "this is what the model said". Completeness is therefore a required, machine-readable property of every stored response.</p>
+
+<h3>10.1 Response completeness state machine</h3>
+<figure class="diagram">
+<svg viewBox="0 0 900 290" width="100%" role="img" aria-label="State machine for response capture completeness, from request observed through terminal states.">
+  <style>
+    .n{font-family:var(--font);font-size:11px;fill:#16171a}
+    .b{fill:#fff;stroke:#3c4048;stroke-width:1.2}
+    .bs{fill:#eaecfa;stroke:#2f3fa8;stroke-width:1.4}
+    .bt{fill:#e6f2ec;stroke:#1d6b47;stroke-width:1.4}
+    .bw{fill:#fbf1de;stroke:#8a5a00;stroke-width:1.4}
+    .bd{fill:#f8e9e9;stroke:#9a2b2b;stroke-width:1.4}
+    .e{stroke:#3c4048;stroke-width:1.1;fill:none;marker-end:url(#ah2)}
+    .el{font-family:var(--font);font-size:9px;fill:#6a7078}
+  </style>
+  <defs><marker id="ah2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#3c4048"/></marker></defs>
+  <rect class="b" x="10" y="120" width="112" height="44"/><text class="n" x="24" y="146">REQUEST_SEEN</text>
+  <rect class="bs" x="152" y="120" width="120" height="44"/><text class="n" x="166" y="146">STREAMING</text>
+  <rect class="bt" x="322" y="34" width="176" height="48"/><text class="n" x="332" y="54">COMPLETED_NORMAL</text><text class="n" x="332" y="70">full · high confidence</text>
+  <rect class="bw" x="322" y="118" width="176" height="48"/><text class="n" x="332" y="138">STOPPED_BY_USER</text><text class="n" x="332" y="154">intentional tail</text>
+  <rect class="bd" x="322" y="202" width="176" height="48"/><text class="n" x="332" y="222">FAILED_BACKEND</text><text class="n" x="332" y="238">partial or empty</text>
+  <rect class="bd" x="532" y="118" width="176" height="48"/><text class="n" x="542" y="138">NETWORK_INTERRUPT</text><text class="n" x="542" y="154">truncated stream</text>
+  <rect class="bw" x="532" y="34" width="176" height="48"/><text class="n" x="542" y="54">OBSERVER_MISSED_START</text><text class="n" x="542" y="70">attached after begin</text>
+  <rect class="bw" x="532" y="202" width="176" height="48"/><text class="n" x="542" y="222">OBSERVER_MISSED_END</text><text class="n" x="542" y="238">detached before end</text>
+  <rect class="bw" x="740" y="118" width="146" height="48"/><text class="n" x="750" y="138">PARSER_UNSUPPORTED</text><text class="n" x="750" y="154">adapter degraded</text>
+  <line class="e" x1="122" y1="142" x2="150" y2="142"/>
+  <line class="e" x1="272" y1="132" x2="320" y2="66"/><text class="el" x="278" y="94">terminal ok</text>
+  <line class="e" x1="272" y1="142" x2="320" y2="142"/><text class="el" x="284" y="134">stop</text>
+  <line class="e" x1="272" y1="152" x2="320" y2="220"/><text class="el" x="278" y="196">error event</text>
+  <line class="e" x1="272" y1="150" x2="530" y2="150"/><text class="el" x="360" y="146">chunk gap / socket close</text>
+  <line class="e" x1="498" y1="202" x2="700" y2="164"/><text class="el" x="520" y="198">unclassified body</text>
+  <line class="e" x1="160" y1="120" x2="530" y2="60"/><text class="el" x="300" y="26">attached late</text>
+  <line class="e" x1="498" y1="34" x2="600" y2="200"/><text class="el" x="560" y="120">detached early</text>
+</svg>
+<figcaption>Figure 10.1 — Completeness is derived from observed terminal conditions, not from "a response exists". Every non-normal terminal state is recorded explicitly.</figcaption>
+</figure>
+
+<div class="tbl-scroll">
+<table>
+<caption>Table 10.1 — Completeness vocabulary (these states must never be conflated)</caption>
+<thead><tr><th>State</th><th>Meaning</th><th>Analysis treatment</th></tr></thead>
+<tbody>
+<tr><td><code>COMPLETED_NORMAL</code></td><td>Terminal success observed; stream reassembled with no recorded gaps</td><td>Eligible for all profiles</td></tr>
+<tr><td><code>STOPPED_BY_USER</code></td><td>Owner stopped generation; tail intentionally truncated</td><td>Eligible; length profiles must exclude or flag truncation</td></tr>
+<tr><td><code>FAILED_BACKEND</code></td><td>Model/backend error surfaced by Arena</td><td>Excluded from style profiles; retained for behavior analysis</td></tr>
+<tr><td><code>NETWORK_INTERRUPT</code></td><td>Transport failed mid-stream</td><td>Excluded from style profiles; retained for capture diagnostics</td></tr>
+<tr><td><code>OBSERVER_MISSED_START</code> / <code>OBSERVER_MISSED_END</code></td><td>Our attach/detach window did not cover the operation</td><td>Excluded from profiles; counted as a coverage gap</td></tr>
+<tr><td><code>PARSER_UNSUPPORTED</code> / <code>SCHEMA_DRIFT</code></td><td>Adapter could not interpret a well-observed body</td><td>Retained as unknown observation; excluded until reparsed</td></tr>
+<tr><td><code>UI_ONLY_RECONSTRUCTION</code></td><td>Text recovered from the rendered page, not the wire</td><td>Excluded by default from style profiles; opt-in only</td></tr>
+<tr><td><code>BACKFILLED</code></td><td>Obtained by history replay rather than live capture</td><td>Eligible, with <code>acquisition = 'backfill'</code> recorded</td></tr>
+<tr><td><code>CONFLICTING_EVIDENCE</code></td><td>Transport and UI observations disagree materially</td><td>Excluded until resolved; surfaced in diagnostics</td></tr>
+<tr><td><code>PARTIAL</code> (composite)</td><td>Any of the above where content exists but is not complete</td><td>Never labeled complete; always carries the reason</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>10.2 Idempotent ingestion</h3>
+<p>Observations may arrive duplicated, out of order, after navigation, after reconnect, after a model reveal, or during an overlapping history sync. Rules:</p>
+<ol>
+<li>Every observation carries a stable <code>observation_id</code> derived from <code>(account_id, target_id, request_id, sequence)</code>; re-inserting the same observation is a no-op, not an update.</li>
+<li>Normalized rows are updated only by observations of <em>equal or higher</em> evidence strength. Ordering: transport terminal &gt; transport partial &gt; history replay read &gt; rendered UI &gt; inference.</li>
+<li>Newer never beats stronger. A late UI observation cannot overwrite an earlier transport observation of the same field.</li>
+<li>All writes are transactional: normalized row + FTS update + observation insert + completeness advance together, or none of them.</li>
+<li>Every mutation of a normalized row appends to a per-record revision history so reparsing is replayable and auditable.</li>
+</ol>
+
+<h3>10.3 Reveals are additive, never retroactive</h3>
+<div class="callout ok">
+<span class="h">Identity rule</span>
+<p>A post-vote reveal produces a <em>new</em> identity observation with its own timestamp and evidence mechanism. It must not be applied backwards to claim the model's identity was known when the turn was produced. The turn's earlier state — "blind label known, identity unknown" — remains a first-class historical fact, which is exactly the property that makes the corpus useful for studying blind-versus-revealed behavior.</p>
+</div>
+</section>
+
+<section id="s11" aria-labelledby="h-s11">
+<h2 id="h-s11"><span class="num">11</span>History backfill and synchronization</h2>
+<p class="lede">Backfill is a separate subsystem with its own gate. It was <b>not</b> verified previously and is treated as unproven until the owner-session test in §11.4 passes.</p>
+
+<h3>11.1 Strategy ladder</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 11.1 — Backfill strategies, in preference order</caption>
+<thead><tr><th>#</th><th>Strategy</th><th>Preconditions</th><th>Completeness claim</th><th>Label</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Replay a verified authenticated owner-history <b>list + detail</b> read inside the owner's partition</td><td>Catalog entry exists; non-mutation test passed; account binding verified; pagination understood</td><td>Highest achievable; still bounded by what the operation returns</td><td><span class="badge b-ht">Hypothesis to test</span></td></tr>
+<tr><td>2</td><td>Automated browser/UI traversal of history views with live capture</td><td>Owner present or explicitly authorized; navigation policy allows history routes</td><td>Lower; declared gaps for anything not rendered</td><td><span class="badge b-rc">Recommendation</span> primary fallback</td></tr>
+<tr><td>3</td><td>Rendered-page capture of already-open conversations</td><td>Owner opens conversations normally</td><td>Opportunistic; carries <code>UI_ONLY_RECONSTRUCTION</code> risk</td><td><span class="badge b-rc">Recommendation</span> continuous complement</td></tr>
+<tr><td>4</td><td>Official export, if one ever exists</td><td>Arena provides an export</td><td>Depends entirely on Arena</td><td><span class="badge b-uk">Unknown</span></td></tr>
+<tr><td>5</td><td>User-imported archive files (ours or third-party)</td><td>Import adapter written</td><td>Whatever the file contains; provenance marked <code>imported</code></td><td><span class="badge b-rc">Recommendation</span> recovery path</td></tr>
+<tr><td>6</td><td>Future documented API</td><td>Existence</td><td>—</td><td><span class="badge b-uk">Unknown</span></td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Ladder discipline.</b> Strategy 2 is used when strategy 1's preconditions are unmet, and the archive must say so: every backfilled record carries <code>acquisition_strategy</code> so completeness can be compared honestly across the corpus.</p>
+
+<h3>11.2 Replaying reads without persisting credentials</h3>
+<p>Native sync logic may transiently reuse credentials belonging to the correct app-owned Arena session. Practically, this means issuing the replay request <em>from inside the owner's partition</em> so the browser attaches session state itself, rather than extracting a token and replaying it from Node.</p>
+<div class="callout danger">
+<span class="h">Credential rule</span>
+<p>Copied bearer tokens, cookies, CSRF values, and signed URLs must never be persisted into the archive database, logs, fixtures, exports, or diagnostics. Replay responses pass through the same sanitizer as live capture <em>before</em> any durable write, and request headers used for replay are held only in memory for the duration of the operation. A test must assert that no durable artifact written during a sync run contains a known-planted sentinel credential.</p>
+</div>
+
+<h3>11.3 Sync semantics</h3>
+<ul>
+<li><b>Scope.</b> One selected account or several selected accounts, each with its own job, cursor, and concurrency budget.</li>
+<li><b>Per-account progress and checkpoint.</b> <code>sync_cursor</code> stores an opaque server-issued position token plus the last N observed item identities for overlap detection. The token is opaque: we never parse it, only store and replay it.</li>
+<li><b>Cancel / resume.</b> Cancellation is cooperative at page boundaries; resuming re-derives overlap from item identities, so re-processing a page is safe and expected.</li>
+<li><b>Bounded retries.</b> Exponential backoff with a hard attempt ceiling per page; a page that exceeds it becomes a declared gap rather than an infinite loop.</li>
+<li><b>Idempotency.</b> Page processing is idempotent by observation identity; duplicate pages cannot duplicate rows.</li>
+<li><b>Concurrency.</b> Accounts may sync concurrently only because every partition, cursor, coordinator, and job is disjoint and no mutable state is shared between them. If Phase 1 shows any shared contention (for example a rate signal attributable to the owner rather than the account), sync falls back to serialized per-account scheduling with no change to correctness.</li>
+<li><b>Auth expiry and challenges.</b> Detected per account; that account's sync pauses with an actionable reason and does not affect other accounts.</li>
+<li><b>Live-capture overlap.</b> A backfilled record and a live-captured record for the same logical turn reconcile by evidence strength; backfill never overwrites a live observation.</li>
+<li><b>Partial histories and drift.</b> Coverage gaps are recorded per account per workflow, and "synchronized" is defined per account as: <i>every observed list page up to the checkpoint was processed without gaps, for the workflows we can observe, as of timestamp T, with the declared gap set attached</i>. It is never a global boolean.</li>
+</ul>
+
+<h3 id="backfill-gate">11.4 Backfill falsification gate</h3>
+<div class="callout warn">
+<span class="h">Acceptance gate — authenticated history replay</span>
+<p>Opening one known conversation does <b>not</b> prove backfill viability. The gate requires, in a signed-in owner session, for each candidate operation: (1) the operation returns data attributable to the currently authenticated account and no other; (2) listing behavior and pagination are understood and reproducible across at least two runs; (3) conversation detail retrieval returns content matching what the owner sees in the UI for the same conversation; (4) <b>non-mutation</b> is demonstrated by capturing before/after state of the account's conversation list, titles, and message counts and showing no change; (5) checkpoint and resume produce results identical to an uninterrupted run; (6) overlap/repeated pages produce no duplicate rows; (7) account isolation holds when two accounts sync; (8) auth expiry produces a clean pause rather than partial or misattributed data; (9) completeness boundaries are documented — specifically, what the operation does <em>not</em> return.</p>
+</div>
+</section>
+
+<section id="s12" aria-labelledby="h-s12">
+<h2 id="h-s12"><span class="num">12</span>Normalized data and provenance model</h2>
+<p class="lede">A hybrid source of truth: normalized current state for querying and analysis, plus retained sanitized observations for provenance and reparsing. Full event sourcing is rejected — it would multiply storage and complexity without adding analytic value, since observations are already immutable and revision history is append-only.</p>
+
+<h3>12.1 Entity inventory</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 12.1 — Core entities</caption>
+<thead><tr><th>Entity</th><th>Responsibility</th><th>Key uniqueness</th></tr></thead>
+<tbody>
+<tr><td><code>arena_account</code></td><td>Owner-facing account record, encrypted display label, auth state, partition binding</td><td><code>account_uuid</code> PK</td></tr>
+<tr><td><code>browser_partition</code></td><td>Partition name, storage path, verification state, hardening flags</td><td><code>partition_uuid</code> PK; 1:1 with account</td></tr>
+<tr><td><code>conversation</code></td><td>Logical Arena conversation: title, timestamps, mode, account scope</td><td><code>(account_id, source_id)</code> unique</td></tr>
+<tr><td><code>branch</code></td><td>Comparison/branch structure inside a conversation (battle sides, side-by-side, regenerations)</td><td><code>(conversation_id, branch_source_key)</code></td></tr>
+<tr><td><code>turn</code></td><td>One prompt/response exchange at a position; never flattened into a flat transcript</td><td><code>(branch_id, position)</code> and <code>(account_id, source_id)</code></td></tr>
+<tr><td><code>revision</code></td><td>A generation/regeneration instance of a turn's response</td><td><code>(turn_id, revision_index)</code></td></tr>
+<tr><td><code>participant</code></td><td>A slot in a comparison: position, blind label, observed identity</td><td><code>(turn_id, participant_key)</code></td></tr>
+<tr><td><code>identity_observation</code></td><td>Append-only claim about who/what a participant is, with evidence and scope</td><td>append-only; no uniqueness beyond id</td></tr>
+<tr><td><code>source_observation</code></td><td>Immutable sanitized observation (transport, UI, replay) for provenance and reparse</td><td><code>observation_id</code> unique</td></tr>
+<tr><td><code>capture_state</code></td><td>Completeness, evidence status, gaps, confidence per revision</td><td>1:1 with revision</td></tr>
+<tr><td><code>vote_reveal</code></td><td>Vote event and post-vote reveal association</td><td><code>(turn_id, participant_key)</code></td></tr>
+<tr><td><code>artifact</code></td><td>Attachment/download reference into the encrypted blob store</td><td><code>artifact_uuid</code> PK</td></tr>
+<tr><td><code>sync_cursor</code></td><td>Per-account, per-workflow checkpoint plus coverage ledger</td><td><code>(account_id, workflow)</code></td></tr>
+<tr><td><code>protocol_catalog</code></td><td>Discovered operation families with drift status</td><td><code>(adapter_id, adapter_version, url_family)</code></td></tr>
+<tr><td><code>adapter_version</code></td><td>Parser identity so records can be reparsed deterministically</td><td>PK</td></tr>
+<tr><td><code>analysis_run</code></td><td>Deterministic profile run: parameters, cohort definition, code version</td><td>PK</td></tr>
+<tr><td><code>analysis_result</code></td><td>Per-cohort metric outputs with sample counts</td><td><code>(run_id, cohort_key, metric)</code></td></tr>
+<tr><td><code>job</code></td><td>Long-running operation (sync, export, analysis, import) with progress and cancellation</td><td>PK</td></tr>
+<tr><td><code>destructive_intent</code></td><td>Two-step deletion authorization records with scope hash and nonce</td><td>PK, short-lived</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>12.2 Representative interfaces</h3>
+<pre><code><span class="c">// packages/domain/src/model.ts</span>
+<span class="k">export interface</span> AccountPartitionDescriptor {
+  accountId: string;            <span class="c">// internal UUID — stable local identity</span>
+  partitionName: string;        <span class="c">// 'persist:arena-&lt;accountId&gt;' — never derived from email</span>
+  partitionUuid: string;
+  displayLabel: string;         <span class="c">// encrypted at rest; owner-facing only</span>
+  authState: <span class="s">'unverified'</span> | <span class="s">'signed-in'</span> | <span class="s">'expired'</span> | <span class="s">'challenged'</span> | <span class="s">'identity-changed'</span>;
+  verifiedAt: string | null;
+  hardening: {
+    nodeIntegration: false; contextIsolation: true; sandbox: true; webSecurity: true;
+    preloadExposesBridge: false;
+  };
+  capturePolicy: { netLogEnabled: boolean; uiObservationEnabled: boolean };
+}
+
+<span class="k">export interface</span> SanitizedObservation {
+  observationId: string;        <span class="c">// deterministic: hash(account, target, request, sequence)</span>
+  accountId: string;            <span class="c">// provenance: which Arena account this belongs to</span>
+  mechanism: CaptureMechanism;  <span class="c">// 'cdp-network' | 'session-webrequest' | 'netlog' | 'download' | 'dom-ui' | 'history-replay'</span>
+  targetRef: { targetId: string; sessionId: string | null; frameOrigin: string | null };
+  requestRef: { requestId: string | null; urlFamily: string; method: string | null };
+  observedAt: string;
+  transportClass: TransportClass;
+  mutationClass: MutationClass;
+  payloadKind: <span class="s">'metadata'</span> | <span class="s">'chunk'</span> | <span class="s">'terminal'</span> | <span class="s">'unknown'</span>;
+  sanitizedBody: string | null; <span class="c">// allowlisted and redacted; null when fail-closed</span>
+  bodyDigest: string;           <span class="c">// non-reversible</span>
+  byteLength: number | null;
+  sanitizationStatus: <span class="s">'clean'</span> | <span class="s">'redacted'</span> | <span class="s">'failed-closed'</span>;
+  sequence: number;             <span class="c">// monotonic per request; gaps are recorded, not hidden</span>
+}
+
+<span class="k">export interface</span> CaptureCompleteness {
+  state: CompletionState;       <span class="c">// see Table 10.1</span>
+  missedStart: boolean;
+  missedEnd: boolean;
+  chunkGaps: number[];          <span class="c">// explicit missing sequence numbers</span>
+  evidenceStrength: 1 | 2 | 3 | 4 | 5;   <span class="c">// 1 = transport terminal … 5 = inference</span>
+  confidence: <span class="s">'low'</span> | <span class="s">'medium'</span> | <span class="s">'high'</span>;
+  reason: string | null;        <span class="c">// required whenever state is not COMPLETED_NORMAL</span>
+}
+
+<span class="k">export interface</span> NormalizedTurn {
+  turnId: string;               <span class="c">// internal UUID</span>
+  accountId: string;            <span class="c">// scoping participates in uniqueness rules</span>
+  conversationId: string;
+  branchId: string;
+  sourceId: string | null;      <span class="c">// Arena-scoped identifier, never a global PK</span>
+  position: number;
+  promptText: string;
+  participants: Participant[];
+  completeness: CaptureCompleteness;
+  acquisition: <span class="s">'live-capture'</span> | <span class="s">'backfill'</span> | <span class="s">'import'</span>;
+  acquisitionStrategy: string | null;
+}
+
+<span class="k">export interface</span> Participant {
+  participantKey: string;       <span class="c">// e.g. 'A' | 'B' | 'left' | 'right'</span>
+  blindLabel: string | null;
+  selectedModelLabel: string | null;
+  providerLabel: string | null;
+  routeOrModelString: string | null;
+  revealedIdentity: string | null;
+  ownerAnnotation: string | null;
+  identities: IdentityObservation[];   <span class="c">// append-only, never overwritten</span>
+}
+
+<span class="k">export interface</span> IdentityObservation {
+  identityObservationId: string;
+  scope: { accountId: string; conversationId: string; turnId: string; participantKey: string };
+  identityKind: <span class="s">'participant-position'</span> | <span class="s">'blind-label'</span> | <span class="s">'selected-model'</span>
+              | <span class="s">'provider'</span> | <span class="s">'route-string'</span> | <span class="s">'revealed'</span>
+              | <span class="s">'owner-annotated'</span> | <span class="s">'inferred-stylistic'</span>;
+  identityValue: string;
+  mechanism: CaptureMechanism | <span class="s">'owner-input'</span> | <span class="s">'inference'</span>;
+  observedAt: string;
+  confidence: <span class="s">'low'</span> | <span class="s">'medium'</span> | <span class="s">'high'</span>;
+}
+
+<span class="k">export interface</span> SyncCheckpoint {
+  accountId: string;
+  workflow: string;             <span class="c">// 'history-list' | 'conversation-detail' | ...</span>
+  opaqueCursor: string | null;  <span class="c">// stored and replayed verbatim; never parsed</span>
+  lastSeenSourceIds: string[];  <span class="c">// overlap detection window</span>
+  pagesProcessed: number;
+  attemptsRemaining: number;
+  coverageGaps: string[];       <span class="c">// declared, never empty by default</span>
+  status: <span class="s">'idle'</span> | <span class="s">'running'</span> | <span class="s">'paused-auth'</span> | <span class="s">'paused-challenge'</span>
+        | <span class="s">'backoff'</span> | <span class="s">'complete-with-gaps'</span> | <span class="s">'failed'</span>;
+  synchronizedMeaning: string;  <span class="c">// human- and machine-readable statement of coverage</span>
+}
+
+<span class="k">export interface</span> JobStatus {
+  jobId: string;
+  kind: <span class="s">'sync'</span> | <span class="s">'export'</span> | <span class="s">'analysis'</span> | <span class="s">'import'</span>;
+  accountId: string | null;     <span class="c">// null only for archive-wide jobs</span>
+  state: <span class="s">'queued'</span> | <span class="s">'running'</span> | <span class="s">'cancelling'</span> | <span class="s">'cancelled'</span>
+       | <span class="s">'succeeded'</span> | <span class="s">'succeeded-with-gaps'</span> | <span class="s">'failed'</span>;
+  progress: { done: number; total: number | null; unit: string };
+  idempotencyKey: string;
+  resumeToken: string | null;
+  startedAt: string; updatedAt: string;
+  errors: JobError[];
+}
+
+<span class="k">export interface</span> DestructiveIntent {
+  intentId: string;
+  scope: DeleteScope;           <span class="c">// 'conversation' | 'account' | 'archive'</span>
+  scopeTargetId: string | null; <span class="c">// conversation or account UUID, per scope</span>
+  scopeHash: string;            <span class="c">// binds the token to the exact resolved scope</span>
+  nonce: string;
+  issuedAt: string; expiresAt: string;
+  confirmedBy: <span class="s">'trusted-client'</span>;   <span class="c">// never 'archived-content'</span>
+  affectedCounts: { rows: number; observations: number; blobs: number; analyses: number };
+}
+</code></pre>
+
+<h3>12.3 Operational concerns</h3>
+<ul>
+<li><b>Transactions.</b> One transaction per ingested turn: normalized rows, revision, capture state, observation inserts, FTS update. Blobs commit first to a staging path and are referenced only after the DB commit succeeds.</li>
+<li><b>Crash recovery.</b> On startup, orphaned staging blobs are reconciled against the DB: referenced blobs are promoted, unreferenced ones quarantined then purged. Interrupted jobs resume from their checkpoint or are marked failed with a reason.</li>
+<li><b>Migrations.</b> Forward-only, numbered, applied in a transaction, with the schema version recorded in the DB and reported by <code>diagnostics.status</code>. Every migration has a rollback-by-restore plan rather than a down-migration.</li>
+<li><b>Parser reprocessing.</b> Because observations are immutable and adapters are versioned, a new adapter version re-derives normalized rows from observations, records a <code>reparse_run</code>, and never mutates the observations themselves. Completeness states are recomputed, not copied.</li>
+<li><b>Backup/restore.</b> The archive is a directory: encrypted DB (plus WAL), blob store, and a manifest with schema version, key id, and blob count. Restore verifies the manifest against reality before opening.</li>
+<li><b>FTS updates.</b> FTS5 lives inside the encrypted database; content is indexed in the same transaction as the source row. Because <span class="badge b-vf">Verified fact</span> SQLCipher does not encrypt transient temp files, file-based temporary storage must be disabled at build and runtime so FTS and sorter spills never touch disk in plaintext.</li>
+<li><b>Artifact lifecycle.</b> Blobs are content-addressed by digest with per-blob keys; unreferenced blobs are collected by a sweeper after a grace period; deletion cascades from artifact to blob.</li>
+</ul>
+</section>
+
+<section id="s13" aria-labelledby="h-s13">
+<h2 id="h-s13"><span class="num">13</span>Model identity evidence</h2>
+<p class="lede">Identity is the most easily corrupted field in a model-comparison corpus and the most analytically consequential. The model keeps eight distinct concepts apart and never conflates them.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 13.1 — Identity concepts that must never be merged</caption>
+<thead><tr><th>Concept</th><th>Character</th><th>Source of truth</th><th>May overwrite?</th></tr></thead>
+<tbody>
+<tr><td>Participant position</td><td>"A" / "left"</td><td>Transport or UI observation of the slot</td><td>No — positional fact</td></tr>
+<tr><td>Blind Arena label</td><td>Assistant label shown before reveal</td><td>UI observation</td><td>No</td></tr>
+<tr><td>Selected marketing model</td><td>Model chosen by the owner in the UI</td><td>UI or transport observation</td><td>No</td></tr>
+<tr><td>Provider label</td><td>Vendor as displayed</td><td>Observation</td><td>No</td></tr>
+<tr><td>Route/model string</td><td>Technical identifier in payloads</td><td>Transport observation, sanitized</td><td>No</td></tr>
+<tr><td>Post-vote revealed identity</td><td>Who A actually was</td><td>Reveal event observation</td><td>Additive only, with its own timestamp</td></tr>
+<tr><td>Owner annotation</td><td>Owner's own note</td><td>Owner input</td><td>Additive</td></tr>
+<tr><td>Inferred stylistic identity</td><td>"reads like X"</td><td>Analysis output</td><td class="n">Never overwrites any observation</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Enforcement.</b> Every identity claim is an append-only <code>identity_observation</code> with source, applicable account, conversation/turn/participant scope, timestamp, evidence mechanism, and confidence. The "current best identity" presented in UI and MCP is a <em>projection</em> computed by a documented precedence rule (revealed &gt; observed selected/route &gt; blind label &gt; owner annotation &gt; inferred), and the projection is recomputed rather than stored, so adding a reveal never rewrites history.</p>
+<p><b>Unknown is a valid state.</b> Before a reveal, identity is <code>UNKNOWN</code>. Any analysis that requires identity must either restrict to revealed cohorts or explicitly include an unknown-identity stratum with its own sample count.</p>
+</section>
+
+<section id="s14" aria-labelledby="h-s14">
+<h2 id="h-s14"><span class="num">14</span>Encryption, local data, and deletion</h2>
+
+<h3>14.1 Key hierarchy</h3>
+<p><span class="badge b-vf">Verified fact</span> SQLCipher is a modified SQLite build that encrypts each database page individually with 256-bit AES-CBC, uses a per-page random IV regenerated on write, appends an HMAC-SHA512 of ciphertext and IV checked on every page read, derives keys from a passphrase with PBKDF2-HMAC-SHA512 and a per-database random salt, and — critically for this design — <b>supports supplying raw binary key data</b> for vaulted or PKI-based keys. It also documents that WAL and rollback-journal pages are encrypted with the database key, while transient temp files are <em>not</em> encrypted unless file-based temp storage is disabled.</p>
+<p><span class="badge b-rc">Recommendation</span> Therefore:</p>
+<ol>
+<li>Generate a random 32-byte archive key with the OS CSPRNG at first run.</li>
+<li>Store it as a generic-password Keychain item, protected by the macOS account; the app unlocks it when needed and never writes it to disk.</li>
+<li>Open SQLCipher by supplying that <em>raw key</em>, not a human passphrase. A human password is neither the primary key nor a fallback key.</li>
+<li>Do not use SEE/other codecs or a pluggable extension: <span class="badge b-vf">Verified fact</span> SQLCipher is not a loadable plugin and must be linked, which makes the native binding the project's only required native module.</li>
+</ol>
+<p><b>Native-module risk, stated plainly.</b> <span class="badge b-rc">Recommendation</span> Use a maintained Node binding for SQLCipher that compiles against a SQLCipher build, pinned to exact versions in the lockfile and rebuilt in CI for the target architecture. Because only one native module is needed, the blast radius is small — but it is real, and it must be re-validated on every Electron major bump (which also changes the Node ABI). A pure-JS fallback is not offered: silently degrading to an unencrypted database would violate the product's core promise. Instead, if the binding cannot be built or opened, the application refuses to start and says so.</p>
+
+<h3>14.2 Blob store format</h3>
+<p>Large artifacts (code files, previews, images, exports) do not belong in the database. Format per blob:</p>
+<pre><code><span class="c">// packages/storage/src/blob.ts — design sketch</span>
+header = magic(4) || version(1) || nonce(12) || tag(16) || ciphertext(...)
+blobKey = HKDF-SHA256(
+  ikm  = archiveKey,                     <span class="c">// never persisted, never logged</span>
+  salt = blobSalt(random 16B, stored in DB row),
+  info = "arena-archive/blob/v1/" + blobId,
+  len  = 32
+)
+filename = random UUID;                  <span class="c">// never derived from owner content</span>
+db row  = { blob_id, blob_salt, byte_length, sha256_of_plaintext, mime, artifact_ref }
+</code></pre>
+<ul>
+<li>Authenticated encryption (AES-256-GCM) so truncation and tampering are detected on read, not silently accepted.</li>
+<li>Plaintext is never written to disk, never placed in a temp directory outside the encrypted volume, and never placed in a swap-friendly mapping.</li>
+<li>Size caps and quarantine-then-promote: downloads land in a staging file inside the app container, are sniffed and size-checked, then encrypted into the blob store; the staging file is securely removed.</li>
+<li>Key rotation is a defined operation: re-wrap the archive key in Keychain, and (for blobs) re-derive by rewriting each blob, since per-blob keys derive from the archive key. Rotation is expected to be rare and explicitly manual.</li>
+</ul>
+
+<h3>14.3 Residual exposure — an honest accounting</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 14.1 — Where plaintext can still exist, and what we do about it</caption>
+<thead><tr><th>Surface</th><th>Exposure</th><th>Mitigation / accepted risk</th></tr></thead>
+<tbody>
+<tr><td>Decrypted DB pages and FTS structures in process memory</td><td>Visible to a process-memory reader while running</td><td><span class="badge b-vf">Verified fact</span> SQLCipher locks and wipes its own allocations where possible; we do not add new plaintext copies. Accepted.</td></tr>
+<tr><td>SQLite/FTS temp files</td><td><span class="badge b-vf">Verified fact</span> not encrypted unless file-based temp store is disabled</td><td>Disable file-based temporary storage; verify by inspecting temp-file creation during a large FTS query in the Phase 4 acceptance test.</td></tr>
+<tr><td><code>netLog</code> output</td><td>May include sensitive material</td><td>Off by default, bounded size, stored in the app container, excluded from the archive and from exports, deleted with the archive, and listed as a restricted artifact in diagnostics.</td></tr>
+<tr><td>Crash logs and diagnostics bundles</td><td>May quote payloads</td><td>Diagnostics carry digests, counts, and shapes only. A test asserts no archive text and no credential-like string appears in a generated bundle.</td></tr>
+<tr><td>Exports</td><td>Deliberately leave the trust boundary</td><td>Exports are encrypted by default (passphrase-derived, documented as such); plaintext export requires an explicit per-export confirmation and is recorded.</td></tr>
+<tr><td>Test fixtures</td><td>Could leak real traffic</td><td>Fixtures are synthetic only. A CI check fails if a fixture matches any real observation digest.</td></tr>
+<tr><td>Spotlight indexing of the archive directory</td><td>Indexing could read encrypted bytes (harmless) but filenames and paths could leak</td><td>Exclude the archive directory from Spotlight; blob filenames are random UUIDs.</td></tr>
+<tr><td>Time Machine / other backups</td><td>Encrypted DB and blobs are backed up, which is desirable</td><td>Accept that backups exist and are encrypted; document that deleting the archive does not delete prior backups, and provide a documented purge-backups procedure rather than pretending otherwise.</td></tr>
+<tr><td>Swap / OS-level residual</td><td>Unavoidable</td><td>macOS encrypts swap for FileVault users; we state this as a precondition rather than a guarantee.</td></tr>
+<tr><td>Browser profile directories</td><td>Contain Arena authentication cookies because persistent sign-in requires them</td><td>See §14.4.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>14.4 Browser profile data vs. archive credentials</h3>
+<div class="callout ok">
+<span class="h">A distinction that must be stated precisely</span>
+<p>Persistent sign-in requires each account's partition to hold browser-managed authentication state (cookies, storage, service-worker state) on disk. That is <b>browser state the browser itself manages</b>. It is materially different from the application deliberately copying credentials into the research archive. The archive never contains a cookie, token, CSRF value, or OTP.</p>
+<p>Protection: profile directories live under the app container, protected by macOS per-user file permissions and (if the owner enables the App Sandbox) by sandbox entitlements; partition names contain no owner-identifying strings; and the archive is not searchable by other applications. Residual risk is that anyone with access to the owner's macOS user session can open the application and use the signed-in Arena sessions — the same exposure as any browser the owner is signed into. That risk is accepted and stated, not engineered away.</p>
+</div>
+
+<h3>14.5 Deletion</h3>
+<p>Three scopes: one archived conversation, all local archive data for one Arena account, and the whole local archive.</p>
+<div class="callout danger">
+<span class="h">Deletion never touches Arena's cloud</span>
+<p>Local deletion does not delete the owner's Arena conversations remotely. Any future remote-deletion feature must be a separate, explicitly named operation with its own authorization, its own confirmation, and its own audit record. Nothing in v1 performs a remote destructive action.</p>
+</div>
+<p><b>Two-step destructive intent.</b> Archived Arena content is untrusted data and can never authorize a destructive action:</p>
+<pre><code><span class="c">// packages/domain/src/delete.ts — flow</span>
+<span class="c">// 1. Trusted client (GUI or MCP, both trusted) prepares.</span>
+prepareDelete({ scope: <span class="s">'account'</span>, scopeTargetId: accountId })
+  -&gt; resolves scope to a concrete row/blob/observation set
+  -&gt; returns { intentId, scopeHash, nonce, expiresAt, affectedCounts }
+     <span class="c">// nonce is unguessable, single-use, short-lived, stored server-side</span>
+
+<span class="c">// 2. The same or another trusted client confirms, presenting the token.</span>
+confirmDelete({ intentId, nonce, explicitConfirm: true })
+  -&gt; requires nonce match AND scopeHash match AND confirmedBy === 'trusted-client'
+  -&gt; replays affectedCounts for display, then executes in one transaction:
+       rows → source_observations → FTS entries → analysis derivatives → blobs
+       → sync cursors → dedup markers → destructive_intent
+  -&gt; records an audit entry describing what was deleted and by whom/when
+</code></pre>
+<p>Requirements: the token cannot be minted from archived content; a token minted for one account cannot satisfy another account's scope; the token expires; confirmation is idempotent (a second confirm of a consumed token fails cleanly); and the operation reports exactly what it could not delete (for example, previously created plaintext exports, external backups).</p>
+<p><b>Per-scope effects.</b></p>
+<ul>
+<li><b>One conversation:</b> conversation, branches, turns, revisions, participants, identity observations, capture states, artifacts and blobs, FTS entries, and analysis results that reference only that conversation (others are recomputed, not silently altered).</li>
+<li><b>One account:</b> everything above for that account, plus its sync cursors, coverage ledger, job history, and the account row. Optionally, as a <em>separate</em> confirmed step, the browser partition's site data — because that signs the owner out and is a different kind of consequence, it is never bundled implicitly.</li>
+<li><b>Whole archive:</b> all accounts, all blobs, the database file, WAL, FTS structures, cursors, analysis runs, restricted netlog artifacts, and the Keychain archive-key item (so the archive cannot be reopened). Backup and export residue is reported, not hidden.</li>
+<li><b>Future re-sync behavior:</b> deleting a conversation removes its dedup markers too, so a later sync may legitimately re-archive it; deleting an account removes its checkpoint, so re-adding the account requires a fresh verified sign-in. Both behaviors are documented in the confirmation dialog.</li>
+</ul>
+</section>
+
+<section id="s15" aria-labelledby="h-s15">
+<h2 id="h-s15"><span class="num">15</span>MCP — the primary LLM interface</h2>
+<p class="lede"><span class="badge b-vf">Verified fact</span> The MCP specification defines stdio and Streamable HTTP transports, states that clients <em>SHOULD</em> support stdio whenever possible, requires newline-delimited UTF-8 JSON-RPC on stdio with logging confined to <code>stderr</code>, and (for HTTP) mandates <code>Origin</code> validation and recommends binding only to localhost. <span class="badge b-rc">Recommendation</span> stdio is the default and only transport in v1.</p>
+<ul>
+<li><b>Why stdio.</b> The agent launches the server as its own child process; there is no listening socket, no LAN exposure, and no DNS-rebinding surface at all. The MCP spec's own HTTP guidance — validate <code>Origin</code>, bind localhost — exists precisely to close the hole that stdio never opens.</li>
+<li><b>No loopback HTTP in v1.</b> It would add an attack surface for no operational advantage in a single-user, single-machine application. If a future need arises (for example a browser-based MCP inspector), it binds to 127.0.0.1 only, validates <code>Origin</code>, requires a per-launch token, and exposes only read-only tools. Destructive and browser-controlling tools stay stdio-only.</li>
+<li><b>Shared service layer.</b> GUI and MCP call the same functions. There is no MCP-specific behavior and no GUI-specific behavior. A capability is either available to both or to neither.</li>
+</ul>
+
+<h3>15.1 Tool and resource inventory</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 15.1 — Complete MCP feature inventory (GUI parity is mandatory for every non-owner-interaction row)</caption>
+<thead><tr><th>Family</th><th>Tools / resources</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Accounts</td><td><code>accounts.list</code>, <code>accounts.get</code></td><td>Never returns credentials; display labels only; includes auth state and partition reference.</td></tr>
+<tr><td>Browser</td><td><code>browser.open</code>, <code>browser.close</code>, <code>accounts.activate</code>, <code>browser.navigate</code></td><td>Navigation is allowlisted per account. Sign-in itself is owner-only and has <b>no</b> tool.</td></tr>
+<tr><td>Recording</td><td><code>recording.start</code>, <code>recording.pause</code>, <code>recording.resume</code>, <code>recording.stop</code>, <code>capture.status</code></td><td>Per account. Pausing records a gap interval, so coverage accounting stays honest.</td></tr>
+<tr><td>Conversations</td><td><code>conversations.search</code>, <code>conversations.get</code>, <code>conversations.transcript</code>, <code>conversations.branches</code>, <code>conversations.participants</code></td><td>Transcript returns the branch/participant structure, never a flattened alternating log, unless explicitly requested with a documented flattening flag.</td></tr>
+<tr><td>Provenance</td><td><code>provenance.get</code>, <code>observations.list</code></td><td>Returns completeness, evidence mechanism, acquisition, sanitized observations, and gap lists.</td></tr>
+<tr><td>Sync</td><td><code>sync.start</code>, <code>sync.status</code>, <code>sync.cancel</code>, <code>sync.resume</code>, <code>sync.gaps</code></td><td>One account or many; refuses to run for accounts in <code>challenged</code>/<code>expired</code> state.</td></tr>
+<tr><td>Jobs</td><td><code>jobs.list</code>, <code>jobs.get</code>, <code>jobs.cancel</code></td><td>Uniform progress and cancellation for sync/export/analysis/import.</td></tr>
+<tr><td>Protocol catalog</td><td><code>protocols.list</code>, <code>protocols.get</code></td><td>The agent's map of the observed wire surface, including drift status and mutation class.</td></tr>
+<tr><td>Diagnostics</td><td><code>diagnostics.status</code>, <code>diagnostics.capture_gaps</code>, <code>diagnostics.drift</code>, <code>diagnostics.capabilities</code></td><td>Machine-readable; includes schema version, adapter versions, and per-account coverage.</td></tr>
+<tr><td>Analysis</td><td><code>analysis.profile.run</code>, <code>analysis.runs.get</code>, <code>analysis.results.get</code>, <code>analysis.cohorts.list</code></td><td>Deterministic; every result carries cohort definition and sample counts.</td></tr>
+<tr><td>Identity</td><td><code>identity.observe</code>, <code>identity.list</code></td><td>Append-only owner annotations; cannot overwrite observed or revealed identity.</td></tr>
+<tr><td>Import / export</td><td><code>import.create</code>, <code>export.create</code>, <code>export.status</code>, <code>export.download_path</code></td><td>Exports are encrypted by default; plaintext export is explicit and audited.</td></tr>
+<tr><td>Destructive</td><td><code>archive.delete_conversation</code>, <code>archive.prepare_delete_account</code>, <code>archive.confirm_delete_account</code>, <code>archive.prepare_delete_all</code>, <code>archive.confirm_delete_all</code></td><td>Two-step intent tokens; never satisfiable from archived content.</td></tr>
+<tr><td>Resources</td><td><code>archive://accounts</code>, <code>archive://conversation/{id}</code>, <code>archive://protocol-catalog</code>, <code>archive://diagnostics</code></td><td>Read-oriented views for agents that prefer resource reads to tool calls.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>15.2 Common envelopes</h3>
+<pre><code><span class="c">// Success</span>
+{ "ok": true, "data": { }, "meta": { "schemaVersion": 1, "serverTime": "…", "requestId": "…" } }
+
+<span class="c">// Failure — every error carries a stable category</span>
+{ "ok": false, "error": {
+    "category": "ACCOUNT_SCOPE_REQUIRED" | "NOT_FOUND" | "UNAUTHENTICATED" | "NEEDS_OWNER_INTERACTION"
+             | "RATE_LIMITED" | "DRIFT_DEGRADED" | "CAPABILITY_UNAVAILABLE" | "STORAGE_UNAVAILABLE"
+             | "DESTRUCTIVE_TOKEN_INVALID" | "DESTRUCTIVE_TOKEN_EXPIRED" | "INVALID_ARGUMENT"
+             | "CONFLICT" | "INTERNAL",
+    "message": "human-readable, no secrets",
+    "details": { }, "retryable": true, "requestId": "…"
+} }
+</code></pre>
+<ul>
+<li><b>Account/session scope.</b> Any tool touching browser or account data takes an explicit <code>accountId</code>. Omitting it where required is <code>ACCOUNT_SCOPE_REQUIRED</code>, never an implicit default — implicit defaults are how cross-account bugs are born.</li>
+<li><b>Pagination.</b> <code>{ cursor, limit }</code> in, <code>{ items, nextCursor, totalEstimate }</code> out. Cursors are opaque and stable under concurrent writes.</li>
+<li><b>IDs.</b> Internal UUIDs everywhere; Arena source IDs appear only as scoped fields and are never accepted as primary identifiers for reads.</li>
+<li><b>Jobs.</b> Long-running calls return a job immediately with <code>202</code>-style semantics; <code>jobs.get</code> reports progress, gaps, and errors; <code>jobs.cancel</code> is cooperative.</li>
+<li><b>Idempotency.</b> Mutating tools accept an <code>idempotencyKey</code>; replaying the same key returns the original result. Sync and export are additionally idempotent by construction.</li>
+<li><b>Capabilities.</b> <code>diagnostics.capabilities</code> advertises what is currently possible (for example <code>"backfill.replay": "unavailable: non-mutation test not passed"</code>) so an agent never has to guess why a tool refused.</li>
+<li><b>Destructive authorization.</b> Prepare/confirm pairs with scope hash, nonce, and expiry, as specified in <a href="#s14">§14.5</a>.</li>
+</ul>
+
+<h3>15.3 Representative contracts</h3>
+<details><summary>conversations.search — request and response</summary>
+<div class="body">
+<pre><code><span class="c">// request</span>
+{ "accountId": "8f0c…",                       <span class="c">// required</span>
+  "query": "streaming parser",                <span class="c">// FTS5 query syntax</span>
+  "filters": { "mode": ["battle"], "identity": "revealed-only",
+               "from": "2025-01-01", "to": null,
+               "completeness": ["COMPLETED_NORMAL","STOPPED_BY_USER"] },
+  "cursor": null, "limit": 25,
+  "idempotencyKey": null }
+
+<span class="c">// response</span>
+{ "ok": true, "data": {
+    "items": [ { "conversationId": "…", "accountId": "8f0c…",
+                 "arenaSourceId": "…",              <span class="c">// scoped, not a primary key</span>
+                 "title": "…", "mode": "battle",
+                 "turnCount": 6, "branchCount": 2,
+                 "firstTurnAt": "…", "lastTurnAt": "…",
+                 "coverage": { "completeTurns": 5, "partialTurns": 1,
+                               "gaps": ["OBSERVER_MISSED_END on turn 4"] } } ],
+    "nextCursor": "…", "totalEstimate": 41 },
+  "meta": { "schemaVersion": 1 } }
+</code></pre>
+</div>
+</details>
+
+<details><summary>conversations.transcript — structure-preserving output</summary>
+<div class="body">
+<pre><code>{ "ok": true, "data": { "conversationId": "…", "accountId": "…",
+  "branches": [
+    { "branchId": "…", "kind": "battle", "turns": [
+      { "turnId": "…", "position": 0,
+        "prompt": { "text": "…", "observedAt": "…" },
+        "participants": [
+          { "participantKey": "A", "blindLabel": "Assistant A",
+            "identity": { "value": null, "kind": "unknown", "basis": "no reveal observed" },
+            "revisions": [ { "index": 0, "text": "…",
+                             "completeness": { "state": "COMPLETED_NORMAL",
+                                               "evidenceStrength": 1, "confidence": "high" },
+                             "acquisition": "live-capture" } ] },
+          { "participantKey": "B", "blindLabel": "Assistant B",
+            "identity": { "value": "some-model", "kind": "revealed",
+                          "basis": "post-vote reveal observation at 2025-…" },
+            "revisions": [ { "index": 0, "text": "…",
+                             "completeness": { "state": "STOPPED_BY_USER",
+                                               "reason": "owner pressed stop",
+                                               "evidenceStrength": 1, "confidence": "high" } } ] } ],
+        "vote": { "votedFor": "A", "observedAt": "…" } } ] } ] } }
+</code></pre>
+<p class="small">Note what is absent: no flattened alternating transcript, no retroactive identity for A, no claim that B's stopped response is complete.</p>
+</div>
+</details>
+
+<details><summary>sync.start and sync.status — job-shaped operations</summary>
+<div class="body">
+<pre><code><span class="c">// request</span>
+{ "accountIds": ["8f0c…","31ab…"], "workflows": ["history-list","conversation-detail"],
+  "idempotencyKey": "sync-2025-…-001", "maxPages": 500, "respectBackoff": true }
+
+<span class="c">// response (returns immediately)</span>
+{ "ok": true, "data": { "jobId": "…", "state": "running",
+  "perAccount": [ { "accountId": "8f0c…", "jobId": "…", "status": "running" },
+                  { "accountId": "31ab…", "jobId": "…", "status": "paused-challenge",
+                    "action": "NEEDS_OWNER_INTERACTION",
+                    "detail": "challenge presented in account view; other accounts unaffected" } ] } }
+
+<span class="c">// sync.status response</span>
+{ "ok": true, "data": { "accountId": "8f0c…", "workflow": "history-list",
+  "status": "complete-with-gaps", "pagesProcessed": 37,
+  "synchronizedMeaning": "all observed list pages to checkpoint C processed without gaps
+                           for workflows [history-list, conversation-detail] as of 2025-…T…Z",
+  "coverageGaps": ["page 19 returned 429 after 3 attempts", "detail for source id … missing"],
+  "acquisitionStrategy": "authenticated-replay",
+  "nonMutationTest": { "passed": true, "runId": "…" } } }
+</code></pre>
+</div>
+</details>
+
+<details><summary>archive.confirm_delete_account — destructive authorization</summary>
+<div class="body">
+<pre><code><span class="c">// step 1 — prepare (trusted client)</span>
+{ "accountId": "31ab…" }
+-&gt; { "ok": true, "data": { "intentId": "…", "scope": "account", "scopeHash": "…",
+       "nonce": "…", "expiresAt": "…",
+       "affectedCounts": { "conversations": 812, "turns": 3401, "observations": 91822,
+                           "blobs": 34, "analyses": 6 },
+       "warnings": ["prior Time Machine backups may retain ciphertext",
+                    "2 plaintext exports exist outside the archive"] } }
+
+<span class="c">// step 2 — confirm, with the token and an explicit flag</span>
+{ "intentId": "…", "nonce": "…", "explicitConfirm": true }
+-&gt; { "ok": true, "data": { "deleted": { "rows": 104036, "observations": 91822,
+                                          "blobs": 34, "analyses": 6 },
+                            "notDeleted": ["external backups", "2 plaintext exports"],
+                            "auditId": "…" } }
+
+<span class="c">// refusal examples</span>
+{ "ok": false, "error": { "category": "DESTRUCTIVE_TOKEN_EXPIRED", "retryable": true } }
+{ "ok": false, "error": { "category": "DESTRUCTIVE_TOKEN_INVALID",
+       "message": "scopeHash does not match the resolved scope" } }
+</code></pre>
+<p class="small">A token minted for <code>31ab…</code> cannot satisfy a delete for any other account, and no value found inside archived Arena content can be used as a nonce.</p>
+</div>
+</details>
+
+<h3>15.4 Owner-only actions (deliberately absent from MCP)</h3>
+<p>Completing email verification, entering an OTP, solving a CAPTCHA, and approving any challenge are owner interactions with the remote Arena page. They have no tool, no resource, and no automation path. MCP can <em>report</em> that an account needs them and can focus the account's view; it cannot perform them. Anything else would either be unreliable or would cross into circumventing anti-automation controls.</p>
+
+<h3>15.5 stdio hygiene</h3>
+<p>Exactly one JSON-RPC message per line; nothing but messages on <code>stdout</code>; all logging to <code>stderr</code>; messages never contain embedded newlines. Startup performs capability advertisement and a capability query so an agent learns the archive's current state before acting.</p>
+
+<h3>15.6 Client disconnect and job continuation</h3>
+<p>Jobs are server-side entities. If the MCP client disappears, running jobs continue to completion or to a declared pause, and their state is queryable by the next client. A job is cancelled only by an explicit <code>jobs.cancel</code> — never inferred from a disconnect. If the Streamable HTTP transport is ever added, the spec's rule is honored explicitly: disconnection is not cancellation, and cancellation is signalled with an MCP <code>CancelledNotification</code>.</p>
+</section>
+
+<section id="s16" aria-labelledby="h-s16">
+<h2 id="h-s16"><span class="num">16</span>Deterministic local analysis</h2>
+<p class="lede">All analysis runs locally, deterministically, and transparently. v1 adds no embeddings, no local model inference, and no ML dependency. Every number must be reproducible from stored observations by re-running the same code version.</p>
+
+<h3>16.1 v1 metric families</h3>
+<div class="grid2">
+<div class="card"><h4>Length &amp; structure</h4><p>Response length; paragraph count and length distribution; sentence length distribution; code-block count and length; prose/code token ratio; heading usage and depth; list and table usage; presence of preambles and conclusions.</p></div>
+<div class="card"><h4>Lexical</h4><p>Type-token ratio and moving-average diversity; hapax ratio; recurring n-grams (n = 1…5) with document frequency; distinctive-phrase lists versus cohort baseline.</p></div>
+<div class="card"><h4>Punctuation &amp; casing</h4><p>Em dash, en dash, semicolon, colon, ellipsis, exclamation density; quote style; Oxford-comma rate; sentence-initial capitalization patterns; ALL-CAPS usage; title-case headings.</p></div>
+<div class="card"><h4>Markdown habits</h4><p>Fenced versus indented code; language tag frequency; bold/italic usage; inline code density; bullet marker style; numbering style; horizontal rules; link and citation patterns.</p></div>
+<div class="card"><h4>Rhetorical shape</h4><p>Opening-phrase clusters; transition-phrase inventory; conclusion templates; qualification and hedging markers; uncertainty markers ("might", "typically", "it depends"); refusal and apology language; directive versus explanatory voice.</p></div>
+<div class="card"><h4>Behavioral adjuncts</h4><p>Stop-rate and stop position; regeneration frequency; response length versus prompt length; formatting variance within a conversation; reaction to code versus prose prompts.</p></div>
+</div>
+
+<h3>16.2 Stratification</h3>
+<p>Every profile can be stratified by: identity evidence class (revealed / observed-selected / blind / unknown / owner-annotated / inferred); Arena mode (battle, direct, side-by-side); prompt type; topic; language; date bucket; conversation context; and Arena account where relevant to sampling. <b>Every reported figure discloses its cohort definition and sample counts</b>, and cohorts below a documented minimum displayable size are reported as suppressed rather than as a possibly-meaningless number. No universal minimum sample threshold is invented; power and stability are measured empirically per experiment (<a href="#s17">§17</a>).</p>
+
+<h3>16.3 Confounders that must accompany any result</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 16.1 — Confounders (each result carries the ones applicable)</caption>
+<thead><tr><th>Confounder</th><th>Why it matters</th></tr></thead>
+<tbody>
+<tr><td>One-user selection bias</td><td>The corpus is one person's prompts, topics, and habits. It is not a representative sample of model behavior.</td></tr>
+<tr><td>Repeated prompting habits</td><td>The owner reuses phrasing and templates, inflating n-gram frequencies and stylistic overlap.</td></tr>
+<tr><td>Topic and task type</td><td>Style varies enormously between code, prose, and analysis tasks; topic must be controlled or reported.</td></tr>
+<tr><td>Conversation context</td><td>Later turns inherit constraints from earlier ones; turns are not independent samples.</td></tr>
+<tr><td>Arena hidden prompts and system prompts</td><td>Arena-side instructions shape responses and are not visible in the archive.</td></tr>
+<tr><td>Decoding parameters</td><td>Temperature and similar settings change style independently of model identity.</td></tr>
+<tr><td>Tools and retrieval</td><td>Tool use and retrieved context change structure and citation behavior.</td></tr>
+<tr><td>Routing and aliases</td><td>A displayed label may map to different backends or versions over time.</td></tr>
+<tr><td>Temporal model updates</td><td>Silent updates create apparent "style change" that is actually a version change.</td></tr>
+<tr><td>Safety and post-processing layers</td><td>Refusals and edits may come from layers that are not the model being studied.</td></tr>
+<tr><td>Capture completeness</td><td>Truncated, stopped, or UI-only responses bias length and structure metrics.</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Design consequence.</b> An <code>analysis_run</code> records its code version, metric definitions, cohort filter, exclusions, and the confounder list it considered. Results are only comparable between runs that share definitions, and the run record makes that check mechanical.</p>
+</section>
+
+<section id="s17" aria-labelledby="h-s17">
+<h2 id="h-s17"><span class="num">17</span>Later fingerprinting experiments and later modalities</h2>
+<p class="lede">These are explicitly out of scope for v1 and are documented now only so the data model does not accidentally make them impossible.</p>
+
+<h3>17.1 Stylistic fingerprinting is a hypothesis, never proof</h3>
+<p>Any experiment claiming that text resembles a particular model is producing a <em>hypothesis</em>. Requirements before an experiment may report anything:</p>
+<ul>
+<li><b>Held-out conversations</b> with leakage-resistant splits; branches and near-duplicate turns must stay in the same split, since they share provenance and would inflate accuracy.</li>
+<li><b>Prompt and topic controls</b>: same-prompt comparisons wherever Arena permits, and topic stratification otherwise.</li>
+<li><b>Negative controls</b>: same model at different times, and different models on identical prompts.</li>
+<li><b>Calibration and unknown-class rejection</b>: the system must be able to say "unknown" rather than forcing a label.</li>
+<li><b>Temporal validation</b>: train on an earlier window, test on a later one, to detect drift rather than memorize it.</li>
+<li><b>Reproducible preprocessing</b> pinned to a code version, with the preprocessing recorded in the run.</li>
+<li><b>Preserved separation</b> of observed/revealed identity from inferred identity; inferred labels never become ground truth by being written into the identity fields.</li>
+</ul>
+<p><b>No invented threshold.</b> Whether an experiment has enough signal is determined by measured power and split-to-split stability, not by a pre-declared minimum sample count. An experiment that fails these checks is stopped and recorded as inconclusive.</p>
+
+<h3>17.2 Modality extension points</h3>
+<p>Text first. Later modalities reuse the same observation and artifact provenance primitives and add only a modality-specific adapter — no universal content framework in v1.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 17.1 — Modality extension points</caption>
+<thead><tr><th>Modality</th><th>Extension point</th><th>Reuses</th></tr></thead>
+<tbody>
+<tr><td>Search responses and citations</td><td>Adapter over citation-bearing response shapes; citation graph stored alongside turns</td><td>Observation + provenance + FTS</td></tr>
+<tr><td>Arena Code / web-dev artifacts</td><td>File trees, previews, database metadata, tool events as typed artifacts referencing blob entries</td><td>Artifact + blob store</td></tr>
+<tr><td>Images and their metadata</td><td>Blob entry plus extracted metadata; no image analysis in v1</td><td>Artifact + blob store</td></tr>
+<tr><td>Video / workflow artifacts</td><td>Blob entry plus workflow event log; playback is a viewer concern</td><td>Artifact + observation</td></tr>
+<tr><td>Agent sessions and tool traces</td><td>Tool-call/tool-result observation family with its own completeness semantics</td><td>Observation + completeness</td></tr>
+<tr><td>Uploads and derived artifacts</td><td>Owner-supplied inputs recorded as attachments with their own provenance</td><td>Artifact + blob store</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Embeddings / local ML gate.</b> Only if a documented deterministic-analysis experiment demonstrates that the required question cannot be answered by the metrics in <a href="#s16">§16</a>, and only after measuring the memory and CPU cost against the M3 Pro / 18 GB budget, does the project consider an embedding index or a local model. Heavyweight ML is not added because it sounds sophisticated.</p>
+</section>
+
+<section id="s18" aria-labelledby="h-s18">
+<h2 id="h-s18"><span class="num">18</span>Acceptance-gated implementation sequence</h2>
+<p class="lede">Phases are ordered by <em>evidence</em>, not by calendar time. No duration estimates are given anywhere in this plan. Each phase has an explicit continue / change / stop decision.</p>
+
+<details open><summary>Phase 0 — Reproducible toolchain and fixture harness</summary>
+<div class="body">
+<p><b>Purpose.</b> Make every later result reproducible by an agent on a clean machine.</p>
+<p><b>Deliverables.</b> Monorepo skeleton; pinned lockfile; one-command dev/build/test; CI running unit and platform tests; synthetic fixture generator (chunk splitting, duplicates, out-of-order events, reconnects, truncated streams, sanitizer failures, account-ID collisions, corrupted blobs); schema migration runner; machine-readable test output.</p>
+<p><b>Prerequisites.</b> None.</p>
+<p><b>Acceptance criteria.</b> A clean checkout builds and passes all tests with one command; fixture generator emits deterministic bytes for a given seed; every test writes a machine-readable result file; no real Arena data exists anywhere in the tree.</p>
+<p><b>Falsifying evidence.</b> Any step requiring undocumented manual setup; any non-deterministic fixture; any test that needs network access to Arena.</p>
+<p><b>Decision.</b> Continue if the harness is reproducible end-to-end; stop and fix tooling before writing product code.</p>
+</div>
+</details>
+
+<details><summary>Phase 1 — Dedicated-browser falsification spike (highest priority)</summary>
+<div class="body">
+<p><b>Purpose.</b> Attempt to <em>disprove</em> Electron's suitability before any product code depends on it.</p>
+<p><b>Deliverables.</b> Minimal Electron harness with two persistent partitions; CDP attachment; capture manifest output; the fourteen spike checks below; optional A/B comparison against the existing extension.</p>
+<p><b>Prerequisites.</b> Phase 0; owner availability for authenticated tests.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 18.1 — Phase 1 spike checks and machine-checkable outputs</caption>
+<thead><tr><th>#</th><th>Check</th><th>Machine-checkable output</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Arena email sign-in completes in the embedded browser</td><td><code>signin: {completed: true, mechanism: "email-code"}</code></td></tr>
+<tr><td>2</td><td>Accounts A and B remain signed in simultaneously in separate persistent partitions</td><td>Two rows: <code>{account, partition, signedIn: true}</code> at the same instant</td></tr>
+<tr><td>3</td><td>Cookie / localStorage / cache / service-worker state does not leak across partitions</td><td>Sentinel write in A → <code>sentinelFoundInB: false</code>; disjoint worker sets</td></tr>
+<tr><td>4</td><td>CDP attaches before/through relevant Arena navigation</td><td>Attach timestamp &lt; first target request timestamp; zero pre-attach gap on the observed request</td></tr>
+<tr><td>5</td><td>Fetch/XHR traffic is observable</td><td>Non-zero counts for expected first-party request families; per-family event counts</td></tr>
+<tr><td>6</td><td>Streamed response content can be reconstructed where Arena uses streams</td><td>Reconstruction digest matches expected-vs-observed workflow markers; recorded chunk sequence with gap list</td></tr>
+<tr><td>7</td><td>WebSocket frames observable <em>if</em> Arena uses WebSockets</td><td>Either frame counts &gt; 0, or <code>websocketUsed: false</code> with evidence</td></tr>
+<tr><td>8</td><td>Worker/service-worker traffic does not disappear silently</td><td>Per-target coverage table; any worker-originated first-party request either captured or listed as a named gap</td></tr>
+<tr><td>9</td><td>Capture survives navigation/target changes</td><td>Continuous sequence numbers across navigations; no unexplained gap</td></tr>
+<tr><td>10</td><td>Stopped / failed / partial generations are distinguishable</td><td>Three distinct terminal markers produced for three scripted scenarios</td></tr>
+<tr><td>11</td><td>Late model-reveal / vote evidence associates correctly</td><td>Reveal observation bound to the right turn and participant; no retroactive identity</td></tr>
+<tr><td>12</td><td>Downloads / generated artifacts can be captured directly</td><td><code>will-download</code> fired; blob written; initiator origin recorded</td></tr>
+<tr><td>13</td><td>No credentials retained by the sanitizer</td><td>Planted sentinel credential absent from every durable artifact; sanitizer report shows redaction events</td></tr>
+<tr><td>14</td><td>Disconnecting/signing out A does not damage B</td><td>Before/after B state identical; A reports <code>UNAUTHENTICATED</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Falsifying evidence.</b> Any architecture-critical traffic class absent from both live capture and <code>netLog</code>; a stream that cannot be reassembled; cross-partition leakage; a stop that is indistinguishable from a failure.</p>
+<p><b>Decision.</b> <b>Continue</b> with Electron if checks 1–14 pass or fail only in documented, non-critical ways. <b>Change</b> to a focused CEF spike using <code>GetResourceResponseFilter</code> if a critical class is missing — per the reversal condition in <a href="#s3">§3.4</a>. <b>Stop</b> and reassess the product's capture requirement if neither maintained Electron nor CEF can observe it; only then consider Chromium customization, and only for a named capability.</p>
+</div>
+</details>
+
+<details><summary>Phase 2 — Sanitized observation layer and protocol catalog</summary>
+<div class="body">
+<p><b>Purpose.</b> Turn raw capture into a classified, sanitized, versioned understanding of the observed surface.</p>
+<p><b>Deliverables.</b> <code>SanitizedObservation</code> pipeline with fail-closed redaction; sanitizer unit and adversarial tests; protocol catalog with drift detection; gap reporting; adapter version registry; restricted-evidence handling for <code>netLog</code>.</p>
+<p><b>Acceptance criteria.</b> Planted credential sentinels never reach durable storage; unclassifiable payloads become unknown observations rather than raw bytes; catalog entries carry drift status; a deliberately mutated payload flips an entry to <code>schema-drift</code>; diagnostics list gaps without human interpretation.</p>
+<p><b>Falsifying evidence.</b> Any path that persists raw evidence on sanitizer failure; any catalog entry that asserts <code>mutationClass: 'read'</code> without a passed non-mutation test.</p>
+<p><b>Decision.</b> Continue; the catalog becomes the contract for all later phases.</p>
+</div>
+</details>
+
+<details><summary>Phase 3 — Normalized live text-capture vertical slice</summary>
+<div class="body">
+<p><b>Purpose.</b> Prove one complete mode end-to-end: one prompt, one completed response, stored with full provenance.</p>
+<p><b>Deliverables.</b> Domain model and migrations; one adapter; capture state machine; one account; MCP read tools for the slice; diagnostics UI minimal.</p>
+<p><b>Acceptance criteria.</b> A scripted owner session produces a stored turn whose text matches the rendered response, with <code>COMPLETED_NORMAL</code>, correct account scope, and queryable FTS; the same operation replayed produces no duplicate row.</p>
+<p><b>Falsifying evidence.</b> Text mismatch not explainable by truncation; provenance missing; non-idempotent ingestion.</p>
+<p><b>Decision.</b> This is the last cheap point to reverse the browser architecture (§3.4). Continue only after that judgment is recorded explicitly.</p>
+</div>
+</details>
+
+<details><summary>Phase 4 — Encrypted archive and search</summary>
+<div class="body">
+<p><b>Purpose.</b> Make the corpus durable, private, and searchable.</p>
+<p><b>Deliverables.</b> Keychain-held random key; SQLCipher binding with raw-key open; FTS5 inside the encrypted DB; temp-store disabled and verified; encrypted blob store; backup/restore manifest; deletion for one conversation.</p>
+<p><b>Acceptance criteria.</b> Database file and WAL contain no plaintext markers; no temp file is created during a large FTS query; key absent from config, logs, and diagnostics; restore-from-manifest reproduces a queryable archive; single-conversation deletion removes rows, FTS entries, and blobs.</p>
+<p><b>Falsifying evidence.</b> Plaintext in any on-disk artifact; key recoverable from the app bundle or config; restore producing an unopenable archive.</p>
+<p><b>Decision.</b> Continue.</p>
+</div>
+</details>
+
+<details><summary>Phase 5 — Authenticated backfill validation and sync</summary>
+<div class="body">
+<p><b>Purpose.</b> Earn the right to call anything "synchronized".</p>
+<p><b>Deliverables.</b> Non-mutation test harness; replay adapter (or UI-traversal fallback); cursors; bounded retries; per-account coverage ledger; capability advertisement for unavailable backfill.</p>
+<p><b>Acceptance criteria.</b> All nine conditions of the <a href="#s11">§11.4</a> backfill gate pass; checkpoint/resume equals an uninterrupted run; overlap produces no duplicates; two accounts sync without interference; a planted credential sentinel is absent from everything written.</p>
+<p><b>Falsifying evidence.</b> Any observable mutation of account state; data attributable to the wrong account; resume producing different results.</p>
+<p><b>Decision.</b> Continue with replay strategy 1 only if the gate passes; otherwise ship strategy 2 with declared lower completeness and keep the gate open as a tracked gap.</p>
+</div>
+</details>
+
+<details><summary>Phase 6 — Full v1 text-mode coverage</summary>
+<div class="body">
+<p><b>Purpose.</b> Cover every supported text surface in the first complete release.</p>
+<p><b>Deliverables.</b> Battle; direct-model conversations; side-by-side; completed / stopped / failed / partial responses; conversations opened from history; archived/history views; search and pagination where observable; selected model labels; blind labels and participant positions; votes; post-vote reveals; titles; timestamps; Arena source IDs; branches; revisions; regenerations; completion/capture state; source/provenance; owning account.</p>
+<p><b>Acceptance criteria.</b> A coverage matrix maps each item to a catalog entry, a capture mechanism, and a completeness state; no item is claimed covered without an observed capture mechanism; branch/participant structure survives round-tripping through storage and MCP.</p>
+<p><b>Falsifying evidence.</b> Any item covered only by inference while labeled complete; any flattening of comparison structure.</p>
+<p><b>Decision.</b> Continue to MCP completeness.</p>
+</div>
+</details>
+
+<details><summary>Phase 7 — MCP completeness and diagnostics</summary>
+<div class="body">
+<p><b>Purpose.</b> Make the archive fully operable by an agent.</p>
+<p><b>Deliverables.</b> Full tool inventory of <a href="#s15">§15.1</a>; envelopes and error taxonomy; jobs, pagination, idempotency; destructive intent flow; capability advertisement; stdio hygiene tests; GUI parity audit.</p>
+<p><b>Acceptance criteria.</b> Every GUI action has an MCP equivalent except owner sign-in interactions; an agent can perform a full archive workflow (search, read, sync, analyze, export) with no GUI; destructive flows reject invalid, expired, and cross-scope tokens; no MCP message other than protocol traffic appears on <code>stdout</code>.</p>
+<p><b>Falsifying evidence.</b> Any behavior reachable only through the GUI; any destructive action satisfiable without a fresh intent token.</p>
+<p><b>Decision.</b> Continue.</p>
+</div>
+</details>
+
+<details><summary>Phase 8 — Deterministic model profiles</summary>
+<div class="body">
+<p><b>Purpose.</b> Turn the corpus into reproducible behavioral statistics.</p>
+<p><b>Deliverables.</b> Metric implementations from <a href="#s16">§16.1</a>; stratification engine; cohort disclosure and suppression; run records with confounders; agent-facing profile tools.</p>
+<p><b>Acceptance criteria.</b> Re-running a recorded run on unchanged data reproduces identical output; every reported figure carries cohort and sample counts; excluded completeness states are excluded consistently and visibly.</p>
+<p><b>Falsifying evidence.</b> Non-reproducible output; a figure reported without its cohort; ML dependencies appearing in v1.</p>
+<p><b>Decision.</b> Continue to v1 release; later phases are evidence-gated.</p>
+</div>
+</details>
+
+<details><summary>Phase 9+ — Later modalities and fingerprinting experiments</summary>
+<div class="body">
+<p><b>Purpose.</b> Extend only when evidence justifies it.</p>
+<p><b>Deliverables.</b> Modality adapters per <a href="#s17">§17.2</a>; fingerprinting experiment harness with the §17.1 safeguards; optional embedding index behind the explicit gate.</p>
+<p><b>Acceptance criteria.</b> Each new modality reuses observation/artifact primitives without changing them; each fingerprinting experiment documents splits, controls, calibration, rejection, temporal validation, and an explicit inconclusive outcome when warranted.</p>
+<p><b>Decision.</b> Per experiment; inconclusive results are recorded, not retried indefinitely.</p>
+</div>
+</details>
+</section>
+
+<section id="s19" aria-labelledby="h-s19">
+<h2 id="h-s19"><span class="num">19</span>Testing and falsification plan</h2>
+<p class="lede">Three test classes with different evidentiary weight. Synthetic tests can never substitute for owner-session evidence, and no claim about Arena's real behavior rests on synthetic data.</p>
+
+<div class="tbl-scroll">
+<table>
+<caption>Table 19.1 — Test classes</caption>
+<thead><tr><th>Class</th><th>What it proves</th><th>What it cannot prove</th><th>Runs where</th></tr></thead>
+<tbody>
+<tr><td><b>Synthetic</b></td><td>Parser, sanitizer, reconciliation, storage, deletion, migration, and queue logic under adversarial inputs</td><td>Anything about Arena's actual protocol or capture reachability</td><td>CI, no network, no credentials</td></tr>
+<tr><td><b>Platform</b></td><td>Documented Electron/CDP/Session/SQLCipher behavior, independently of Arena</td><td>Arena-specific completeness</td><td>CI plus local harness</td></tr>
+<tr><td><b>Authenticated owner-session</b></td><td>Real sign-in, real stream transports, real reveals, real backfill, real simultaneous account use</td><td>Nothing beyond the workflows actually exercised</td><td>Owner machine, on demand, gated</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>19.1 Synthetic fixtures</h3>
+<ul>
+<li>Stream chunk splitting: arbitrary boundaries, single-byte chunks, chunk reordering, interleaved events from two participants.</li>
+<li>Duplicate and out-of-order observations; the same observation delivered five times.</li>
+<li>Reconnect mid-stream; detach mid-stream; attach after stream start.</li>
+<li>Truncated streams with and without terminal events; empty responses; error-only responses.</li>
+<li>Parser drift: payload shape mutated in five documented ways; adapter version mismatch.</li>
+<li>Sanitizer failure: unclassifiable field, oversized body, binary payload, nested credential-like strings.</li>
+<li>Account-ID collisions: identical source IDs and identical text under two accounts.</li>
+<li>Storage: DB crash mid-transaction, corrupted blob, missing blob, WAL left behind, schema-version mismatch.</li>
+<li>Deletion: each scope, expired token, cross-scope token, replayed token, partial failure mid-cascade.</li>
+<li>Migration: forward across three schema versions; restore after failed migration.</li>
+</ul>
+<p class="small">Fixtures contain only generated text. A CI check fails if any fixture's digest matches a real observation digest, and no credential or real Arena payload ever enters the repository.</p>
+
+<h3>19.2 Platform tests</h3>
+<ul>
+<li>Partition isolation: two persistent partitions, sentinel writes, <code>clearData</code> scoping, disjoint service-worker enumeration.</li>
+<li>CDP behavior: attach before navigation, event ordering, <code>sendCommand</code> round-trip, detach and re-attach, behavior when DevTools is invoked.</li>
+<li><code>webRequest</code> scoping per partition; <code>will-download</code> cancel and redirect paths.</li>
+<li><code>netLog</code> start/stop, file size bounds, and the guarantee that it is never ingested into the archive.</li>
+<li>SQLCipher: raw-key open, wrong-key failure, WAL inspection for plaintext markers, absence of temp files during large FTS queries, integrity failure on tampered page.</li>
+<li>Keychain: key creation, retrieval, rotation, and absence of the key in any other file.</li>
+</ul>
+
+<h3>19.3 Owner-session acceptance tests</h3>
+<p>These are the only tests that may support claims about Arena. Each is a named, scripted workflow with machine-checkable output, run with the owner's real accounts, and their results are recorded with a date and an archive build id so later drift is visible.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 19.2 — Owner-session tests and the claims they license</caption>
+<thead><tr><th>Test</th><th>Licenses the claim</th></tr></thead>
+<tbody>
+<tr><td>Email sign-in in an embedded partition</td><td>Arena's email sign-in is compatible with the dedicated browser</td></tr>
+<tr><td>Simultaneous two-account session with leakage probes</td><td>Simultaneous isolated account use</td></tr>
+<tr><td>Generation capture per supported mode, including stop, failure, and truncation</td><td>Live capture completeness per mode; transport identification</td></tr>
+<tr><td>Vote and post-vote reveal association</td><td>Reveal handling and identity observation correctness</td></tr>
+<tr><td>History listing, pagination, and detail retrieval</td><td>Backfill viability (together with the non-mutation test)</td></tr>
+<tr><td>Before/after state comparison around every replay operation</td><td>Non-mutation of a specific operation — nothing else</td></tr>
+<tr><td>Checkpoint/resume and overlap runs</td><td>Sync correctness</td></tr>
+<tr><td>Auth expiry and challenge injection</td><td>Scoped failure behavior</td></tr>
+<tr><td>Sanitizer audit over a full session, including a planted sentinel</td><td>No credential persistence in practice</td></tr>
+<tr><td>Optional A/B against the existing extension on the same workflow</td><td>Quantified improvement over the rejected baseline</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Reporting rule.</b> If an owner-session test has not been run for a claim, the claim is labeled <span class="badge b-ht">Hypothesis to test</span> in the UI, in MCP capabilities, and in this document's successors. There is no mechanism by which an untested claim silently becomes a verified one.</p>
+</section>
+
+<section id="s20" aria-labelledby="h-s20">
+<h2 id="h-s20"><span class="num">20</span>Major risks, detection, fallback, and capability loss</h2>
+<div class="tbl-scroll">
+<table>
+<caption>Table 20.1 — Risk register</caption>
+<thead><tr><th>Risk</th><th>Detection</th><th>Fallback</th><th>Capability lost if fallback is used</th></tr></thead>
+<tbody>
+<tr><td>Architecture-critical Arena traffic is not observable through Electron's maintained surfaces</td><td>Phase 1 spike; <code>netLog</code> shows traffic the live pipeline never saw</td><td>CEF with <code>GetResourceResponseFilter</code>; last resort, Chromium customization</td><td>None if CEF works; if customization is needed, maintainability and update cadence degrade sharply</td></tr>
+<tr><td>Arena changes wire format</td><td>Catalog entry flips to <code>schema-drift</code>; adapter marked degraded; <code>diagnostics.drift</code> reports it</td><td>Retain unknown observations; ship an adapter update; reparse from retained observations</td><td>New/changed fields are not normalized until the adapter ships; historical records stay valid</td></tr>
+<tr><td>Backfill proves impossible or mutating</td><td>Backfill gate §11.4 fails</td><td>UI traversal with declared lower completeness; live capture only</td><td>History completeness before the app was in use; coverage is declared, not implied</td></tr>
+<tr><td>Simultaneous account isolation regresses</td><td>Partition leakage platform test; cross-account attribution anomaly in diagnostics</td><td>Suspend multi-account mode; run one account at a time</td><td>Simultaneous use; archive data and correctness unaffected</td></tr>
+<tr><td>Account identity changes or is rebound incorrectly</td><td>Auth state anomaly; unexpected <code>SOURCE_ID_CONFLICT</code> volume</td><td>Halt that account; require explicit owner verification before rebinding</td><td>That account's capture and sync until verified</td></tr>
+<tr><td>Sanitizer misses a credential class</td><td>Sentinel tests; periodic audit of durable artifacts; sanitizer unit failures</td><td>Fail closed: retain only digests and shapes for the affected family</td><td>Raw-evidence reparse ability for that family until fixed</td></tr>
+<tr><td>SQLCipher native binding breaks on an Electron/Node upgrade</td><td>Build failure in CI; open failure at startup</td><td>Pin the working combination; refuse to start rather than degrade</td><td>Nothing — the alternative would be an unencrypted archive, which is refused</td></tr>
+<tr><td>Archive grows beyond practical size</td><td>Quota metrics; DB and blob growth reporting</td><td>Configurable retention: prune raw observations (keeping digests), then analysis derivatives, then oldest blobs</td><td>Reparse depth and artifact availability for pruned ranges; normalized text and FTS are retained longest</td></tr>
+<tr><td>Memory pressure with two live partitions on 18 GB</td><td>Per-renderer memory measurement; capture-queue depth; OS memory warnings</td><td>Configurable quotas and backpressure; suspend background sync; unload inactive partitions</td><td>Background concurrency, not capture correctness</td></tr>
+<tr><td>MCP agent performs an unintended destructive action</td><td>Audit records; two-step token requirement; affected-count preview</td><td>Token expiry and scope hashing; backups before large deletions</td><td>None — this is a control, not a feature</td></tr>
+<tr><td>Analysis over-interprets style as identity</td><td>Missing cohort disclosure; suppression failures; stability checks</td><td>Report inconclusive; require the §17.1 safeguards</td><td>The claim, not the corpus</td></tr>
+<tr><td>Anti-automation friction (CAPTCHA, challenges)</td><td><code>NEEDS_OWNER_INTERACTION</code> per account</td><td>Owner resolves in the embedded browser; account pauses without affecting others</td><td>Nothing — automation of challenges is explicitly not attempted</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section id="s21" aria-labelledby="h-s21">
+<h2 id="h-s21"><span class="num">21</span>Platform floor, resource use, and repository layout</h2>
+
+<h3>21.1 Minimum supported macOS</h3>
+<p><span class="badge b-rc">Recommendation</span> <b>Minimum: macOS 14 (Sonoma), Apple Silicon only.</b></p>
+<p>Justification:</p>
+<ul>
+<li><b>Do not inherit the dev machine's version blindly.</b> The development machine runs a newer macOS; supporting only that version would needlessly narrow the floor and invite accidental reliance on very new APIs.</li>
+<li><b>The real floor is Chromium's.</b> <span class="badge b-uk">Unknown</span> Electron/Chromium's documented minimum macOS version must be checked at the moment the Electron version is pinned; the project floor is <code>max(macOS 14, Chromium's documented minimum at pin time)</code>. This is a Phase 0 acceptance check with a falsifiable test: build a trivial Electron app and launch it on the chosen minimum version.</li>
+<li><b>Apple Silicon only.</b> No x86_64 slice, no Rosetta path, no universal-binary build matrix. This removes an entire class of native-module and codec-signing problems for the SQLCipher binding.</li>
+<li><b>Keychain and modern APIs.</b> macOS 14 comfortably covers the Keychain generic-password APIs used for the archive key, modern file-protection attributes, and hardened-runtime/notarization behavior.</li>
+<li><b>Private software.</b> No obligation to support old releases; supporting fewer versions reduces the maintenance surface that AI agents must keep green.</li>
+</ul>
+
+<h3>21.2 Resource use on an M3 Pro with 18 GB unified memory</h3>
+<p><b>No benchmark numbers are invented here.</b> The plan specifies what to measure and what knobs exist.</p>
+<div class="tbl-scroll">
+<table>
+<caption>Table 21.1 — Measurement plan and configurable quotas</caption>
+<thead><tr><th>Resource</th><th>Measure</th><th>Configurable control</th></tr></thead>
+<tbody>
+<tr><td>Per-partition Arena renderer memory</td><td>Sampled resident size per <code>WebContents</code>; reported in diagnostics</td><td>Maximum concurrently loaded partitions (≥ 2 must always remain usable); unload inactive partitions</td></tr>
+<tr><td>Main process memory</td><td>Resident size; capture-queue depth in bytes and event count</td><td>Capture queue byte cap and event cap with explicit backpressure; drop-to-gap (recorded, never silent) when the cap is hit</td></tr>
+<tr><td>Raw evidence retention</td><td>Observation table size; digest-only ratio</td><td>Retention window for sanitized raw evidence; digest-only mode for older ranges</td></tr>
+<tr><td>Database growth</td><td>Page count, FTS size, WAL size; growth rate per week</td><td>WAL auto-checkpoint threshold; periodic <code>VACUUM</code> policy; archive-size warning threshold</td></tr>
+<tr><td>Artifact storage</td><td>Blob count and total bytes; quarantine staging usage</td><td>Per-artifact size cap; total blob budget with a sweeper; per-download cap</td></tr>
+<tr><td>Concurrency</td><td>Active sync jobs; in-flight replay requests per account</td><td>Per-account concurrency = 1 by default; global background-job ceiling</td></tr>
+<tr><td>Background sync load</td><td>Request rate per account; backoff events; CPU time of the sync worker</td><td>Respect-backoff toggle; rate ceiling per account; pause-on-foreground policy</td></tr>
+<tr><td>Analysis worker</td><td>Wall time and peak memory per <code>analysis_run</code></td><td>Worker concurrency 1; batch size; explicit refusal rather than swapping when a run exceeds its budget</td></tr>
+<tr><td><code>netLog</code></td><td>File size and duration</td><td>Off by default; bounded size; auto-stop on cap</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>Invariant.</b> Whatever the quotas, at least two Arena partitions must remain simultaneously signed in and usable. Quota enforcement may pause background sync, prune raw evidence, or unload <em>inactive</em> partitions — it may never unload an account the owner is actively using, and it may never silently drop captured events without recording a gap.</p>
+
+<h3>21.3 Repository and component layout</h3>
+<pre><code>arena-model-archive/
+├─ apps/
+│  ├─ desktop/                 <span class="c">// Electron main + minimal diagnostics UI (custom protocol, no file://)</span>
+│  │  ├─ src/main/             <span class="c">// window host, IPC allowlist, fuse/config, app lifecycle</span>
+│  │  ├─ src/ui/               <span class="c">// diagnostics: accounts, gaps, drift, jobs, deletion confirmations</span>
+│  │  └─ preload/              <span class="c">// trusted UI preload only — narrow typed bridge, no passthrough</span>
+│  └─ mcp/                     <span class="c">// stdio MCP server entry (spawns nothing; calls the service layer)</span>
+├─ packages/
+│  ├─ browser/                 <span class="c">// ONLY place Electron types appear: Session per account, views,</span>
+│  │                           <span class="c">// nav/window policy, will-download, netLog, service-worker queries</span>
+│  ├─ capture/                 <span class="c">// CDP attach/reattach, event normalization, StreamAssembler,</span>
+│  │                           <span class="c">// capture coordinators; emits transport-neutral CaptureEvents</span>
+│  ├─ protocol/                <span class="c">// protocol catalog, adapters (versioned), drift detection</span>
+│  ├─ sanitize/                <span class="c">// fail-closed redaction, digests, allowlists, adversarial tests</span>
+│  ├─ domain/                  <span class="c">// entities, completeness, identity projection, jobs, delete intents</span>
+│  ├─ storage/                 <span class="c">// SQLCipher binding, migrations, FTS, encrypted blob store, backup</span>
+│  ├─ sync/                    <span class="c">// cursors, backoff, idempotent page processing, coverage ledger</span>
+│  ├─ services/                <span class="c">// the single application service layer used by BOTH GUI and MCP</span>
+│  ├─ mcp/                     <span class="c">// tool/resource definitions, envelopes, error taxonomy, capability adv.</span>
+│  ├─ analysis/                <span class="c">// deterministic metrics, cohorts, run records, suppression</span>
+│  └─ test-fixtures/           <span class="c">// synthetic generators + shared fixture corpus (no real data)</span>
+└─ tooling/                    <span class="c">// CI, lint rules (dependency direction), docs, diagnostics scripts</span>
+</code></pre>
+<p><b>Process boundaries and ownership.</b></p>
+<ul>
+<li><code>browser</code> and <code>capture</code> own everything runtime-specific; they are the only packages a CEF reversal would replace.</li>
+<li><code>sanitize</code> is a hard gate: <code>storage</code> and <code>sync</code> cannot write anything that has not passed through it. Enforced by types and a lint rule, not convention.</li>
+<li><code>services</code> is the sole business-logic surface. <code>apps/mcp</code> and <code>apps/desktop/src/ui</code> are thin adapters. A lint rule forbids either from touching <code>browser</code>, <code>storage</code>, or <code>sanitize</code> directly.</li>
+<li><code>domain</code> has no dependencies on any platform package, which is what keeps the data model stable across an architecture reversal.</li>
+</ul>
+</section>
+
+<section id="s22" aria-labelledby="h-s22">
+<h2 id="h-s22"><span class="num">22</span>Source register</h2>
+
+<h3>22.1 Consulted during this run (primary sources)</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 22.1 — Sources actually fetched while producing this document</caption>
+<thead><tr><th>Source</th><th>Used to support</th></tr></thead>
+<tbody>
+<tr><td>Electron — <code>session</code> API documentation</td><td>Persistent vs. in-memory partitions; <code>will-download</code>; <code>clearData</code> data types including <code>serviceWorkers</code>; <code>netLog</code>; <code>webRequest</code>; <code>serviceWorkers</code>; <code>getStoragePath()</code>; <code>registerPreloadScript()</code> (§1, §3.2, §7.1)</td></tr>
+<tr><td>Electron — <code>debugger</code> API documentation</td><td>Main-process CDP transport: <code>attach</code>, <code>detach</code>, <code>message</code>/<code>detach</code> events, <code>sendCommand</code>; the documented <code>Network.requestWillBeSent</code> / <code>Network.enable</code> example (§3.2, §9.1)</td></tr>
+<tr><td>CEF — <code>cef_resource_request_handler.h</code></td><td><code>GetResourceResponseFilter</code> on the IO thread; NULL <code>browser</code>/<code>frame</code> for service-worker and <code>CefURLRequest</code> requests; <code>OnResourceLoadComplete</code> status and content length (§1, §4.1, §3.4)</td></tr>
+<tr><td>Model Context Protocol specification (2025-11-25) — Transports</td><td>stdio and Streamable HTTP; clients SHOULD support stdio; newline-delimited JSON-RPC; stderr-only logging; <code>Origin</code> validation and localhost binding for HTTP; session and cancellation semantics (§15)</td></tr>
+<tr><td>Zetetic — SQLCipher design</td><td>Page-level AES-256-CBC, per-page IV, per-page HMAC-SHA512, PBKDF2-HMAC-SHA512 derivation, raw binary key support, encrypted WAL/journal, unencrypted temp files, non-plugin packaging (§14.1, §12.3, §19.2)</td></tr>
+<tr><td>Electron — Security tutorial / checklist</td><td>Untrusted remote content posture; the twenty recommendations adopted in §6.1 (§6)</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>22.2 Useful follow-up references (not consulted this run)</h3>
+<div class="tbl-scroll">
+<table>
+<caption>Table 22.2 — Follow-up references, with the specific question each should answer</caption>
+<thead><tr><th>Reference</th><th>Question to answer during Phase 0/1</th></tr></thead>
+<tbody>
+<tr><td>Chrome DevTools Protocol reference (<code>chromedevtools.github.io/devtools-protocol</code>)</td><td>Exact current <code>Network</code>, <code>Fetch</code>, <code>WebSocket</code>, and <code>Target</code> domain method and event names, and whether target auto-attach is reachable through Electron's debugger transport</td></tr>
+<tr><td>Electron — <code>service-workers</code> and <code>service-worker-main</code></td><td>Exactly which service-worker information is observable from the main process, and whether worker-originated request bodies are reachable at all</td></tr>
+<tr><td>Electron — <code>web-contents</code>, <code>webRequest</code>, <code>download-item</code>, <code>net-log</code>, <code>protocol</code>, <code>fuses</code></td><td>Precise method surface for navigation policy, download redirection, netlog bounds, custom protocol registration, and fuse configuration</td></tr>
+<tr><td>Electron release timelines / breaking changes</td><td>Chromium's documented minimum macOS version at pin time, and the Node ABI the SQLCipher binding must target</td></tr>
+<tr><td>CEF — GeneralUsage wiki</td><td>Request-context configuration, app-shell structure, and build/distribution mechanics for the escalation spike</td></tr>
+<tr><td>Apple — <code>WKURLSchemeHandler</code>; WebKit <code>WKWebViewConfiguration.h</code></td><td>Re-confirm the custom-scheme restriction and process-pool deprecation if WKWebView is reconsidered for a viewer</td></tr>
+<tr><td>Tauri — webview versions reference</td><td>Confirm the macOS WebKit dependency if Tauri is reconsidered</td></tr>
+<tr><td>Arena Help Center (account creation, Code Arena, archive chat)</td><td>Product-level behavior and terminology; explicitly <b>not</b> protocol evidence</td></tr>
+<tr><td>Existing recorder: <code>github.com/musterm4nn-alt/arena-exporter</code></td><td>A/B comparison target and catalog of failure modes to reproduce in Phase 1</td></tr>
+<tr><td>Departure Mono official site</td><td>Font licensing and asset paths (SIL OFL; Regular weight observed)</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout warn">
+<span class="h">Standing caveat</span>
+<p>No authenticated Arena session was connected while producing this plan. Every Arena-specific statement in this document is either a design requirement or a labeled hypothesis. The two gates that convert hypotheses into facts are the Phase 1 capture spike (<a href="#s18">§18</a>) and the Phase 5 backfill gate (<a href="#s11">§11.4</a>). Until they pass, the archive must not claim verified Arena capture, and must not treat any endpoint as read-only.</p>
+</div>
+</section>
+
+<footer class="colophon">
+<p><b>Arena Model Archive — architecture and implementation plan.</b> Private, single-owner software for Apple Silicon macOS. Set in Departure Mono (SIL OFL, Helena Zhang) with a monospace fallback stack. This document is a plan; the application is not implemented here.</p>
+<p>Recommended architecture: Electron + Chromium dedicated browser · TypeScript service layer · one persistent Session partition per Arena account · main-process CDP capture with per-partition <code>webRequest</code>, <code>netLog</code>, and download control · SQLCipher archive with a Keychain-held random key · stdio MCP as the primary LLM interface · deterministic local analysis. Reversal to CEF is defined in <a href="#s3">§3.4</a>.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+/* Minimal, non-essential enhancement: highlight the current section in the TOC.
+   The report is fully usable with scripting disabled. */
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  var map = {};
+  links.forEach(function (a) {
+    var s = document.querySelector(a.getAttribute('href'));
+    if (s) map[s.id] = a;
+  });
+  var sections = Object.keys(map).map(function (id) { return document.getElementById(id); });
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      links.forEach(function (a) { a.removeAttribute('aria-current'); });
+      var a = map[e.target.id];
+      if (a) a.setAttribute('aria-current', 'true');
+    });
+  }, { rootMargin: '-15% 0px -70% 0px' });
+  sections.forEach(function (s) { io.observe(s); });
+})();
+</script>
+</body>
+</html>
+
+</main>
+</div>
+</body>
+</html>
