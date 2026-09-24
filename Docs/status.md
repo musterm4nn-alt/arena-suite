@@ -14,7 +14,8 @@ Updated 2026-09-24.
 | **3** History sync | **Done, reviewed** | Live: 3 accounts synced (57 entries, 51 archived), kill -9 mid-sync resumed with no refetch, incremental re-sync fetched nothing (N-012). `Docs/phase3-history-sync-2026-09-24.md` |
 | **4** Decoding & index | **Done, reviewed** | Real archive: 57 conversations / 628 messages / 3 422 blocks; rebuild digest identical; 0 unknown fields (N-013). `Docs/phase4-index-2026-09-24.md` |
 | **5** Native UI | **Done, reviewed** | Browse, transcript with lanes, offline search, evidence inspector; Departure Mono. `Docs/phase5-ui-2026-09-24.md` |
-| 6 Exports · 7 Release | Next | |
+| **6** Exports | **Done, in review** | Raw/Normalized/Markdown; 306 real exports deterministic and telemetry-free (N-014). `Docs/phase6-exports-2026-09-24.md` |
+| 7 Release | Next | |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next

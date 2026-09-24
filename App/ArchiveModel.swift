@@ -35,6 +35,8 @@ final class ArchiveModel {
     private(set) var highlightedMessage: String?
     /// Changes whenever the transcript should scroll to `highlightedMessage`.
     private(set) var scrollRequest = 0
+    private(set) var exporting = false
+    private(set) var lastExport: ExportResult?
     var message: String?
 
     var accountFilter: AccountID? { didSet { if oldValue != accountFilter { reload() } } }
@@ -195,6 +197,25 @@ final class ArchiveModel {
                 evidenceUnavailable = true
                 message = "The raw record could not be read or failed its digest check."
             }
+        }
+    }
+
+    // MARK: Export
+
+    /// Exports the displayed snapshot. `directory` nil = Downloads.
+    func export(_ format: ExportFormat, exactRawBodies: Bool, to directory: URL?) async {
+        guard let archive, let key = selection else { return }
+        let destination = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        exporting = true
+        defer { exporting = false }
+        do {
+            lastExport = try await ExportService(archive: archive).export(
+                account: key.account, remoteID: key.remoteID, snapshot: snapshotSequence,
+                options: ExportOptions(format: format, includeExactRawBodies: exactRawBodies), to: destination)
+            message = nil
+        } catch {
+            lastExport = nil
+            message = "The export could not be written (\(error)). Nothing was left behind."
         }
     }
 

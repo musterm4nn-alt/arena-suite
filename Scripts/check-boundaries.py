@@ -7,7 +7,7 @@ root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
     "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation", "ArchiveIndex", "CoreText"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
-    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain", "CaptureJournal", "ArchiveIndex"},
+    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain", "CaptureJournal", "ArchiveIndex", "CryptoKit"},
     "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
     "Packages/ArenaSuiteCore/Sources/ArchiveIndex": {"Foundation", "SuiteDomain", "GRDB", "CryptoKit"},
     "Packages/ArenaProtocol/Sources/ArenaAdapter": {

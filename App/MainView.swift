@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationActions
 import ArchiveIndex
 import SuiteDomain
@@ -47,7 +48,11 @@ struct MainView: View {
                 archive.select(.init(account: match.account, remoteID: match.remoteID))
                 for _ in 0..<100 where archive.detail == nil { try? await Task.sleep(for: .milliseconds(50)) }
                 if let message = archive.detail?.messages.dropFirst().first { archive.inspect(message) }
-                showingInspector = true
+                showingInspector = !arguments.contains("--preview-export")
+                if arguments.contains("--preview-export") {
+                    // Writes to a temporary folder, never to Downloads.
+                    await archive.export(.markdown, exactRawBodies: false, to: FileManager.default.temporaryDirectory.appendingPathComponent("arena-preview-exports"))
+                }
             }
             #endif
         }
@@ -216,6 +221,8 @@ private struct ConversationRow: View {
 private struct TranscriptView: View {
     @Bindable var archive: ArchiveModel
     @Binding var showingInspector: Bool
+    @AppStorage("exportFormat") private var exportFormat = ExportFormat.markdown.rawValue
+    @State private var confirmExactRaw = false
 
     var body: some View {
         if let detail = archive.detail, let layout = archive.layout {
@@ -266,14 +273,64 @@ private struct TranscriptView: View {
                     }
                     .help("Each sync that found changes kept a separate snapshot")
                 }
+                Picker("Format", selection: $exportFormat) {
+                    ForEach(ExportFormat.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+                }
+                .help("Export format (remembered)")
+                Menu {
+                    Button("Export to Downloads") { Task { await archive.export(format, exactRawBodies: false, to: nil) } }
+                    Button("Export to Folder…") {
+                        if let folder = Self.chooseFolder() { Task { await archive.export(format, exactRawBodies: false, to: folder) } }
+                    }
+                    if format == .rawJSON {
+                        Divider()
+                        Button("Raw JSON with Exact Bodies (includes Arena telemetry)…") { confirmExactRaw = true }
+                    }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                } primaryAction: {
+                    Task { await archive.export(format, exactRawBodies: false, to: nil) }
+                }
+                .disabled(archive.exporting || detail.summary.latestSnapshotSequence == nil)
+                .help("Export this snapshot as \(format.label) to Downloads")
                 Button { showingInspector.toggle() } label: { Label("Evidence", systemImage: "doc.text.magnifyingglass") }
                     .help("Show the raw journal record behind this transcript")
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let result = archive.lastExport {
+                    HStack {
+                        Text("Exported \(result.url.lastPathComponent) · \(result.byteCount) bytes · SHA-256 \(result.sha256.prefix(12))…")
+                            .font(Theme.caption).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button { NSWorkspace.shared.activateFileViewerSelecting([result.url]) } label: { Text("Reveal in Finder").font(Theme.caption) }
+                    }
+                    .padding(8)
+                    .background(.bar)
+                }
+            }
+            .confirmationDialog(
+                "Export raw bodies exactly?", isPresented: $confirmExactRaw
+            ) {
+                Button("Export Exact Raw JSON to Downloads") { Task { await archive.export(.rawJSON, exactRawBodies: true, to: nil) } }
+            } message: {
+                Text("Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
             }
         } else if archive.selection != nil {
             ProgressView()
         } else {
             ContentUnavailableView("Select a conversation", systemImage: "text.bubble")
         }
+    }
+
+    private var format: ExportFormat { ExportFormat(rawValue: exportFormat) ?? .markdown }
+
+    static func chooseFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export Here"
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     @ViewBuilder private func header(_ detail: ConversationDetail) -> some View {

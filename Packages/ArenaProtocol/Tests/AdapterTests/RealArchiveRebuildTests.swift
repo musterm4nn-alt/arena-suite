@@ -39,3 +39,39 @@ func realArchiveRebuildIsIdentical() async throws {
         #expect(try index.search(marker, account: nil, includeReasoningAndTools: true, limit: 1).isEmpty, "\(marker)")
     }
 }
+
+/// Phase 6 on a real archive: every archived conversation, all formats, twice, into a temp folder.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["ARENA_SUITE_REAL_ARCHIVE"] != nil))
+func realArchiveExportsAreDeterministicAndTelemetryFree() async throws {
+    let archive = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ARENA_SUITE_REAL_ARCHIVE"]!)
+    let accounts = try FileManager.default.contentsOfDirectory(atPath: archive.appendingPathComponent("accounts").path)
+        .compactMap { UUID(uuidString: $0) }.map { AccountID(rawValue: $0) }
+    let index = try ArchiveIndex(url: FileManager.default.temporaryDirectory.appendingPathComponent("real-export-\(UUID().uuidString)/archive.sqlite"))
+    let service = ArchiveService(index: index, journals: JournalStore(archiveRoot: archive), decoder: ArenaArchiveDecoder(), accounts: { accounts })
+    for account in accounts { _ = try await service.project(account) }
+    let exports = ExportService(archive: service)
+    let out = FileManager.default.temporaryDirectory.appendingPathComponent("real-exports-\(UUID().uuidString)")
+    let markers = ["recaptchaV3Score", "arenaLionScoreCurrent", "hashedClientIp", "cf_client_asn", "ja4_browser_ratio_1h"]
+    var files = 0
+    for conversation in try service.conversations(account: nil) where conversation.latestSnapshotSequence != nil {
+        for format in ExportFormat.allCases {
+            let options = ExportOptions(format: format)
+            let first = try await exports.export(account: conversation.account, remoteID: conversation.remoteID, snapshot: nil, options: options, to: out)
+            let second = try await exports.export(account: conversation.account, remoteID: conversation.remoteID, snapshot: nil, options: options, to: out)
+            #expect(first.sha256 == second.sha256, "deterministic \(format)")
+            let data = try Data(contentsOf: first.url)
+            var text = String(decoding: data, as: UTF8.self)
+            if format == .rawJSON, let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let record = (root["records"] as? [[String: Any]])?.first, let encoded = record["payload_base64"] as? String,
+                let payload = Data(base64Encoded: encoded)
+            {
+                text += String(decoding: payload, as: UTF8.self)
+            }
+            if format != .markdown { #expect((try? JSONSerialization.jsonObject(with: data)) != nil, "valid JSON \(format)") }
+            for marker in markers { #expect(!text.contains(marker), "\(marker) in \(format)") }
+            files += 2
+        }
+    }
+    print("real archive exports: \(files) files, all deterministic and telemetry-free")
+    try? FileManager.default.removeItem(at: out)
+}
