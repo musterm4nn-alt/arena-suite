@@ -268,3 +268,63 @@ private func JournalVerifierIsClean(_ root: URL) -> Bool {
     #expect(DiagnosticsService.keyPath("$.messages[].newField") == "$.messages[].newField")
     #expect(DiagnosticsService.keyPath("$.messages[].a b") == "(other)")
 }
+
+@Test func restoreRechecksTheRegistryAndOnlyTargetsAnEmptyArchive() async throws {
+    let source = try await Archive(conversations: 1)
+    let out = scratch()
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let backup = try await source.backups.create(in: out)
+
+    // A registry changed in the backup is refused, and nothing is installed.
+    let registry = backup.appendingPathComponent("accounts/registry.json")
+    let original = try Data(contentsOf: registry)
+    try Data(String(decoding: original, as: UTF8.self).replacingOccurrences(of: "Person 0", with: "Person X").utf8).write(to: registry)
+    let targetRoot = scratch()
+    let target = BackupService(archiveRoot: targetRoot, decoder: ArenaArchiveDecoder(), appVersion: "test")
+    await #expect(throws: BackupError.fileMismatch("changed accounts/registry.json")) { try await target.restore(from: backup) }
+    #expect(!FileManager.default.fileExists(atPath: targetRoot.appendingPathComponent("accounts").path))
+    try original.write(to: registry)
+
+    // An archive whose accounts were all removed (empty registry) is a valid target; a leftover
+    // staging folder from an interrupted restore is swept.
+    try AccountRegistryStore(url: targetRoot.appendingPathComponent("accounts/registry.json")).save([])
+    try FileManager.default.createDirectory(at: targetRoot.appendingPathComponent(".restore-stale"), withIntermediateDirectories: true)
+    #expect(target.canRestore)
+    _ = try await target.restore(from: backup)
+    #expect(try Data(contentsOf: targetRoot.appendingPathComponent("accounts/registry.json")) == original)
+    #expect(!(try FileManager.default.contentsOfDirectory(atPath: targetRoot.path).contains { $0.hasPrefix(".restore") }))
+
+    // Journals kept from removed accounts block a restore even with an empty registry.
+    let kept = scratch()
+    let keptJournal = JournalStore(archiveRoot: kept).root(for: AccountID())
+    try FileManager.default.createDirectory(at: keptJournal, withIntermediateDirectories: true)
+    let keptTarget = BackupService(archiveRoot: kept, decoder: ArenaArchiveDecoder(), appVersion: "test")
+    #expect(!keptTarget.canRestore)
+    await #expect(throws: BackupError.targetNotEmpty) { try await keptTarget.restore(from: backup) }
+}
+
+@Test func journalCopyRejectsASealWithWrongSequences() async throws {
+    let source = try await Archive(conversations: 6)
+    let segments = source.journals.root(for: source.accounts[0]).appendingPathComponent("segments")
+    let seal = segments.appendingPathComponent("000002.seal.json")
+    var manifest = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: seal)) as? [String: Any])
+    manifest["first_sequence"] = "1"
+    try JSONSerialization.data(withJSONObject: manifest).write(to: seal)
+    #expect(throws: JournalError.self) { _ = try JournalCopy.copy(from: source.journals.root(for: source.accounts[0]), to: scratch()) }
+}
+
+@Test func diagnosticsWritesNeverOverwriteEvenConcurrently() async throws {
+    let source = try await Archive(conversations: 1)
+    let diagnostics = DiagnosticsService(
+        archive: source.service, journals: source.journals, environment: .init(appVersion: "t", osVersion: "t"))
+    let folder = scratch()
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let urls = try await withThrowingTaskGroup(of: URL.self) { group in
+        for n in 0..<8 { group.addTask { try diagnostics.write(Data("\(n)".utf8), to: folder, now: now) } }
+        return try await group.reduce(into: [URL]()) { $0.append($1) }
+    }
+    #expect(Set(urls).count == 8)
+    let contents = try Set(urls.map { String(decoding: try Data(contentsOf: $0), as: UTF8.self) })
+    #expect(contents.count == 8, "no file was replaced")
+    #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).allSatisfy { $0.hasSuffix(".json") }, "no temp files left")
+}

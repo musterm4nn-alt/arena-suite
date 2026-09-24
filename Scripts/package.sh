@@ -33,23 +33,26 @@ echo "Built Arena Suite $version ($build), signature verified."
 
 destination="$HOME/Applications/Arena Suite.app"
 mkdir -p "$HOME/Applications"
-staging="$HOME/Applications/.Arena Suite.app.installing"
-rm -rf "$staging"
-ditto "$built" "$staging"
-codesign --verify --deep --strict "$staging"
+if pgrep -f "^$destination/Contents/MacOS/ArenaSuite" >/dev/null; then
+  echo "Arena Suite is running from $destination. Quit it, then run this again." >&2
+  exit 1
+fi
+# Unique staging next to the destination (same volume, so the swap is a rename). If this script is
+# killed mid-swap, the previous app is in ~/Applications/.arena-suite-install.*/previous.app.
+staging=$(mktemp -d "$HOME/Applications/.arena-suite-install.XXXXXX")
+trap 'rm -rf "$staging"' EXIT
+ditto "$built" "$staging/Arena Suite.app"
+codesign --verify --deep --strict "$staging/Arena Suite.app"
 if [ -d "$destination" ]; then
   previous=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$destination/Contents/Info.plist" 2>/dev/null || echo "?")
-  if pgrep -f "$destination/Contents/MacOS/" >/dev/null; then
-    rm -rf "$staging"
-    echo "Arena Suite is running from $destination. Quit it, then run this again." >&2
+  mv "$destination" "$staging/previous.app"
+  if ! mv "$staging/Arena Suite.app" "$destination"; then
+    mv "$staging/previous.app" "$destination"
+    echo "Install failed; the previous version was put back." >&2
     exit 1
   fi
-  rm -rf "$destination.previous"
-  mv "$destination" "$destination.previous"
-  mv "$staging" "$destination"
-  rm -rf "$destination.previous"
   echo "Upgraded $previous -> $version in ~/Applications."
 else
-  mv "$staging" "$destination"
+  mv "$staging/Arena Suite.app" "$destination"
   echo "Installed $version in ~/Applications."
 fi

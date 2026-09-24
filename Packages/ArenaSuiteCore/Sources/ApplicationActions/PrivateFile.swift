@@ -30,11 +30,14 @@ public enum PrivateFile {
         return data
     }
 
-    public static func write(_ data: Data, to url: URL) throws {
+    /// `exclusive`: fail with `EEXIST` instead of replacing an existing file.
+    public static func write(_ data: Data, to url: URL, exclusive: Bool = false) throws {
         let directory = url.deletingLastPathComponent()
         try prepareDirectory(directory)
+        if exclusive, FileManager.default.fileExists(atPath: url.path) { throw Failure.io("exists \(url.lastPathComponent)", EEXIST) }
         _ = try enforce(url.path, mode: 0o600, directory: false)
-        let temporary = directory.appendingPathComponent(url.lastPathComponent + ".tmp")
+        let temporary = directory.appendingPathComponent(
+            exclusive ? ".\(url.lastPathComponent).\(UUID().uuidString).tmp" : url.lastPathComponent + ".tmp")
         unlink(temporary.path)
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw Failure.io("create \(temporary.lastPathComponent)", errno) }
@@ -60,7 +63,9 @@ public enum PrivateFile {
             unlink(temporary.path)
             throw failure
         }
-        guard rename(temporary.path, url.path) == 0 else {
+        let renamed = exclusive
+            ? renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL)) : rename(temporary.path, url.path)
+        guard renamed == 0 else {
             let code = errno
             unlink(temporary.path)
             throw Failure.io("rename \(url.lastPathComponent)", code)

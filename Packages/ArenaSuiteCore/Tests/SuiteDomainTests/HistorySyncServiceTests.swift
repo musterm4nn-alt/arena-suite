@@ -73,3 +73,22 @@ private func waitUntilWaiting(_ engine: SlowEngine) async {
     let journal = root.appendingPathComponent("accounts/\(a.id.rawValue.uuidString)/journal")
     #expect(FileManager.default.fileExists(atPath: journal.appendingPathComponent("journal.lock").path))
 }
+
+@Test func maintenanceAndSyncExcludeEachOther() async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    // Maintenance held: no sync may start.
+    try await service.beginMaintenance()
+    await #expect(throws: AccountError.busy) { try await service.beginMaintenance() }
+    await #expect(throws: AccountError.busy) { _ = try await service.sync(a.id) }
+    #expect(await engine.calls.isEmpty)
+    await service.endMaintenance()
+    // Sync running: maintenance is refused until it ends.
+    let job = Task { try await service.sync(a.id) }
+    await waitUntilWaiting(engine)
+    await #expect(throws: AccountError.busy) { try await service.beginMaintenance() }
+    await engine.release()
+    _ = try await job.value
+    try await service.beginMaintenance()
+    await service.endMaintenance()
+}

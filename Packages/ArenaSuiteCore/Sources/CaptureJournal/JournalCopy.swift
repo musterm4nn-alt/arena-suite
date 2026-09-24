@@ -88,7 +88,9 @@ public enum JournalCopy {
             if FileManager.default.fileExists(atPath: manifestURL.path) {
                 let manifest = try SealManifest.load(manifestURL, segment: number)
                 guard scan.problem == nil, manifest.byteSize == UInt64(data.count), manifest.sha256 == sha256Hex(data),
-                    manifest.recordCount == UInt64(scan.records.count)
+                    manifest.recordCount == UInt64(scan.records.count),
+                    manifest.firstSequence == scan.records.first?.envelope.sequence,
+                    manifest.lastSequence == scan.records.last?.envelope.sequence
                 else {
                     throw JournalError.corruptSealedSegment(segment: number, reason: "differs from its seal manifest")
                 }

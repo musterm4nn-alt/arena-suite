@@ -14,6 +14,8 @@ bash Scripts/package.sh        # Release build, signature check, install to ~/Ap
 - An upgrade replaces the app only after the new copy is complete and verified. It refuses while
   the app is running. The archive in `~/Library/Application Support/Arena Suite/Archive` is never
   touched.
+- If the script is killed mid-swap, the previous app is kept in
+  `~/Applications/.arena-suite-install.*/previous.app`.
 - Checked on the target Mac (2026-09-24):
   - A clean install with an empty home folder creates an empty owner-only archive and starts with
     no accounts.
@@ -73,7 +75,11 @@ bash Scripts/package.sh        # Release build, signature check, install to ~/Ap
     acknowledged records.
   - Restore only works into an empty archive. It never merges with or overwrites existing
     accounts.
-  - Back up only while no sync is running (the app enforces this).
+  - Verify, Rebuild, Back Up and Restore run only while no sync is running, and no sync can start
+    while they run (enforced in `HistorySyncService`). A backup is refused if accounts are added
+    or removed while it runs.
+  - The backup manifest is checked by hash but not signed. It protects against damage, not
+    against someone deliberately rewriting a backup together with its manifest.
 - **Journal damage:**
   - A damaged sealed segment is reported by *Verify Archive* but not repaired.
   - That account's index cannot be updated until the segment is replaced.

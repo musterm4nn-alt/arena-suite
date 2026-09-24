@@ -86,9 +86,12 @@ public struct DiagnosticsService: Sendable {
         let name = "Arena Suite Diagnostics \(BackupService.stamp(now))"
         for attempt in 1...100 {
             let url = directory.appendingPathComponent(attempt == 1 ? "\(name).json" : "\(name) \(attempt).json")
-            if FileManager.default.fileExists(atPath: url.path) { continue }
-            try PrivateFile.write(data, to: url)
-            return url
+            do {
+                try PrivateFile.write(data, to: url, exclusive: true)
+                return url
+            } catch PrivateFile.Failure.io(_, EEXIST) {
+                continue  // never overwrite; try the next name
+            }
         }
         throw BackupError.io("no free diagnostics file name")
     }

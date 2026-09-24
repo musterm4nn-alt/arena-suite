@@ -40,6 +40,8 @@ public enum BackupError: Error, Equatable, Sendable {
     case replayMismatch
     /// Restore only goes into an archive with no accounts and no journals.
     case targetNotEmpty
+    /// Accounts were added or removed while the backup ran.
+    case archiveChanged
     case cancelled
     case io(String)
 }
@@ -78,14 +80,29 @@ public struct BackupService: Sendable {
     /// The folder appears only when complete; on failure or cancellation nothing is left behind.
     public func create(in directory: URL, now: Date = Date()) async throws -> URL {
         let stamp = Self.stamp(now)
+        // Staging folders of our own that an earlier crash left behind (older than an hour).
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasPrefix(".arena-suite-backup-") && name.hasSuffix(".partial") {
+            let url = directory.appendingPathComponent(name)
+            if let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                now.timeIntervalSince(modified) > 3600
+            {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         let staging = directory.appendingPathComponent(".arena-suite-backup-\(UUID().uuidString).partial", isDirectory: true)
         try PrivateFile.prepareDirectory(staging)
         var finished = false
         defer { if !finished { try? FileManager.default.removeItem(at: staging) } }
 
         let source = JournalStore(archiveRoot: archiveRoot)
+        let registry = archiveRoot.appendingPathComponent("accounts/registry.json")
+        // Read before and after the journals: an account added or removed meanwhile would pair a
+        // registry with the wrong journals, so the backup is refused instead.
+        let registryBefore = try PrivateFile.read(registry)
+        let accountsBefore = source.accountsOnDisk()
         var journals: [BackupManifest.Journal] = []
-        for account in source.accountsOnDisk() {
+        for account in accountsBefore {
             guard !Task.isCancelled else { throw BackupError.cancelled }
             let target = staging.appendingPathComponent("accounts/\(account.rawValue.uuidString)/journal", isDirectory: true)
             try PrivateFile.prepareDirectory(target)
@@ -97,9 +114,11 @@ public struct BackupService: Sendable {
                     account: account.rawValue.uuidString, issue: VerificationService.describe(error))
             }
         }
-        let registry = archiveRoot.appendingPathComponent("accounts/registry.json")
+        guard try PrivateFile.read(registry) == registryBefore, source.accountsOnDisk() == accountsBefore else {
+            throw BackupError.archiveChanged
+        }
         var registryDigest: String?
-        if let data = try PrivateFile.read(registry) {
+        if let data = registryBefore {
             try PrivateFile.write(data, to: staging.appendingPathComponent("accounts/registry.json"))
             registryDigest = try JournalCopy.sha256(of: staging.appendingPathComponent("accounts/registry.json"))
         }
@@ -180,11 +199,14 @@ public struct BackupService: Sendable {
     public func restore(from backup: URL) async throws -> BackupCheck {
         let check = try await self.check(backup)
         let accounts = archiveRoot.appendingPathComponent("accounts", isDirectory: true)
-        let registry = AccountRegistryStore(url: accounts.appendingPathComponent("registry.json"))
-        guard (try? registry.load())?.isEmpty ?? false, JournalStore(archiveRoot: archiveRoot).accountsOnDisk().isEmpty
-        else { throw BackupError.targetNotEmpty }
+        guard canRestore else { throw BackupError.targetNotEmpty }
 
         try PrivateFile.prepareDirectory(archiveRoot)
+        // Staging left by an interrupted restore holds only copies.
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: archiveRoot.path)) ?? []
+        where name.hasPrefix(".restore-") {
+            try? FileManager.default.removeItem(at: archiveRoot.appendingPathComponent(name))
+        }
         let staging = archiveRoot.appendingPathComponent(".restore-\(UUID().uuidString)", isDirectory: true)
         try PrivateFile.prepareDirectory(staging)
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -199,25 +221,39 @@ public struct BackupService: Sendable {
             }
             guard copied == journal.segments else { throw BackupError.fileMismatch("restored journal \(journal.account)") }
         }
-        if check.manifest.registrySHA256 != nil,
-            let data = try PrivateFile.read(backup.appendingPathComponent("accounts/registry.json"))
-        {
-            try PrivateFile.write(data, to: stagedAccounts.appendingPathComponent("registry.json"))
+        if let digest = check.manifest.registrySHA256 {
+            // Re-read and re-hash: the backup folder may have changed since it was checked.
+            let staged = stagedAccounts.appendingPathComponent("registry.json")
+            // Plain read: the backup may live on a drive where permissions cannot be changed.
+            guard let data = try? Data(contentsOf: backup.appendingPathComponent("accounts/registry.json")) else {
+                throw BackupError.fileMismatch("missing accounts/registry.json")
+            }
+            try PrivateFile.write(data, to: staged)
+            guard try JournalCopy.sha256(of: staged) == digest else { throw BackupError.fileMismatch("changed accounts/registry.json") }
         }
-        // Swap in the staged folder. An existing `accounts` folder holds no accounts and no journals
-        // (checked above); keep it aside until the swap succeeds.
-        let aside = staging.appendingPathComponent("previous-accounts", isDirectory: true)
-        let hadAccounts = FileManager.default.fileExists(atPath: accounts.path)
-        if hadAccounts {
-            guard rename(accounts.path, aside.path) == 0 else { throw BackupError.io("move aside (\(errno))") }
+        // Install with one rename. An existing `accounts` folder may only hold an empty account list
+        // (all accounts removed, no journals kept; checked above), so it is removed first. A crash
+        // in between leaves an empty archive, never a partial one; the staging folder is swept on
+        // the next restore.
+        if FileManager.default.fileExists(atPath: accounts.path) {
+            let names = try FileManager.default.contentsOfDirectory(atPath: accounts.path)
+            guard names.allSatisfy(Self.disposableAccountFiles.contains) else { throw BackupError.targetNotEmpty }
+            try FileManager.default.removeItem(at: accounts)
         }
         guard renamex_np(stagedAccounts.path, accounts.path, UInt32(RENAME_EXCL)) == 0 else {
-            let code = errno
-            if hadAccounts { rename(aside.path, accounts.path) }
-            throw BackupError.io("install restored accounts (\(code))")
+            throw BackupError.io("install restored accounts (\(errno))")
         }
         return check
     }
+
+    /// True while the archive has no accounts and no journals: the only state a restore may target.
+    public var canRestore: Bool {
+        let accounts = archiveRoot.appendingPathComponent("accounts", isDirectory: true)
+        let registry = AccountRegistryStore(url: accounts.appendingPathComponent("registry.json"))
+        return ((try? registry.load())?.isEmpty ?? false) && JournalStore(archiveRoot: archiveRoot).accountsOnDisk().isEmpty
+    }
+
+    static let disposableAccountFiles: Set<String> = ["registry.json", "registry.json.tmp", ".DS_Store"]
 
     // MARK: Helpers
 

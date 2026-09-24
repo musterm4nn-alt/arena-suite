@@ -48,7 +48,10 @@ public struct VerificationService: Sendable {
             return VerificationReport(journals: checks, index: nil, indexProblem: "The archive index is unavailable.")
         }
         do {
-            let check = try await archive.checkAgainstJournal(scratch: scratch)
+            // A fresh folder per run, so concurrent runs never share a scratch index.
+            let run = scratch.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            defer { rmdir(scratch.path) }  // only if empty; other runs may still be using it
+            let check = try await archive.checkAgainstJournal(scratch: run)
             return VerificationReport(journals: checks, index: check, indexProblem: nil)
         } catch {
             return VerificationReport(

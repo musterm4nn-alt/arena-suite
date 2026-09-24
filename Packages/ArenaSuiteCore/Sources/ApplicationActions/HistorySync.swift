@@ -163,7 +163,10 @@ public actor HistorySyncService {
 
     /// Starts a job and returns its manifest when it ends. Refuses a second job for the same account.
     public func sync(_ account: AccountID, options: SyncOptions = SyncOptions()) async throws -> SyncManifest {
-        guard running[account] == nil else { throw AccountError.busy }
+        // Reserved before the first suspension, so neither a second job nor maintenance can slip in.
+        guard running[account] == nil, !starting.contains(account), !maintaining else { throw AccountError.busy }
+        starting.insert(account)
+        defer { starting.remove(account) }
         let context = try await accounts.context(for: account)  // only signed-in accounts
         let principal = try await accounts.principal(for: account)
         let writer = try await journals.writer(for: account)
@@ -184,6 +187,20 @@ public actor HistorySyncService {
     }
 
     public func cancel(_ account: AccountID) { running[account]?.cancel() }
+
+    // MARK: Maintenance exclusion (plan v3 §13, Phase 7)
+
+    private var maintaining = false
+    private var starting: Set<AccountID> = []
+
+    /// Verify, backup, restore and rebuild need journals that are not being appended to. Refuses
+    /// while any sync runs; while held, new syncs are refused with `AccountError.busy`.
+    public func beginMaintenance() throws {
+        guard running.isEmpty, starting.isEmpty, !maintaining else { throw AccountError.busy }
+        maintaining = true
+    }
+
+    public func endMaintenance() { maintaining = false }
 }
 
 final class ProgressBox: @unchecked Sendable {

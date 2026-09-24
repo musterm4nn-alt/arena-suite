@@ -30,9 +30,11 @@ final class MaintenanceModel {
 
     var busy: Bool { working != nil || accounts.isSyncing || archive.projecting }
     var hasAccounts: Bool { !accounts.accounts.isEmpty }
+    /// No accounts and no kept journals: the only state a restore may target.
+    var canRestore: Bool { !hasAccounts && services.backups.canRestore }
 
     func verify() async {
-        await run("Verifying the archive…") {
+        await run("Verifying the archive…", exclusive: true) {
             let report = await services.verification.run()
             lastVerification = report
             var out = [report.isClean ? "Archive verified: no problems found." : "Problems found. Nothing was changed."]
@@ -55,7 +57,7 @@ final class MaintenanceModel {
     }
 
     func rebuild() async {
-        await run("Rebuilding the index from the journals…") {
+        await run("Rebuilding the index from the journals…", exclusive: true) {
             try await rebuildIndex()
             archive.reload()
             return (["Index rebuilt from the journals."], false)
@@ -65,7 +67,7 @@ final class MaintenanceModel {
     func backUp() async {
         guard !accounts.isSyncing else { return note("Wait for the running sync to finish, then back up.") }
         guard let folder = Self.chooseFolder(prompt: "Back Up Here") else { return }
-        await run("Writing the backup…") {
+        await run("Writing the backup…", exclusive: true) {
             let url = try await services.backups.create(in: folder)
             let check = try await services.backups.check(url)
             revealURL = url
@@ -87,9 +89,9 @@ final class MaintenanceModel {
 
     /// Only offered while there are no accounts (a new Mac or a fresh install).
     func restore() async {
-        guard !hasAccounts else { return note("Restore only works into an empty archive (no accounts).") }
+        guard canRestore else { return note("Restore only works into an empty archive (no accounts and no kept journals).") }
         guard let folder = Self.chooseFolder(prompt: "Restore", message: "Choose an “Arena Suite Backup” folder") else { return }
-        await run("Restoring…") {
+        await run("Restoring…", exclusive: true) {
             let check = try await services.backups.restore(from: folder)
             try await rebuildIndex()
             await accounts.reloadAccounts()
@@ -120,8 +122,14 @@ final class MaintenanceModel {
         failed = true
     }
 
-    private func run(_ label: String, _ work: () async throws -> ([String], Bool)) async {
+    /// `exclusive`: the journals must not change meanwhile, so no sync may start or be running.
+    private func run(_ label: String, exclusive: Bool = false, _ work: () async throws -> ([String], Bool)) async {
         guard working == nil else { return }
+        if exclusive {
+            do { try await services.sync.beginMaintenance() } catch {
+                return note("A sync is running. Try again when it has finished.")
+            }
+        }
         working = label
         revealURL = nil
         defer { working = nil }
@@ -131,6 +139,7 @@ final class MaintenanceModel {
             lines = [Self.describe(error)]
             failed = true
         }
+        if exclusive { await services.sync.endMaintenance() }
     }
 
     static func describe(_ error: any Error) -> String {
@@ -140,7 +149,8 @@ final class MaintenanceModel {
         case .fileMismatch(let what): "The backup does not match its manifest (\(what)). Do not rely on it."
         case .journalDamaged(_, let issue): "A journal could not be copied or verified (\(issue))."
         case .replayMismatch: "The backup's journals do not replay to the recorded index digest."
-        case .targetNotEmpty: "Restore only works into an empty archive (no accounts)."
+        case .targetNotEmpty: "Restore only works into an empty archive (no accounts and no kept journals)."
+        case .archiveChanged: "Accounts changed while the backup ran. Nothing was written; try again."
         case .cancelled: "Cancelled. Nothing was written."
         case .io(let what): "A file operation failed (\(what)). Nothing partial was left behind."
         case .none: "The action failed (\((error as NSError).domain) \((error as NSError).code))."
@@ -176,7 +186,7 @@ struct MaintenanceView: View {
                     await model.backUp()
                 }
                 row("Check Backup…", "Confirm a backup folder is complete and unchanged.") { await model.checkBackup() }
-                if !model.hasAccounts {
+                if model.canRestore {
                     row("Restore from Backup…", "Only while there are no accounts, e.g. on a new Mac.") {
                         await model.restore()
                     }

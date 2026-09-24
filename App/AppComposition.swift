@@ -19,6 +19,8 @@ enum AppComposition {
         let verification: VerificationService
         let backups: BackupService
         let diagnostics: DiagnosticsService
+        /// Holds new syncs off while journals are being read as a whole.
+        let sync: HistorySyncService
     }
 
     static var appVersion: String {
@@ -68,7 +70,8 @@ enum AppComposition {
             diagnostics: DiagnosticsService(
                 archive: archive, journals: journals,
                 environment: .init(
-                    appVersion: appVersion, osVersion: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")))
+                    appVersion: appVersion, osVersion: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")),
+            sync: sync)
         return Services(
             accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance)
     }
