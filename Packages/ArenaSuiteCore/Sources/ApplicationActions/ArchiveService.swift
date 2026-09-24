@@ -56,15 +56,16 @@ public actor ArchiveService {
         return counts
     }
 
-    private func applyRecords(account: AccountID) async throws -> Int {
+    /// `limit`: apply nothing past this sequence (for replays that must match a given checkpoint).
+    private func applyRecords(account: AccountID, through limit: UInt64? = nil) async throws -> Int {
         let checkpoint = try index.checkpoint(for: account)
-        let root = await journals.root(for: account)
+        let root = journals.root(for: account)
         var pending: [(RecordRef, DecodedRecord)] = []
         var lastSequence = checkpoint
         var applied = 0
         try JournalReader(root: root).forEach { record in
             let sequence = record.envelope.sequence
-            guard sequence > checkpoint else { return }
+            guard sequence > checkpoint, sequence <= (limit ?? .max) else { return }
             let decoded = decoder.decode(record, account: account)
             pending.append(
                 (
@@ -90,6 +91,48 @@ public actor ArchiveService {
     }
 
     private static let batchSize = 200
+
+    // MARK: Replay checks (plan v3 §13, Phase 7)
+
+    /// Replays `accounts` from `journals` into a throwaway index under `scratch`, each account only
+    /// through its entry in `limits` (all records if absent), and returns that index's content
+    /// digest and counts. Never touches the live index. `scratch` is removed afterwards.
+    public static func replay(
+        journals: JournalStore, accounts: [AccountID], limits: [AccountID: UInt64]? = nil,
+        decoder: any ArchiveDecoding, scratch: URL
+    ) async throws -> (digest: String, counts: [String: Int]) {
+        try? FileManager.default.removeItem(at: scratch)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let service = ArchiveService(
+            index: try ArchiveIndex(url: scratch.appendingPathComponent("replay.sqlite")), journals: journals,
+            decoder: decoder, accounts: { accounts })
+        try await service.replayAll(accounts: accounts, limits: limits)
+        return (try service.contentDigest(), try service.counts())
+    }
+
+    private func replayAll(accounts: [AccountID], limits: [AccountID: UInt64]?) async throws {
+        try index.reset()
+        for account in accounts {
+            let limit = limits.map { $0[account] ?? 0 }
+            if limit == 0 { continue }
+            _ = try await applyRecords(account: account, through: limit)
+        }
+    }
+
+    /// Replays this archive's journals into a scratch index up to the live index's checkpoints and
+    /// compares digests: equal means the live index is exactly what the journal produces.
+    public func checkAgainstJournal(scratch: URL) async throws -> IndexCheck {
+        let live = try index.digestAndCheckpoints()
+        let known = Set(accounts()).union(live.checkpoints.keys)
+        let replayed = try await Self.replay(
+            journals: journals, accounts: known.sorted { $0.rawValue.uuidString < $1.rawValue.uuidString },
+            limits: live.checkpoints, decoder: decoder, scratch: scratch)
+        return IndexCheck(
+            liveDigest: live.digest, replayDigest: replayed.digest, checkpoints: live.checkpoints,
+            decoderVersion: decoder.version)
+    }
+
+    public nonisolated var decoderVersion: String { decoder.version }
 
     // MARK: Pass-through queries
 
@@ -130,7 +173,7 @@ public actor ArchiveService {
     /// (never from the index). For the evidence inspector.
     public func rawEvidence(account: AccountID, snapshotSequence: UInt64) async throws -> RawEvidence? {
         guard let ref = try index.snapshotLocation(account: account, sequence: snapshotSequence) else { return nil }
-        let root = await journals.root(for: account)
+        let root = journals.root(for: account)
         let record = try JournalReader(root: root).read(
             at: JournalLocation(segment: ref.segment, offset: ref.offset, length: ref.length))
         guard record.envelope.sequence == snapshotSequence else { return nil }
@@ -146,6 +189,16 @@ public actor ArchiveService {
     public nonisolated func contentDigest() throws -> String {
         try index.contentDigest()
     }
+}
+
+/// Result of `ArchiveService.checkAgainstJournal`.
+public struct IndexCheck: Sendable, Equatable {
+    public let liveDigest: String
+    public let replayDigest: String
+    /// Live index checkpoint per account (the replay stopped at the same sequences).
+    public let checkpoints: [AccountID: UInt64]
+    public let decoderVersion: String
+    public var matches: Bool { liveDigest == replayDigest }
 }
 
 public struct RawEvidence: Sendable, Equatable {

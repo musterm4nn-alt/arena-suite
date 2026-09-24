@@ -115,9 +115,18 @@ public actor JournalStore {
 
     public init(archiveRoot: URL) { accountsRoot = archiveRoot.appendingPathComponent("accounts", isDirectory: true) }
 
-    public func root(for account: AccountID) -> URL {
+    public nonisolated func root(for account: AccountID) -> URL {
         accountsRoot.appendingPathComponent(account.rawValue.uuidString, isDirectory: true)
             .appendingPathComponent("journal", isDirectory: true)
+    }
+
+    /// Accounts with a journal directory on disk, including removed accounts whose evidence is kept.
+    public nonisolated func accountsOnDisk() -> [AccountID] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: accountsRoot.path)) ?? []
+        return names.compactMap { UUID(uuidString: $0) }
+            .filter { FileManager.default.fileExists(atPath: root(for: AccountID(rawValue: $0)).path) }
+            .sorted { $0.uuidString < $1.uuidString }
+            .map { AccountID(rawValue: $0) }
     }
 
     public func writer(for account: AccountID) throws -> JournalWriter {
@@ -158,7 +167,7 @@ public actor HistorySyncService {
         let context = try await accounts.context(for: account)  // only signed-in accounts
         let principal = try await accounts.principal(for: account)
         let writer = try await journals.writer(for: account)
-        let root = await journals.root(for: account)
+        let root = journals.root(for: account)
         let engine = self.engine
         let progress = self.progress
         let task = Task {

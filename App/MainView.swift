@@ -8,12 +8,16 @@ import SwiftUI
 struct MainView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
+    let maintenance: MaintenanceModel
     @State private var showingAccounts = false
+    @State private var showingMaintenance = false
     @State private var showingInspector = false
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(accounts: accounts, archive: archive, showingAccounts: $showingAccounts)
+            SidebarView(
+                accounts: accounts, archive: archive, showingAccounts: $showingAccounts,
+                showingMaintenance: $showingMaintenance)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } content: {
             ConversationListView(archive: archive)
@@ -30,6 +34,15 @@ struct MainView: View {
             AccountsView(model: accounts)
                 .departureMono()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingAccounts = false } } }
+        }
+        .sheet(isPresented: $showingMaintenance) {
+            MaintenanceView(model: maintenance, accounts: accounts)
+                .departureMono()
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingMaintenance = false }.disabled(maintenance.working != nil)
+                    }
+                }
         }
         .task {
             await accounts.start()
@@ -54,6 +67,10 @@ struct MainView: View {
                     await archive.export(.markdown, exactRawBodies: false, to: FileManager.default.temporaryDirectory.appendingPathComponent("arena-preview-exports"))
                 }
             }
+            if arguments.contains("--preview-maintenance") {
+                showingMaintenance = true
+                await maintenance.verify()
+            }
             #endif
         }
     }
@@ -65,6 +82,7 @@ private struct SidebarView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
     @Binding var showingAccounts: Bool
+    @Binding var showingMaintenance: Bool
 
     var body: some View {
         List {
@@ -109,6 +127,7 @@ private struct SidebarView: View {
                     Text(message).font(Theme.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
                 Button { showingAccounts = true } label: { Text("Manage Accounts…").font(Theme.text) }
+                Button { showingMaintenance = true } label: { Text("Maintenance…").font(Theme.text) }
             }
             .padding(10)
         }

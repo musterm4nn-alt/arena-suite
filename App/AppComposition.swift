@@ -11,6 +11,19 @@ enum AppComposition {
         /// nil when the index could not be opened; `archiveUnavailable` says why.
         let archive: ArchiveService?
         let archiveUnavailable: String?
+        let maintenance: Maintenance
+    }
+
+    /// Verify job, backups and diagnostics (plan v3 §13, Phase 7).
+    struct Maintenance {
+        let verification: VerificationService
+        let backups: BackupService
+        let diagnostics: DiagnosticsService
+    }
+
+    static var appVersion: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return "\(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))"
     }
 
     /// `~/Library/Application Support/Arena Suite/Archive`, or `--archive-root <path>` for development.
@@ -31,17 +44,32 @@ enum AppComposition {
         let accounts = AccountService(registry: registry, sessions: sessions)
         let journals = JournalStore(archiveRoot: archiveRoot)
         let sync = HistorySyncService(accounts: accounts, journals: journals, engine: ArenaHistorySync(sessions: sessions))
+        let archive: ArchiveService?
+        let unavailable: String?
         do {
             let index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
-            let archive = ArchiveService(
+            archive = ArchiveService(
                 index: index, journals: journals, decoder: ArenaArchiveDecoder(),
                 accounts: { ((try? registry.load()) ?? []).map(\.id) })
-            return Services(accounts: accounts, sync: sync, archive: archive, archiveUnavailable: nil)
+            unavailable = nil
         } catch {
             // Accounts and sync keep working; the journal is untouched. Removing index/ rebuilds it.
-            return Services(
-                accounts: accounts, sync: sync, archive: nil,
-                archiveUnavailable: "The archive index could not be opened (\(error)). Your journal is untouched; quit and remove the index folder to rebuild it.")
+            archive = nil
+            unavailable = "The archive index could not be opened (\(error)). Your journal is untouched; quit and remove the index folder to rebuild it."
         }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let maintenance = Maintenance(
+            verification: VerificationService(
+                archive: archive, journals: journals,
+                accounts: { Array(Set(((try? registry.load()) ?? []).map(\.id)).union(journals.accountsOnDisk()))
+                    .sorted { $0.rawValue.uuidString < $1.rawValue.uuidString } },
+                scratch: FileManager.default.temporaryDirectory.appendingPathComponent("arena-suite-verify", isDirectory: true)),
+            backups: BackupService(archiveRoot: archiveRoot, decoder: ArenaArchiveDecoder(), appVersion: appVersion),
+            diagnostics: DiagnosticsService(
+                archive: archive, journals: journals,
+                environment: .init(
+                    appVersion: appVersion, osVersion: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")))
+        return Services(
+            accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance)
     }
 }

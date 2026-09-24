@@ -861,20 +861,37 @@ public final class ArchiveIndex: Sendable {
     /// SHA-256 over every row of every owned table, in a fixed order, each ordered by its full
     /// primary key. Identical content produces an identical digest.
     public func contentDigest() throws -> String {
+        try pool.read { db in try Self.contentDigest(db) }
+    }
+
+    /// Content digest and every account's checkpoint, read in one transaction so a concurrent
+    /// projection cannot make them disagree.
+    public func digestAndCheckpoints() throws -> (digest: String, checkpoints: [AccountID: UInt64]) {
         try pool.read { db in
-            var hasher = SHA256()
-            for table in Self.digestTables {
-                hasher.update(data: Self.tagged(.text, Data(table.utf8)))
-                let order = Self.digestOrder[table] ?? ""
-                let rows = try Row.fetchAll(db, sql: "SELECT * FROM \(table) ORDER BY \(order)")
-                for row in rows {
-                    for index in 0..<row.count {
-                        Self.hash(row[index]?.databaseValue ?? .null, into: &hasher)
-                    }
+            var checkpoints: [AccountID: UInt64] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT account_id, last_sequence FROM checkpoints") {
+                guard let text: String = row["account_id"], let uuid = UUID(uuidString: text),
+                    let value: Int64 = row["last_sequence"], value >= 0
+                else { continue }
+                checkpoints[AccountID(rawValue: uuid)] = UInt64(value)
+            }
+            return (try Self.contentDigest(db), checkpoints)
+        }
+    }
+
+    private static func contentDigest(_ db: Database) throws -> String {
+        var hasher = SHA256()
+        for table in Self.digestTables {
+            hasher.update(data: Self.tagged(.text, Data(table.utf8)))
+            let order = Self.digestOrder[table] ?? ""
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM \(table) ORDER BY \(order)")
+            for row in rows {
+                for index in 0..<row.count {
+                    Self.hash(row[index]?.databaseValue ?? .null, into: &hasher)
                 }
             }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: Row mapping

@@ -15,14 +15,14 @@ Updated 2026-09-24.
 | **4** Decoding & index | **Done, reviewed** | Real archive: 57 conversations / 628 messages / 3 422 blocks; rebuild digest identical; 0 unknown fields (N-013). `Docs/phase4-index-2026-09-24.md` |
 | **5** Native UI | **Done, reviewed** | Browse, transcript with lanes, offline search, evidence inspector; Departure Mono. `Docs/phase5-ui-2026-09-24.md` |
 | **6** Exports | **Done, reviewed** | Raw/Normalized/Markdown; 306 real exports deterministic and telemetry-free (N-014). `Docs/phase6-exports-2026-09-24.md` |
-| 7 Release | Next | |
+| **7** Hardening & release | **Done** (review pending) | Verify job, backup/restore (equal archive on real data), content-free diagnostics, packaging to `~/Applications`, 10× scale test. `Docs/phase7-release-2026-09-24.md`, `Docs/release-notes-1.0.md` |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next
 
 1. **A4 (tomorrow or later):** `open -n DerivedData/NativeAuthProof.app --args --phase0a` once more after
    ≥ 24 h, so the report shows whether the saved session still verifies and whether cookies were re-issued.
-2. Nothing else blocks Phase 2.
+2. v1 is complete after the Phase 7 review. Anything in plan §14 (read-only MCP, datasets, Track B, maintenance) needs your go decision first.
 
 ## Signing
 
@@ -34,4 +34,5 @@ items created by a signed build survive rebuilds without prompts (N-009).
 ```sh
 bash Scripts/test-offline.sh      # everything offline, including the crash gate
 bash Scripts/build.sh Debug       # app shell
+bash Scripts/package.sh           # Release build, install/upgrade ~/Applications/Arena Suite.app
 ```

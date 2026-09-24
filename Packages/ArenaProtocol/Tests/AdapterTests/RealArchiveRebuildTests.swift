@@ -75,3 +75,43 @@ func realArchiveExportsAreDeterministicAndTelemetryFree() async throws {
     print("real archive exports: \(files) files, all deterministic and telemetry-free")
     try? FileManager.default.removeItem(at: out)
 }
+
+/// Phase 7 on a real archive: verify the live index against the journals, then back up, check,
+/// restore into a temporary root and confirm the restored archive is equal. Read-only on the real
+/// archive; the backup and restore live in temporary folders. Prints counts and digests only.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["ARENA_SUITE_REAL_ARCHIVE"] != nil))
+func realArchiveVerifiesAndBacksUpToAnEqualArchive() async throws {
+    let archive = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ARENA_SUITE_REAL_ARCHIVE"]!)
+    let journals = JournalStore(archiveRoot: archive)
+    let accounts = journals.accountsOnDisk()
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("real-backup-\(UUID().uuidString)")
+    let live = ArchiveService(
+        index: try ArchiveIndex(url: archive.appendingPathComponent("index/archive.sqlite")), journals: journals,
+        decoder: ArenaArchiveDecoder(), accounts: { accounts })
+    let verification = await VerificationService(
+        archive: live, journals: journals, accounts: { accounts }, scratch: temp.appendingPathComponent("verify")
+    ).run()
+    print("verify: clean \(verification.isClean); records \(verification.journals.map(\.records)); index matches \(verification.index?.matches == true)")
+    #expect(verification.isClean)
+
+    let backups = BackupService(archiveRoot: archive, decoder: ArenaArchiveDecoder(), appVersion: "test")
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    let backup = try await backups.create(in: temp)
+    let check = try await backups.check(backup)
+    let restoredRoot = temp.appendingPathComponent("restored")
+    let restored = try await BackupService(archiveRoot: restoredRoot, decoder: ArenaArchiveDecoder(), appVersion: "test")
+        .restore(from: backup)
+    let replayOfSource = try await ArchiveService.replay(
+        journals: journals, accounts: accounts, decoder: ArenaArchiveDecoder(), scratch: temp.appendingPathComponent("replay"))
+    print("backup: accounts \(check.accounts), records \(check.records); restored digest equal \(restored.replayDigest == replayOfSource.digest)")
+    #expect(restored.replayDigest == replayOfSource.digest)
+    for account in accounts {
+        let a = try FileManager.default.contentsOfDirectory(atPath: journals.root(for: account).appendingPathComponent("segments").path)
+        for name in a where name.hasSuffix(".asj") || name.hasSuffix(".seal.json") {
+            let original = try Data(contentsOf: journals.root(for: account).appendingPathComponent("segments/\(name)"))
+            let copy = try Data(contentsOf: JournalStore(archiveRoot: restoredRoot).root(for: account).appendingPathComponent("segments/\(name)"))
+            #expect(original == copy, "segment bytes equal")
+        }
+    }
+    try FileManager.default.removeItem(at: temp)
+}

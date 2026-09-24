@@ -48,6 +48,20 @@ final class AccountsModel {
 
     func cancelSync(_ id: AccountID) async { await sync.cancel(id) }
 
+    var isSyncing: Bool { !syncing.isEmpty }
+
+    /// After a restore: reads the restored account list and restores saved sessions.
+    func reloadAccounts() async {
+        do {
+            try await service.load()
+            await service.restoreAll()
+            message = nil
+        } catch {
+            message = "The account list could not be read. Nothing was changed."
+        }
+        await refresh()
+    }
+
     /// Called after each finished sync (the app updates the archive index).
     var onSyncFinished: ((AccountID) async -> Void)?
     private var started = false
