@@ -9,15 +9,43 @@ final class AccountsModel {
     private(set) var accounts: [AccountSummary] = []
     private(set) var working: Set<AccountID> = []
     private(set) var loading = true
+    private(set) var syncing: [AccountID: SyncProgress] = [:]
+    private(set) var lastSync: [AccountID: SyncManifest] = [:]
     var message: String?
 
     private let service: AccountService
+    private let sync: HistorySyncService
     private let statusURL: URL
 
-    init(service: AccountService, archiveRoot: URL) {
-        self.service = service
+    init(services: AppComposition.Services, archiveRoot: URL) {
+        service = services.accounts
+        sync = services.sync
         statusURL = archiveRoot.appendingPathComponent("diagnostics/accounts-status.json")
     }
+
+    /// User-initiated read-only history sync (plan v3 §2). One job per account.
+    func syncHistory(_ id: AccountID) async {
+        guard syncing[id] == nil else { return }
+        syncing[id] = SyncProgress(stage: .verifying, pages: 0, entries: 0, detailsDone: 0, detailsNeeded: 0)
+        let poll = Task { [sync] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(300))
+                if let progress = await sync.currentProgress(id) { self.syncing[id] = progress }
+            }
+        }
+        do {
+            let manifest = try await sync.sync(id)
+            lastSync[id] = manifest
+            message = nil
+        } catch {
+            message = Self.describe(error)
+        }
+        poll.cancel()
+        syncing[id] = nil
+        await refresh()
+    }
+
+    func cancelSync(_ id: AccountID) async { await sync.cancel(id) }
 
     func start() async {
         do {
@@ -29,6 +57,11 @@ final class AccountsModel {
         }
         await refresh()
         loading = false
+        // Development: `--sync-on-launch` runs the same user-initiated sync for each signed-in
+        // account in turn (used for live Phase 3 verification). Never on by default.
+        if CommandLine.arguments.contains("--sync-on-launch") {
+            for account in accounts where account.state == .signedIn { await syncHistory(account.id) }
+        }
     }
 
     func add(name: String, email: String, password: String) async -> Bool {
@@ -78,6 +111,7 @@ final class AccountsModel {
                 let id: String
                 let state: String
                 let credentialGeneration: UInt64
+                let lastSync: SyncManifest?
             }
             let schema = "accounts-status/1"
             let updatedAt: String
@@ -86,7 +120,9 @@ final class AccountsModel {
         let status = Status(
             updatedAt: ISO8601DateFormatter().string(from: Date()),
             accounts: accounts.map {
-                .init(id: $0.id.rawValue.uuidString, state: $0.state.rawValue, credentialGeneration: $0.credentialGeneration)
+                .init(
+                    id: $0.id.rawValue.uuidString, state: $0.state.rawValue,
+                    credentialGeneration: $0.credentialGeneration, lastSync: lastSync[$0.id])
             })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

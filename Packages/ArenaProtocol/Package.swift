@@ -19,8 +19,13 @@ let package = Package(
                 "FoundationTransport",
                 .product(name: "SuiteDomain", package: "ArenaSuiteCore"),
                 .product(name: "ApplicationActions", package: "ArenaSuiteCore"),
+                .product(name: "CaptureJournal", package: "ArenaSuiteCore"),
             ]),
-        .testTarget(name: "AdapterTests", dependencies: ["ArenaAdapter", "FoundationTransport"]),
+        .testTarget(
+            name: "AdapterTests",
+            dependencies: [
+                "ArenaAdapter", "FoundationTransport", .product(name: "CaptureJournal", package: "ArenaSuiteCore"),
+            ]),
         .testTarget(name: "TransportTests", dependencies: ["FoundationTransport"]),
     ],
     swiftLanguageModes: [.v6]

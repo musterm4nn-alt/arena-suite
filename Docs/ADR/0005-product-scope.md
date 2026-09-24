@@ -57,3 +57,10 @@ or I ask for it to be re-opened.
 - A6 cross-build restore / signing: **Verified (N-009)** with the Apple Development identity, once the item is created by a signed build.
 - A7 two accounts: **Verified (N-010)** in one process: distinct principals, 0 shared entries, 0 shared cookie values.
 - A8 detail fixture: **Done** — `Fixtures/SanitizedArena/native-detail.fixture.json` (metadata telemetry masked).
+
+## Decision 2026-09-24 — Keychain storage
+
+Keep the legacy login Keychain for session material in v1 (user decision). Items are readable
+without a prompt only by apps with the same code-signing identity and are not synchronized, but
+they are not device-bound (the login Keychain ignores `kSecAttrAccessible`). Moving to the
+data-protection Keychain would require a keychain-access-group entitlement and provisioning profile.

@@ -4,6 +4,11 @@ import Foundation
 
 /// Composition root: the only app file that knows concrete implementations (plan v3 §5, §16).
 enum AppComposition {
+    struct Services {
+        let accounts: AccountService
+        let sync: HistorySyncService
+    }
+
     /// `~/Library/Application Support/Arena Suite/Archive`, or `--archive-root <path>` for development.
     static var archiveRoot: URL {
         let arguments = CommandLine.arguments
@@ -14,9 +19,14 @@ enum AppComposition {
         return support.appendingPathComponent("Arena Suite/Archive", isDirectory: true)
     }
 
-    static func makeAccountService() -> AccountService {
-        AccountService(
+    static func makeServices() -> Services {
+        let sessions = ArenaAccountSessions()
+        let accounts = AccountService(
             registry: AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json")),
-            sessions: ArenaAccountSessions())
+            sessions: sessions)
+        let sync = HistorySyncService(
+            accounts: accounts, journals: JournalStore(archiveRoot: archiveRoot),
+            engine: ArenaHistorySync(sessions: sessions))
+        return Services(accounts: accounts, sync: sync)
     }
 }

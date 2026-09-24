@@ -37,6 +37,10 @@ entry types `evaluation`/`agentic`, auth-cookie names and lifetimes, `/api/me` w
 isolation in one process. Also records that detail `messages[].metadata` contains per-user
 anti-abuse telemetry. The native detail fixture now exists (`native-detail.fixture.json`).
 
+N-012: [phase3-history-sync-2026-09-24.md](phase3-history-sync-2026-09-24.md) records full native
+history sync for three accounts (57 list entries, 51 detail snapshots, one 2-page listing), a resumed
+sync after `kill -9`, an incremental re-sync, and that list entries are ordered newest-first by `updatedAt`.
+
 N-011: [phase2-accounts-2026-09-24.md](phase2-accounts-2026-09-24.md) records three accounts signed in
 through the product app's adapter and restored after relaunch and after a rebuild with a new signature.
 

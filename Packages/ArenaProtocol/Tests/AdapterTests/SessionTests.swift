@@ -42,6 +42,7 @@ final class FakeTransport: HTTPTransporting, @unchecked Sendable {
     }
 
     func cookieFingerprint(domains: Set<String>) -> String { lock.withLock { String(decoding: jar, as: UTF8.self) } }
+    func appendReplies(_ more: [HTTPExchange]) { lock.withLock { replies.append(contentsOf: more.map { .success($0) }) } }
     var requestCount: Int { lock.withLock { requests.count } }
     var paths: [String] { lock.withLock { requests.compactMap { $0.url?.path } } }
 }

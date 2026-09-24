@@ -7,10 +7,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
     "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
-    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain"},
+    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain", "CaptureJournal"},
     "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
     "Packages/ArenaProtocol/Sources/ArenaAdapter": {
-        "Foundation", "SuiteDomain", "ApplicationActions", "FoundationTransport", "Security",
+        "Foundation", "SuiteDomain", "ApplicationActions", "FoundationTransport", "Security", "CaptureJournal",
     },
     "Packages/ArenaProtocol/Sources/FoundationTransport": {"Foundation", "Darwin"},
 }

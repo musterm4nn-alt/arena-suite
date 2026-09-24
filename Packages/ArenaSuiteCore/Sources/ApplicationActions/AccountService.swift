@@ -96,6 +96,14 @@ public actor AccountService {
         return record.context
     }
 
+    /// The principal a job must verify against. Only signed-in accounts.
+    public func principal(for id: AccountID) throws -> PrincipalIdentity {
+        guard let record = records.first(where: { $0.id == id }) else { throw AccountError.unknownAccount }
+        let state = states[id] ?? .unverified
+        guard state == .signedIn else { throw AccountError.notSignedIn(state) }
+        return record.principal
+    }
+
     public func addAccount(email: String, password: String, displayName: String?) async throws -> AccountSummary {
         let id = AccountID()
         busy.insert(id)

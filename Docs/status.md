@@ -10,9 +10,9 @@ Updated 2026-09-24.
 | **0-A** Read-only feasibility | **Passed, one check pending** | A1–A3 and A5–A8 done (N-007…N-010, `Docs/phase0a-observation-2026-09-24.md`). Pending: A4's ≥24 h session check (rerun `--phase0a` on or after 2026-09-25). Accepted limitation: `agentic` entries are archived list-only until a detail route is observed. |
 | **Gate R** Terms and account risk | **Done** | `Docs/ADR/0005-product-scope.md`. Updated 2026-09-24: multiple isolated accounts allowed in v1. |
 | **1** Journal | **Done (offline), reviewed** | `CaptureJournal`, spec `Docs/journal-format-v1.md`, golden fixture + independent Python reader, 28 unit tests, SIGKILL crash gate (9 boundaries). Independent review findings all fixed: `Docs/reviews/2026-09-24-phase1-phase0a.md` |
-| **2** Accounts & sessions | **Done, reviewed** | Live: 3 accounts restored after relaunch and rebuild (N-011). Review findings fixed: `Docs/reviews/2026-09-24-phase2.md`. Open decision: data-protection Keychain (needs provisioning profile) |
-| 3 History sync | **Next** | Cursor pagination verified (N-008); detail fixture exists; requests go through `performVerified` |
-| 4 Decoding & index | Not started | GRDB 7.11.1 pinned in `Tools/DependencyProbe`; `metadata` telemetry handling per plan §12 |
+| **2** Accounts & sessions | **Done, reviewed** | Live: 3 accounts restored after relaunch and rebuild (N-011). Review findings fixed: `Docs/reviews/2026-09-24-phase2.md`. Keychain: legacy login Keychain kept by decision (ACL-protected, not device-bound) |
+| **3** History sync | **Done** | Live: 3 accounts synced (57 entries, 51 archived), kill -9 mid-sync resumed with no refetch, incremental re-sync fetched nothing (N-012). `Docs/phase3-history-sync-2026-09-24.md` |
+| 4 Decoding & index | **Next** | GRDB 7.11.1 pinned; decode from journal only; `metadata` telemetry excluded from default views/exports (plan §12) |
 | 5 UI · 6 Exports · 7 Release | Not started | |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 

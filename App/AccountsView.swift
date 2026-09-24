@@ -64,6 +64,11 @@ struct AccountsView: View {
             VStack(alignment: .leading) {
                 Text(account.displayName)
                 Text(Self.label(account.state)).font(.caption).foregroundStyle(Self.color(account.state))
+                if let progress = model.syncing[account.id] {
+                    Text(Self.describe(progress)).font(.caption).foregroundStyle(.secondary)
+                } else if let manifest = model.lastSync[account.id] {
+                    Text(Self.describe(manifest)).font(.caption).foregroundStyle(manifest.outcome == .completed ? Color.secondary : .orange)
+                }
             }
             Spacer()
             if model.working.contains(account.id) {
@@ -76,7 +81,15 @@ struct AccountsView: View {
                 }
                 Button("Cancel") { confirmRemoval = nil }
             } else {
-                if account.state == .signedIn || account.state == .unreachable {
+                if model.syncing[account.id] != nil {
+                    ProgressView().controlSize(.small)
+                    Button("Stop") { Task { await model.cancelSync(account.id) } }
+                } else if account.state == .signedIn {
+                    Button("Sync History") { Task { await model.syncHistory(account.id) } }
+                }
+                if model.syncing[account.id] != nil {
+                    EmptyView()
+                } else if account.state == .signedIn || account.state == .unreachable {
                     Button("Verify") { Task { await model.verify(account.id) } }
                 } else {
                     Button("Sign In…") { sheet = .signIn(account) }
@@ -85,6 +98,29 @@ struct AccountsView: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    static func describe(_ progress: SyncProgress) -> String {
+        switch progress.stage {
+        case .verifying: "Verifying identity…"
+        case .listing: "Listing history: \(progress.pages) page(s), \(progress.entries) conversations…"
+        case .details: "Archiving conversations: \(progress.detailsDone) of \(progress.detailsNeeded)…"
+        case .finishing: "Finishing…"
+        }
+    }
+
+    static func describe(_ manifest: SyncManifest) -> String {
+        let counts = "\(manifest.entriesListed) listed, \(manifest.detailsFetched) archived, \(manifest.detailsUnchanged) unchanged"
+            + (manifest.detailsFailed > 0 ? ", \(manifest.detailsFailed) failed" : "")
+        switch manifest.outcome {
+        case .completed: return "Last sync complete (observed pagination): " + counts
+        case .partial: return "Last sync stopped (\(manifest.reason ?? "unknown")); resumable. " + counts
+        case .blocked: return "Last sync blocked by Arena (\(manifest.reason ?? "")). Nothing retried."
+        case .needsSignIn: return "Last sync needs a new sign-in."
+        case .sessionReplaced: return "Last sync stopped: account signed in again during sync."
+        case .cancelled: return "Last sync stopped by you; resumable. " + counts
+        case .storageFailed: return "Last sync stopped: the archive could not be written."
+        }
     }
 
     static func label(_ state: AccountAuthState) -> String {

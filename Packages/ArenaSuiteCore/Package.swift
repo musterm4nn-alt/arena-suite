@@ -11,9 +11,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "SuiteDomain"),
-        .target(name: "ApplicationActions", dependencies: ["SuiteDomain"]),
+        .target(name: "ApplicationActions", dependencies: ["SuiteDomain", "CaptureJournal"]),
         .target(name: "CaptureJournal"),
-        .testTarget(name: "SuiteDomainTests", dependencies: ["SuiteDomain", "ApplicationActions"]),
+        .testTarget(name: "SuiteDomainTests", dependencies: ["SuiteDomain", "ApplicationActions", "CaptureJournal"]),
         .testTarget(name: "CaptureJournalTests", dependencies: ["CaptureJournal"]),
     ],
     swiftLanguageModes: [.v6]
