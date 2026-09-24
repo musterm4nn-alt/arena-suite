@@ -1,7 +1,7 @@
 # Review — Phase 1 journal and Phase 0-A proof (2026-09-24)
 
 Reviewer: opencode `reviewer` agent, model `opencode/muse-spark-1.3-contributor-free#xhigh`,
-session `ses_f2d42a3baffeldnx5ZMq4DXrmP`. Scope: `git diff 100f17f..51a3243`.
+session `ses_f2d42a3baffeldnx5ZMq4DXrmP`. Scope: `git diff 100f17f..99c158d` (reviewed as `51a3243` before the history rewrite noted below).
 The reviewer saw the actual diff and ran both Swift test suites itself; its permissions blocked the
 crash gate and the Python golden checker (both run in `Scripts/test-offline.sh`, passing).
 
@@ -21,4 +21,7 @@ Verdict: **not ready** → all findings addressed below; full offline suite pass
 | Low | Fixture hashes not self-checked | Covered by the High fix's test |
 | — | Spec/code drift in quarantine file naming | Spec corrected |
 
-Note: the length-bearing fixture version exists in local commit `51a3243` (never pushed).
+History: on 2026-09-24, at the user's request, the length-free fixture (and the team-ID-free doc line) were
+folded into the Phase 0-A commit before any push. Old → new hashes: `51a3243` → `99c158d`,
+`9009421` → `c4a496b`, `b878007` → `fa8509f`, `b6d2983` → `57c7e22`. No reachable commit contains the
+length-bearing fixture.
