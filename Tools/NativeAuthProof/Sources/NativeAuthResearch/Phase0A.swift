@@ -406,8 +406,9 @@ enum DetailSanitizer {
             if value.wholeMatch(of: uuid) != nil { return alias(value) }
             if let key, enumerationKeys.contains(key), value.wholeMatch(of: enumeration) != nil { return value }
             replaced += 1
+            // Lengths are withheld too: under `metadata` they narrow e.g. the email domain or location.
             if value.prefixMatch(of: timestamp) != nil { return "[timestamp]" }
-            return "[string:\(value.utf8.count)]"
+            return "[string]"
         }
         // Message `metadata` carries per-user anti-abuse telemetry (bot/reCAPTCHA scores, JA4
         // fingerprint ratios, activity counts, account age). Inside it, numbers and booleans are

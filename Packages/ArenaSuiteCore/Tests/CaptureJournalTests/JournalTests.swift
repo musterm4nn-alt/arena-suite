@@ -437,3 +437,175 @@ func writeFailureStopsWriterAndReopenRecoversPrefix(_ code: Int32) throws {
     try writer.close()
     #expect(try JournalVerifier.verify(root: root).isClean)
 }
+
+// MARK: - Review follow-ups (ses_f2d42a3baffeldnx5ZMq4DXrmP)
+
+private func mode(_ url: URL) throws -> Int {
+    (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue ?? -1
+}
+
+@Test func existingDirectoriesAndFilesAreTightenedOnOpen() throws {
+    let root = try temporaryRoot()
+    let writer = try JournalWriter.open(at: root, options: fast)
+    _ = try writer.append(draft(1))
+    try writer.close()
+    let layout = JournalLayout(root: root)
+    try FileManager.default.createDirectory(at: layout.quarantine, withIntermediateDirectories: true)
+    for directory in [root, layout.segments, layout.quarantine] {
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: layout.segmentURL(1).path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: layout.lockFile.path)
+
+    try JournalWriter.open(at: root, options: fast).close()
+    for directory in [root, layout.segments, layout.quarantine] { #expect(try mode(directory) == 0o700) }
+    #expect(try mode(layout.segmentURL(1)) == 0o600)
+    #expect(try mode(layout.lockFile) == 0o600)
+}
+
+@Test func quarantineTemporaryFilesAreRemovedAndReported() throws {
+    let root = try temporaryRoot()
+    let writer = try JournalWriter.open(at: root, options: fast)
+    _ = try writer.append(draft(1))
+    try writer.close()
+    let layout = JournalLayout(root: root)
+    try FileManager.default.createDirectory(at: layout.quarantine, withIntermediateDirectories: true)
+    let leftover = layout.quarantine.appendingPathComponent("000001-0000000001.tail.tmp")
+    try Data("partial".utf8).write(to: leftover)
+    #expect(try !JournalVerifier.verify(root: root).isClean)
+
+    let reopened = try JournalWriter.open(at: root, options: fast)
+    #expect(reopened.recoveryReport.removedTemporaryFiles == [leftover.lastPathComponent])
+    #expect(!FileManager.default.fileExists(atPath: leftover.path))
+}
+
+/// Fails every sync once armed, including directory syncs.
+private func failingSyncIO(_ armed: ByteBudget) -> JournalIO {
+    JournalIO(
+        write: JournalIO.system.write,
+        sync: { fd, full in
+            guard armed.take(1) != nil else {
+                errno = EIO
+                return -1
+            }
+            return JournalIO.system.sync(fd, full)
+        }, observe: { _ in })
+}
+
+@Test func syncFailureWhileSealingStopsWriterAndReopenRecovers() throws {
+    let root = try temporaryRoot()
+    let armed = ByteBudget()
+    let options = JournalOptions(maximumSegmentBytes: 300, durability: .fsync)
+    let writer = try JournalWriter.open(at: root, options: options, io: failingSyncIO(armed))
+    _ = try writer.append(draft(1))
+    _ = try writer.append(draft(2))
+    armed.arm(0)
+    // The next append must seal segment 1 first; the sync before sealing fails.
+    #expect(throws: JournalError.self) { for index in 3...6 { _ = try writer.append(draft(index)) } }
+    #expect(throws: JournalError.writerFailed) { _ = try writer.append(draft(9)) }
+    try writer.close()
+
+    let reopened = try JournalWriter.open(at: root, options: options)
+    try reopened.close()
+    let records = try JournalReader(root: root).readAll()
+    #expect(records.prefix(2).map(\.payload) == [Data("payload-1".utf8), Data("payload-2".utf8)])
+    #expect(try JournalVerifier.verify(root: root).isClean)
+}
+
+@Test func directorySyncFailureWhenCreatingSegmentStopsWriter() throws {
+    let root = try temporaryRoot()
+    let armed = ByteBudget()
+    armed.arm(0)
+    let writer = try JournalWriter.open(at: root, options: fast, io: failingSyncIO(armed))
+    #expect(throws: JournalError.io(operation: "sync directory", errno: EIO)) { _ = try writer.append(draft(1)) }
+    #expect(throws: JournalError.writerFailed) { _ = try writer.append(draft(2)) }
+    try writer.close()
+    let reopened = try JournalWriter.open(at: root, options: fast)
+    let receipt = try reopened.append(draft(3))
+    #expect(receipt.sequence == 1)
+}
+
+@Test func manifestWriteFailureStopsWriterWithoutSealing() throws {
+    // Size segments so records 1 and 2 fit and record 3 forces a seal of segment 1.
+    let probe = try temporaryRoot()
+    let probeWriter = try JournalWriter.open(at: probe, options: fast)
+    let recordLength = try probeWriter.append(draft(1)).location.length
+    try probeWriter.close()
+
+    let root = try temporaryRoot()
+    let budget = ByteBudget()
+    let io = JournalIO(
+        write: { fd, pointer, count in
+            guard let allowed = budget.take(count) else {
+                errno = ENOSPC
+                return -1
+            }
+            return Darwin.write(fd, pointer, allowed)
+        },
+        sync: JournalIO.system.sync, observe: { _ in })
+    let options = JournalOptions(maximumSegmentBytes: recordLength * 2 + 1, durability: .fsync)
+    let writer = try JournalWriter.open(at: root, options: options, io: io)
+    _ = try writer.append(draft(1))
+    _ = try writer.append(draft(2))
+    budget.arm(10)  // part of the temp manifest, not all of it
+    #expect(throws: JournalError.io(operation: "write 000001.seal.json.tmp", errno: ENOSPC)) {
+        _ = try writer.append(draft(3))
+    }
+    #expect(throws: JournalError.writerFailed) { _ = try writer.append(draft(4)) }
+    try writer.close()
+    let layout = JournalLayout(root: root)
+    #expect(!FileManager.default.fileExists(atPath: layout.manifestURL(1).path))
+    #expect(FileManager.default.fileExists(atPath: layout.temporaryManifestURL(1).path))
+
+    let reopened = try JournalWriter.open(at: root, options: options)
+    #expect(reopened.recoveryReport.removedTemporaryFiles == [layout.temporaryManifestURL(1).lastPathComponent])
+    #expect(try reopened.append(draft(5)).sequence == 3)
+    try reopened.close()
+    #expect(try JournalVerifier.verify(root: root).isClean)
+    #expect(try JournalReader(root: root).readAll().map(\.envelope.sequence) == [1, 2, 3])
+}
+
+@Test func concurrentAppendsStayContinuous() async throws {
+    let root = try temporaryRoot()
+    let writer = try JournalWriter.open(at: root, options: JournalOptions(maximumSegmentBytes: 4096, durability: .fsync))
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for task in 0..<8 {
+            group.addTask {
+                for index in 0..<50 { _ = try writer.append(draft(task * 1000 + index)) }
+            }
+        }
+        try await group.waitForAll()
+    }
+    try writer.close()
+    let records = try JournalReader(root: root).readAll()
+    #expect(records.map(\.envelope.sequence) == Array(1...400))
+    #expect(Set(records.map(\.payload)).count == 400)
+    #expect(try JournalVerifier.verify(root: root).isClean)
+}
+
+@Test func unknownEnvelopeKeysAreIgnoredAndStoredBytesPreserved() throws {
+    let root = try temporaryRoot()
+    let writer = try JournalWriter.open(at: root, options: fast)
+    _ = try writer.append(draft(1))
+    try writer.close()
+    // Hand-build record 2 as a future writer might: an extra envelope key.
+    let envelope = Data(
+        #"{"format":1,"future_key":{"x":[1,2]},"kind":"exchange","metadata":{},"observed_at":"2026-09-24T10:00:00.000Z","record_id":"00000000-0000-4000-8000-0000000000AA","sequence":"2","transformations":[]}"#
+            .utf8)
+    let payload = Data("future".utf8)
+    let header = RecordCodec.header(envelopeLength: envelope.count, payloadLength: payload.count)
+    let record = header + envelope + payload + RecordCodec.digest(header: header, envelope: envelope, payload: payload)
+    let handle = try FileHandle(forWritingTo: segmentURL(root, 1))
+    try handle.seekToEnd()
+    try handle.write(contentsOf: record)
+    try handle.close()
+
+    #expect(try JournalVerifier.verify(root: root).isClean)
+    let reopened = try JournalWriter.open(at: root, options: fast)
+    #expect(reopened.recoveryReport.quarantined.isEmpty)
+    #expect(try reopened.append(draft(3)).sequence == 3)
+    try reopened.close()
+    let stored = try JournalReader(root: root).readAll()[1]
+    #expect(stored.envelopeBytes == envelope)
+    #expect(stored.payload == payload)
+}

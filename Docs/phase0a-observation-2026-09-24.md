@@ -1,7 +1,7 @@
 # N-008 … N-010 — Phase 0-A experiments (A2–A8)
 
-Date: 2026-09-24. Tool: `Tools/NativeAuthProof`, identity-signed (stable Apple Development identity, see
-`Scripts/build-auth-proof.sh`), direct native Foundation transport. Read-only: no generation,
+Date: 2026-09-24. Tool: `Tools/NativeAuthProof`, signed with a stable Apple Development identity (kept in
+the git-ignored `Config/Signing.local.env`; see `Scripts/build-auth-proof.sh`), direct native Foundation transport. Read-only: no generation,
 no continuation, no vote. Requests one at a time, at least 1 s apart. Reports are value-free
 (counts, shapes, names, booleans); raw bodies stayed in process memory and were discarded.
 Local reports: `DerivedData/Phase0AResult-A*.json`, `DerivedData/IsolationResult.json` (not in Git).
@@ -21,7 +21,10 @@ object with anti-abuse and routing data about the user: bot and reCAPTCHA scores
 ratios and ranks, Cloudflare geo fields and hashed IP, account age, hour/day of activity, prompt
 and vote counts, and for assistant messages routing (`fromAutoRouter`, `p2lConfig`, `routedModel*`),
 timing and token usage. The first sanitizer pass kept these numbers; a second pass masked every
-number/boolean under `metadata` before the fixture was committed. Consequences in plan v3 §12.
+number/boolean under `metadata` before the fixture was committed. An independent review
+(`ses_f2d42a3baffeldnx5ZMq4DXrmP`) then found that `[string:<length>]` markers still leaked
+lengths (e.g. of the email domain and city); sanitizer v2 withholds all string lengths and the
+fixture was regenerated. Consequences in plan v3 §12.
 
 Other detail shape observed: top-level `revealedModels`, `maskedEvaluations`, `pairwiseFeedbacks`,
 `pointwiseFeedbacks`, `deletionPendingProcessing`; per message `participantPosition`, `modelId`,

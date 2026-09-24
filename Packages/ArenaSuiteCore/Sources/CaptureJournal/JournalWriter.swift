@@ -62,6 +62,7 @@ public final class JournalWriter: @unchecked Sendable {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: privateDirectory)
         try FileManager.default.createDirectory(
             at: layout.segments, withIntermediateDirectories: true, attributes: privateDirectory)
+        try layout.enforcePrivatePermissions()
         let lockFD = Darwin.open(layout.lockFile.path, O_RDWR | O_CREAT, 0o600)
         guard lockFD >= 0 else { throw JournalError.io(operation: "open lock", errno: errno) }
         guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
@@ -218,7 +219,8 @@ public final class JournalWriter: @unchecked Sendable {
             synchronizedThrough = lastAppended
             if current.size == 0 {
                 try FileManager.default.removeItem(at: layout.segmentURL(current.number))
-                try io.synchronizeDirectory(layout.segments, operation: "sync directory")
+                try io.synchronizeDirectory(
+                    layout.segments, full: options.durability == .fullSync, operation: "sync directory")
             }
         }
     }
@@ -237,7 +239,8 @@ public final class JournalWriter: @unchecked Sendable {
         let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND, 0o600)
         guard fd >= 0 else { throw JournalError.io(operation: "create segment", errno: errno) }
         do {
-            try io.synchronizeDirectory(layout.segments, operation: "sync directory")
+            try io.synchronizeDirectory(
+                layout.segments, full: options.durability == .fullSync, operation: "sync directory")
         } catch {
             Darwin.close(fd)
             throw error

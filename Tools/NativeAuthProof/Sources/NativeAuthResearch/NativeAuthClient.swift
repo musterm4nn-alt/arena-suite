@@ -372,6 +372,8 @@ enum HistoryPageRecipe {
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     static func url(limit: Int, includeArchived: Bool, cursor: String?) -> URL? {
+        // Client-side sanity guard only. Observed server values so far: 5 and 20 (N-005, N-008);
+        // no server maximum has been observed.
         guard (1...100).contains(limit) else { return nil }
         var query = "limit=\(limit)&includeArchived=\(includeArchived)"
         if let cursor {

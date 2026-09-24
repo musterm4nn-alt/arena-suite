@@ -18,9 +18,13 @@ One journal per account, rooted at a directory chosen by the caller:
     000001.seal.json           seal manifest for 000001
     000002.asj                 active segment (no seal manifest)
   quarantine/
-    000002-0000004096-20260924T101500Z.tail   bytes removed from a torn tail, preserved verbatim
+    000002-0000004096.tail     bytes removed from a torn tail at offset 4096, preserved verbatim
 ```
 
+- Permissions: every directory is `0700` and every file `0600`. The writer re-applies this on each
+  open (so directories restored from backups are tightened) and refuses symlinks; failure blocks open.
+- Quarantine names are `<segment>-<10-digit offset>.tail`; an identical existing file is reused, a
+  different one gets a `-2`, `-3`, … suffix, so an interrupted recovery never duplicates evidence.
 - Segment numbers are 6-digit, zero-padded, starting at `000001`, strictly increasing, no gaps.
 - At most one segment is unsealed: the one with the highest number.
 - A segment is created lazily on the first append after open/rotation. An empty active segment
@@ -75,7 +79,7 @@ Absent optional keys are omitted, not written as `null`. Readers must ignore unk
 
 ## Seal manifest (`NNNNNN.seal.json`)
 
-Written atomically (temp file, `fsync`, `rename`, directory `fsync`) **before** the next
+Written atomically (temp file, sync, `rename`, directory sync; `F_FULLFSYNC` where supported under the default durability) **before** the next
 segment is created.
 
 ```json
@@ -97,7 +101,9 @@ A sealed segment is immutable. Its file hash must match `sha256`.
 
 ## Recovery on open
 
-1. Acquire `journal.lock` (non-blocking). If held, fail with `alreadyOpen`.
+1. Enforce permissions, then acquire `journal.lock` (non-blocking). If held, fail with `alreadyOpen`.
+   Remove leftover `*.tmp` files in `segments/` and `quarantine/` (atomic writes that never reached
+   their rename) and report them.
 2. For every sealed segment: check file size and SHA-256 against its manifest. A mismatch is
    **corruption in a sealed segment**: open fails; nothing is repaired or skipped.
 3. For the highest segment, if unsealed: parse records from offset 0. At the first invalid or

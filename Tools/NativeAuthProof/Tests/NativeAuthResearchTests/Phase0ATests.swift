@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -143,8 +144,8 @@ private let signing = SigningInfo(adhoc: true, teamIdentifier: nil, cdhashPrefix
     #expect(object["a"] as? String == "id-1")
     #expect((object["b"] as? [String]) == ["id-1"])
     #expect(object["role"] as? String == "assistant")
-    #expect((object["status"] as? String)?.hasPrefix("[string:") == true)
-    #expect(object["note"] as? String == "[string:13]")
+    #expect(object["status"] as? String == "[string]")
+    #expect(object["note"] as? String == "[string]")
     #expect(object["content"] as? String == "Arena Suite continuation check.")
     #expect(object["n"] as? Int == 3 && object["ok"] as? Bool == true && object["none"] is NSNull)
     #expect((object["id-1"] as? [String: Any])?["mode"] as? String == "direct-battle")
@@ -213,4 +214,7 @@ private let signing = SigningInfo(adhoc: true, teamIdentifier: nil, cdhashPrefix
     #expect((detail["lastMessageIds"] as? [String]) == [parent].compactMap { $0 })
     let text = String(decoding: body, as: UTF8.self)
     #expect(!text.contains("0.") && !text.contains("ja4\":0"), "telemetry numbers must be masked")
+    #expect(!text.contains("[string:"), "string lengths must be withheld")
+    #expect(SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined() == unit["sha256"] as? String)
+    #expect((fields["stream_sha256"] as? [String: String])?["response"] == unit["sha256"] as? String)
 }

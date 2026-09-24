@@ -24,10 +24,43 @@ struct JournalLayout: Sendable {
         }.sorted()
     }
 
+    /// Leftover atomic-write temp files in `segments/` and `quarantine/`.
     func temporaryFiles() throws -> [URL] {
-        try FileManager.default.contentsOfDirectory(atPath: segments.path)
-            .filter { $0.hasSuffix(".tmp") }
-            .map { segments.appendingPathComponent($0) }
+        try [segments, quarantine].flatMap { directory -> [URL] in
+            guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+            return try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .filter { $0.hasSuffix(".tmp") }
+                .map { directory.appendingPathComponent($0) }
+        }
+    }
+
+    /// Owner-only access (plan v3 §2): directories 0700, files 0600. Applied on every open, so
+    /// directories restored from a backup or created by other tools are tightened too. Fails closed.
+    func enforcePrivatePermissions() throws {
+        func tighten(_ path: String, to mode: mode_t) throws {
+            var info = stat()
+            guard lstat(path, &info) == 0 else {
+                if errno == ENOENT { return }
+                throw JournalError.io(operation: "stat \((path as NSString).lastPathComponent)", errno: errno)
+            }
+            guard (info.st_mode & S_IFMT) != S_IFLNK else {
+                throw JournalError.io(operation: "refuse symlink \((path as NSString).lastPathComponent)", errno: ELOOP)
+            }
+            guard info.st_mode & 0o7777 != mode else { return }
+            guard chmod(path, mode) == 0 else {
+                throw JournalError.io(operation: "chmod \((path as NSString).lastPathComponent)", errno: errno)
+            }
+        }
+        for directory in [root, segments, quarantine] {
+            try tighten(directory.path, to: 0o700)
+            guard FileManager.default.fileExists(atPath: directory.path) else { continue }
+            for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {
+                let path = directory.appendingPathComponent(name).path
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                if !isDirectory.boolValue { try tighten(path, to: 0o600) }
+            }
+        }
     }
 }
 
@@ -174,11 +207,13 @@ extension JournalIO {
         }
     }
 
-    func synchronizeDirectory(_ url: URL, operation: String) throws {
+    /// `full` requests F_FULLFSYNC; the system seam falls back to fsync where a directory
+    /// descriptor does not support it.
+    func synchronizeDirectory(_ url: URL, full: Bool, operation: String) throws {
         let fd = open(url.path, O_RDONLY)
         guard fd >= 0 else { throw JournalError.io(operation: operation, errno: errno) }
         defer { close(fd) }
-        try synchronize(fd, full: false, operation: operation)
+        try synchronize(fd, full: full, operation: operation)
     }
 
     /// Temp file → sync → rename → directory sync.
@@ -197,6 +232,6 @@ extension JournalIO {
         guard rename(temporary.path, url.path) == 0 else {
             throw JournalError.io(operation: "rename \(url.lastPathComponent)", errno: errno)
         }
-        try synchronizeDirectory(url.deletingLastPathComponent(), operation: "sync directory")
+        try synchronizeDirectory(url.deletingLastPathComponent(), full: full, operation: "sync directory")
     }
 }
