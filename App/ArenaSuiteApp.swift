@@ -14,7 +14,7 @@ struct ArenaSuiteApp: App {
     init() {
         Theme.registerFonts()
         let services = AppComposition.makeServices()
-        let archive = ArchiveModel(archive: services.archive)
+        let archive = ArchiveModel(archive: services.archive, unavailableReason: services.archiveUnavailable)
         let accounts = AccountsModel(services: services, archiveRoot: AppComposition.archiveRoot)
         accounts.onSyncFinished = { [archive] _ in await archive.projectAll(accounts.accounts.map(\.id)) }
         _accounts = State(initialValue: accounts)

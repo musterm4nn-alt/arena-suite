@@ -8,36 +8,40 @@ enum AppComposition {
     struct Services {
         let accounts: AccountService
         let sync: HistorySyncService
-        let archive: ArchiveService
+        /// nil when the index could not be opened; `archiveUnavailable` says why.
+        let archive: ArchiveService?
+        let archiveUnavailable: String?
     }
 
     /// `~/Library/Application Support/Arena Suite/Archive`, or `--archive-root <path>` for development.
     static var archiveRoot: URL {
+        #if DEBUG
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--archive-root"), arguments.indices.contains(index + 1) {
             return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
         }
+        #endif
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appendingPathComponent("Arena Suite/Archive", isDirectory: true)
     }
 
     static func makeServices() -> Services {
         let sessions = ArenaAccountSessions()
-        let accounts = AccountService(
-            registry: AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json")),
-            sessions: sessions)
+        let registry = AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json"))
+        let accounts = AccountService(registry: registry, sessions: sessions)
         let journals = JournalStore(archiveRoot: archiveRoot)
         let sync = HistorySyncService(accounts: accounts, journals: journals, engine: ArenaHistorySync(sessions: sessions))
-        let registry = AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json"))
-        let index: ArchiveIndex
         do {
-            index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
+            let index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
+            let archive = ArchiveService(
+                index: index, journals: journals, decoder: ArenaArchiveDecoder(),
+                accounts: { ((try? registry.load()) ?? []).map(\.id) })
+            return Services(accounts: accounts, sync: sync, archive: archive, archiveUnavailable: nil)
         } catch {
-            fatalError("The archive index could not be opened: \(error)")  // journal untouched; delete index/ to rebuild
+            // Accounts and sync keep working; the journal is untouched. Removing index/ rebuilds it.
+            return Services(
+                accounts: accounts, sync: sync, archive: nil,
+                archiveUnavailable: "The archive index could not be opened (\(error)). Your journal is untouched; quit and remove the index folder to rebuild it.")
         }
-        let archive = ArchiveService(
-            index: index, journals: journals, decoder: ArenaArchiveDecoder(),
-            accounts: { ((try? registry.load()) ?? []).map(\.id) })
-        return Services(accounts: accounts, sync: sync, archive: archive)
     }
 }

@@ -37,6 +37,7 @@ struct MainView: View {
             // Development: `--preview-conversation "<title prefix>"` opens that conversation and the
             // evidence inspector, for screenshots of this window only.
             let arguments = CommandLine.arguments
+            for _ in 0..<100 where archive.conversations.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
             if let index = arguments.firstIndex(of: "--preview-search"), arguments.indices.contains(index + 1) {
                 archive.searchText = arguments[index + 1]
             }
@@ -44,6 +45,7 @@ struct MainView: View {
                 let match = archive.conversations.first(where: { ($0.title ?? "").hasPrefix(arguments[index + 1]) })
             {
                 archive.select(.init(account: match.account, remoteID: match.remoteID))
+                for _ in 0..<100 where archive.detail == nil { try? await Task.sleep(for: .milliseconds(50)) }
                 if let message = archive.detail?.messages.dropFirst().first { archive.inspect(message) }
                 showingInspector = true
             }
@@ -216,7 +218,7 @@ private struct TranscriptView: View {
     @Binding var showingInspector: Bool
 
     var body: some View {
-        if let detail = archive.detail {
+        if let detail = archive.detail, let layout = archive.layout {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
@@ -227,21 +229,30 @@ private struct TranscriptView: View {
                                 : "No messages in this snapshot.")
                                 .foregroundStyle(.secondary)
                         }
-                        ForEach(archive.turns) { turn in
-                            TurnView(turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage) { message in
-                                archive.inspect(message)
+                        ForEach(layout.turns) { turn in
+                            TurnView(turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage) {
+                                archive.inspect($0)
                                 showingInspector = true
+                            } inspectVote: { vote in
+                                archive.inspect(.init(title: "Vote \(vote.remoteID)", pointers: ["$.pairwiseFeedbacks[] (id \(vote.remoteID))"]))
+                                showingInspector = true
+                            }
+                        }
+                        if !layout.unmatchedVotes.isEmpty {
+                            Text("Votes not tied to a single turn:").foregroundStyle(.secondary)
+                            ForEach(layout.unmatchedVotes, id: \.remoteID) { vote in
+                                Text("Vote: \(vote.value ?? "unknown") (messages \(vote.messageA ?? "?"), \(vote.messageB ?? "?"))")
+                                    .font(Theme.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
                     .padding(22)
                     .textSelection(.enabled)
                 }
-                .onChange(of: archive.turns.count) {
-                    if let target = archive.highlightedMessage { proxy.scrollTo(target, anchor: .center) }
-                }
-                .onAppear {
-                    if let target = archive.highlightedMessage { proxy.scrollTo(target, anchor: .center) }
+                .onChange(of: archive.scrollRequest) {
+                    if let target = archive.highlightedMessage {
+                        withAnimation { proxy.scrollTo(target, anchor: .center) }
+                    }
                 }
             }
             .toolbar {
@@ -258,6 +269,8 @@ private struct TranscriptView: View {
                 Button { showingInspector.toggle() } label: { Label("Evidence", systemImage: "doc.text.magnifyingglass") }
                     .help("Show the raw journal record behind this transcript")
             }
+        } else if archive.selection != nil {
+            ProgressView()
         } else {
             ContentUnavailableView("Select a conversation", systemImage: "text.bubble")
         }
@@ -270,7 +283,15 @@ private struct TranscriptView: View {
                 .foregroundStyle(.secondary)
             let conversationClaims = detail.claims.filter { $0.subject == .conversation }
             if !conversationClaims.isEmpty {
-                Text("Model claims (each with its source; not verified identity):").foregroundStyle(.secondary)
+                HStack {
+                    Text("Model claims (each with its source; not verified identity):").foregroundStyle(.secondary)
+                    Button {
+                        archive.inspect(.init(title: "Model claims", pointers: ["$.revealedModels[]", "history list: $.entries[].modelAId / modelBId"]))
+                        showingInspector = true
+                    } label: { Image(systemName: "doc.text.magnifyingglass") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Show evidence for model claims")
+                }
                 ForEach(Array(conversationClaims.enumerated()), id: \.offset) { _, claim in
                     Text("  \(claim.role.map { "lane \($0.uppercased()): " } ?? "")\(claim.displayName ?? claim.modelID) — \(claim.source)")
                         .font(Theme.caption).foregroundStyle(.secondary)
@@ -281,39 +302,56 @@ private struct TranscriptView: View {
 }
 
 private struct TurnView: View {
-    let turn: ArchiveModel.Turn
+    let turn: TranscriptLayout.Turn
     let names: [String: String]
     let highlighted: String?
     let inspect: (DetailMessage) -> Void
+    let inspectVote: (ArchivedFeedback) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let prompt = turn.prompt { MessageView(message: prompt, title: "You", highlighted: highlighted, inspect: inspect) }
+            if let prompt = turn.prompt { MessageView(message: prompt, title: "You", note: nil, highlighted: highlighted, inspect: inspect) }
             HStack(alignment: .top, spacing: 12) {
-                ForEach(turn.lanes, id: \.lane) { lane in
+                ForEach(Array(turn.lanes.enumerated()), id: \.offset) { _, lane in
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(lane.messages, id: \.remoteID) { message in
-                            MessageView(message: message, title: laneTitle(lane.lane, message), highlighted: highlighted, inspect: inspect)
+                        if lane.hasAlternatives {
+                            Text("\(lane.messages.count) responses in this lane (regenerations or branches), in server order")
+                                .font(Theme.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(lane.messages, id: \.message.remoteID) { entry in
+                            MessageView(
+                                message: entry.message, title: laneTitle(lane.lane, entry.message),
+                                note: entry.otherParents.isEmpty ? nil : "Replies to \(entry.otherParents.joined(separator: ", "))",
+                                highlighted: highlighted, inspect: inspect)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
+            ForEach(turn.otherRoles, id: \.remoteID) { message in
+                MessageView(message: message, title: "Role: \(message.role ?? "not stated")", note: nil, highlighted: highlighted, inspect: inspect)
+            }
             ForEach(turn.votes, id: \.remoteID) { vote in
-                Text("Your vote: \(vote.value ?? "unknown")").font(Theme.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Your vote: \(vote.value ?? "unknown")").font(Theme.caption).foregroundStyle(.secondary)
+                    Button { inspectVote(vote) } label: { Image(systemName: "doc.text.magnifyingglass") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Show evidence for this vote")
+                }
             }
         }
     }
 
-    private func laneTitle(_ lane: String, _ message: DetailMessage) -> String {
+    private func laneTitle(_ lane: String?, _ message: DetailMessage) -> String {
         let model = message.modelRemoteID.map { names[$0] ?? $0 }
-        return (lane == "—" ? "Response" : "Lane \(lane.uppercased())") + (model.map { " · \($0)" } ?? "")
+        return (lane.map { "Lane \($0.uppercased())" } ?? "Response (lane not exposed)") + (model.map { " · \($0)" } ?? "")
     }
 }
 
 private struct MessageView: View {
     let message: DetailMessage
     let title: String
+    let note: String?
     let highlighted: String?
     let inspect: (DetailMessage) -> Void
 
@@ -321,13 +359,14 @@ private struct MessageView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title).fontWeight(.bold)
-                if let status = message.status, status != "success" { Text(status).foregroundStyle(.orange) }
+                if let status = message.status, status != "success" { Text("[\(status)]").foregroundStyle(.orange) }
                 Spacer()
                 Button { inspect(message) } label: { Image(systemName: "doc.text.magnifyingglass") }
                     .buttonStyle(.borderless)
                     .help("Show raw evidence for this message")
                     .accessibilityLabel("Show raw evidence")
             }
+            if let note { Text(note).font(Theme.caption).foregroundStyle(.secondary) }
             ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
                 BlockView(block: block)
             }
@@ -338,6 +377,9 @@ private struct MessageView: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 4).fill(message.remoteID == highlighted ? Color.yellow.opacity(0.15) : Color.secondary.opacity(0.07)))
+        .overlay(alignment: .leading) {
+            if message.remoteID == highlighted { Text("▶").font(Theme.caption).offset(x: -14).accessibilityLabel("Search match") }
+        }
         .id(message.remoteID)
     }
 }
@@ -379,32 +421,40 @@ private struct EvidenceInspector: View {
     @Bindable var archive: ArchiveModel
     @State private var showBody = false
     @State private var hex = false
+    private static let textLimit = 262_144
+    private static let hexLimit = 65_536
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Evidence").font(Theme.heading)
-                if let message = archive.inspectedMessage {
-                    Text("Message \(message.remoteID)").textSelection(.enabled)
-                    ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
-                        Text("\(block.kind.rawValue): \(block.pointer)").font(Theme.caption).foregroundStyle(.secondary)
-                    }
+                if let target = archive.inspected {
+                    Text(target.title).textSelection(.enabled)
+                    ForEach(target.pointers, id: \.self) { Text($0).font(Theme.caption).foregroundStyle(.secondary) }
                 } else {
-                    Text("Choose the evidence button on a message.").foregroundStyle(.secondary)
+                    Text("Choose an evidence button on a message, vote or claim.").foregroundStyle(.secondary)
+                }
+                if archive.inspected != nil && archive.evidenceUnavailable {
+                    Text("The raw record for this snapshot is unavailable.").foregroundStyle(.orange)
                 }
                 if let evidence = archive.evidence {
                     Divider()
                     Text("Journal record \(evidence.location.sequence) · segment \(evidence.location.segment) · offset \(evidence.location.offset) · \(evidence.location.length) bytes")
                     Text("SHA-256 \(evidence.digest)").font(Theme.caption).textSelection(.enabled)
-                    Text("Decoder \(evidence.decoderVersion) · digest verified on read").font(Theme.caption).foregroundStyle(.secondary)
+                    Text("Digest verified on read · current decoder \(evidence.decoderVersion)").font(Theme.caption).foregroundStyle(.secondary)
                     Text("Envelope").fontWeight(.bold)
+                    Text("Reformatted for display; the digest covers the stored bytes.").font(Theme.caption).foregroundStyle(.secondary)
                     Text(Self.pretty(evidence.envelope)).font(Theme.caption).textSelection(.enabled)
-                    Toggle("Show raw body (\(evidence.payload.count) bytes)", isOn: $showBody)
+                    Toggle(isOn: $showBody) { Text("Show raw body (\(evidence.payload.count) bytes)").font(Theme.text) }
                     if showBody {
                         Text("The raw body includes Arena's per-message metadata (anti-abuse telemetry about you). It is shown here only on request and never indexed or exported by default.")
                             .font(Theme.caption).foregroundStyle(.orange)
-                        Toggle("Hex", isOn: $hex)
-                        Text(hex ? Self.hex(evidence.payload.prefix(65_536)) : String(decoding: evidence.payload.prefix(262_144), as: UTF8.self))
+                        Toggle(isOn: $hex) { Text("Hex").font(Theme.text) }
+                        let limit = hex ? Self.hexLimit : Self.textLimit
+                        if evidence.payload.count > limit {
+                            Text("Showing the first \(limit) of \(evidence.payload.count) bytes.").font(Theme.caption).foregroundStyle(.orange)
+                        }
+                        Text(hex ? Self.hex(evidence.payload.prefix(limit)) : String(decoding: evidence.payload.prefix(limit), as: UTF8.self))
                             .font(Theme.caption).textSelection(.enabled)
                     }
                 }
@@ -413,6 +463,7 @@ private struct EvidenceInspector: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .departureMono()
+        .onChange(of: archive.inspected) { showBody = false }
     }
 
     static func pretty(_ data: Data) -> String {

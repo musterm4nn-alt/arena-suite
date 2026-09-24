@@ -66,9 +66,11 @@ final class AccountsModel {
         loading = false
         // Development: `--sync-on-launch` runs the same user-initiated sync for each signed-in
         // account in turn (used for live Phase 3 verification). Never on by default.
+        #if DEBUG
         if CommandLine.arguments.contains("--sync-on-launch") {
             for account in accounts where account.state == .signedIn { await syncHistory(account.id) }
         }
+        #endif
     }
 
     func add(name: String, email: String, password: String) async -> Bool {
