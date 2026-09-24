@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -159,6 +160,19 @@ public final class NativeHTTPExecutor: CookieSessionExecuting {
             (jar.cookies ?? []).filter {
                 ["arena.ai", ".arena.ai"].contains($0.domain.lowercased())
             })
+    }
+
+    /// A4: names and lifetimes only. Values never leave this process; a digest is kept in memory
+    /// solely to detect rotation.
+    func cookieMetadata() -> [CookieMetadata] {
+        let cookies = session.configuration.httpCookieStorage?.cookies ?? []
+        return cookies.map { cookie in
+            CookieMetadata(
+                name: cookie.name, domain: cookie.domain, path: cookie.path,
+                expires: cookie.expiresDate.map { ISO8601DateFormatter().string(from: $0) },
+                secure: cookie.isSecure, httpOnly: cookie.isHTTPOnly, sameSite: cookie.sameSitePolicy?.rawValue,
+                valueDigest: SHA256.hash(data: Data(cookie.value.utf8)).description)
+        }.sorted { ($0.name, $0.domain, $0.path) < ($1.name, $1.domain, $1.path) }
     }
 
     func importCookieData(_ data: Data) throws {

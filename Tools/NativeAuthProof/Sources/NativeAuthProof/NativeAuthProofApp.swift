@@ -2,10 +2,27 @@ import AppKit
 import NativeAuthResearch
 import SwiftUI
 
+/// Launch arguments: `--slot <A|B>` selects the Keychain research slot (default A);
+/// `--phase0a` runs the Phase 0-A experiments after restore or sign-in;
+/// `--isolation` restores slots A and B in this process and runs the A7 isolation check.
+enum LaunchMode {
+    static let arguments = CommandLine.arguments
+    static var slot: String {
+        guard let index = arguments.firstIndex(of: "--slot"), arguments.indices.contains(index + 1) else { return "A" }
+        let value = arguments[index + 1]
+        return value.allSatisfy { $0.isLetter || $0.isNumber } && !value.isEmpty ? value : "A"
+    }
+    static let phase0A = arguments.contains("--phase0a")
+    static let isolation = arguments.contains("--isolation")
+    /// After a verified restore, delete and re-add the Keychain item so its access control is
+    /// created by this (identity-signed) build rather than inherited from an older one (A6).
+    static let rekey = arguments.contains("--rekey")
+}
+
 @main
 struct NativeAuthProofApp: App {
     var body: some Scene {
-        WindowGroup("Arena Suite — Native Authentication Proof") {
+        WindowGroup("Arena Suite — Native Authentication Proof (slot \(LaunchMode.slot))") {
             ProofView()
         }
     }
@@ -14,7 +31,7 @@ struct NativeAuthProofApp: App {
 private struct ProofView: View {
     @State private var email = ""
     @State private var password = ""
-    @State private var client = NativeAuthClient()
+    @State private var client = NativeAuthClient(sessionStore: KeychainResearchSessionStore(slot: LaunchMode.slot))
     @State private var status = "Ready. No network request has been sent."
     @State private var observedEmail: String?
     @State private var busy = false
@@ -56,7 +73,7 @@ private struct ProofView: View {
                 Button("Recheck Identity") { recheck() }
                     .disabled(busy || observedEmail == nil)
                 Button("New Isolated Session") {
-                    client = NativeAuthClient()
+                    client = NativeAuthClient(sessionStore: KeychainResearchSessionStore(slot: LaunchMode.slot))
                     password = ""
                     observedEmail = nil
                     attempted = false
@@ -81,7 +98,7 @@ private struct ProofView: View {
                     defer { busy = false }
                     do {
                         try await client.forgetSavedSession()
-                        client = NativeAuthClient()
+                        client = NativeAuthClient(sessionStore: KeychainResearchSessionStore(slot: LaunchMode.slot))
                         password = ""
                         observedEmail = nil
                         attempted = false
@@ -184,7 +201,11 @@ private struct ProofView: View {
                 observedEmail = identity.email
                 status = "Native sign-in HTTP 200; identity HTTP 200 with the observed ID fields."
                 try await client.saveSession()
-                await automaticHistory()
+                if LaunchMode.phase0A {
+                    await runPhase0A(preflight: (.notFound, 0), restored: false)
+                } else {
+                    await automaticHistory()
+                }
             } catch {
                 status = message(for: error)
                 localAuthError = await client.errorForLocalPresentation()
@@ -198,6 +219,11 @@ private struct ProofView: View {
         startupAttempted = true
         busy = true
         defer { busy = false }
+        if LaunchMode.isolation {
+            await runIsolation()
+            return
+        }
+        let preflight = KeychainResearchSessionStore(slot: LaunchMode.slot).preflight()
         report("restoring", summary: "Attempting native Keychain session restoration.")
         do {
             guard let identity = try await client.restoreSavedSession() else {
@@ -209,8 +235,13 @@ private struct ProofView: View {
             attempted = true
             restoredSession = true
             status = "Saved native session restored; both identity claims verified."
+            if LaunchMode.rekey { try await client.forgetSavedSession() }
             try await client.saveSession()
-            await automaticHistory()
+            if LaunchMode.phase0A {
+                await runPhase0A(preflight: preflight, restored: true)
+            } else {
+                await automaticHistory()
+            }
         } catch {
             observedEmail = nil
             client = NativeAuthClient()
@@ -239,10 +270,59 @@ private struct ProofView: View {
         }
     }
 
+    @MainActor private func runPhase0A(preflight: (KeychainPreflight, Int32), restored: Bool) async {
+        status = "Running Phase 0-A checks (one request at a time, 1 s apart)…"
+        report("phase0aRunning", summary: status)
+        let directory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let result = await Phase0ARunner.run(
+            client: client,
+            keychain: .init(preflight: preflight.0, preflightStatus: preflight.1, restored: restored),
+            signing: .current(),
+            fixtureCandidate: directory.appendingPathComponent("phase0a-detail-candidate-\(LaunchMode.slot).json"))
+        writeJSON(result, to: directory.appendingPathComponent("Phase0AResult-\(LaunchMode.slot).json"))
+        status = result.stoppedEarly.map { "Phase 0-A stopped: \($0)" } ?? "Phase 0-A checks finished (\(result.requestsSent) requests)."
+        report(result.stoppedEarly == nil ? "phase0aFinished" : "failed", summary: status)
+    }
+
+    @MainActor private func runIsolation() async {
+        let directory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let clientA = NativeAuthClient(sessionStore: KeychainResearchSessionStore(slot: "A"))
+        let clientB = NativeAuthClient(sessionStore: KeychainResearchSessionStore(slot: "B"))
+        status = "Restoring slots A and B for the isolation check…"
+        report("isolationRunning", summary: status)
+        do {
+            async let restoredA = clientA.restoreSavedSession()
+            async let restoredB = clientB.restoreSavedSession()
+            guard let identityA = try await restoredA, let identityB = try await restoredB else {
+                status = "Isolation check needs saved sessions in both slots A and B."
+                report("failed", summary: status)
+                return
+            }
+            let result = await IsolationRunner.run(
+                a: clientA, identityA: identityA, b: clientB, identityB: identityB, signing: .current())
+            writeJSON(result, to: directory.appendingPathComponent("IsolationResult.json"))
+            status = result.stoppedEarly.map { "Isolation check stopped: \($0)" } ?? "Isolation check finished."
+            report(result.stoppedEarly == nil ? "isolationFinished" : "failed", summary: status)
+        } catch {
+            status = "Isolation restore failed. " + message(for: error)
+            report("failed", summary: status)
+        }
+    }
+
+    private func writeJSON<T: Encodable>(_ value: T, to url: URL) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do {
+            try encoder.encode(value).write(to: url, options: .atomic)
+        } catch {
+            status = "Could not write \(url.lastPathComponent)."
+        }
+    }
+
     /// Fixed, value-free status only: never cookies, identities, server bodies or user input.
     private func report(_ phase: String, summary: String) {
         let destination = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(
-            "NativeProofResult.json")
+            LaunchMode.slot == "A" ? "NativeProofResult.json" : "NativeProofResult-\(LaunchMode.slot).json")
         do {
             let object = [
                 "schema": "native-proof-status/1", "runID": runID,

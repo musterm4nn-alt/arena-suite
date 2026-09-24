@@ -223,6 +223,61 @@ public actor NativeAuthClient {
         } catch { throw ResearchFailure.transportFailed }
     }
 
+    // MARK: Phase 0-A experiments (plan v3 §4)
+
+    /// A4: cookie names and lifetimes for this session. Never values.
+    public func cookieMetadata() throws -> [CookieMetadata] {
+        guard let cookieExecutor = executor as? any CookieSessionExecuting else {
+            throw ResearchFailure.sessionStorageFailed
+        }
+        return cookieExecutor.cookieMetadata()
+    }
+
+    /// A2/A3: one history page using only observed parameters. `cursor` is the exact string the
+    /// server returned in `pagination.cursor`; the parameter name comes from R-001 (repository evidence).
+    /// Identity must have been verified for this run; no automatic retry.
+    public func historyPage(limit: Int, includeArchived: Bool, cursor: String?) async throws -> HTTPReply {
+        guard !inFlight else { throw ResearchFailure.busy }
+        guard !quarantined else { throw ResearchFailure.identityMismatch }
+        guard identity != nil else { throw ResearchFailure.notAuthenticated }
+        guard let url = HistoryPageRecipe.url(limit: limit, includeArchived: includeArchived, cursor: cursor) else {
+            throw ResearchFailure.inputMissing
+        }
+        inFlight = true
+        defer { inFlight = false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do { return try await executor.perform(request) } catch { throw ResearchFailure.transportFailed }
+    }
+
+    /// A8: detail for an ID taken from a verified native list page.
+    public func historyDetail(id: String) async throws -> HTTPReply {
+        guard !inFlight else { throw ResearchFailure.busy }
+        guard !quarantined else { throw ResearchFailure.identityMismatch }
+        guard identity != nil else { throw ResearchFailure.notAuthenticated }
+        guard let request = HistoryDetailRecipe.request(for: id) else { throw ResearchFailure.inputMissing }
+        inFlight = true
+        defer { inFlight = false }
+        do { return try await executor.perform(request) } catch { throw ResearchFailure.transportFailed }
+    }
+
+    /// A5: identity request from a fresh, empty cookie jar. Reports shape only.
+    public static func anonymousIdentityProbe(executor: any HTTPExecuting = NativeHTTPExecutor()) async
+        -> AnonymousIdentityResult
+    {
+        var request = URLRequest(url: URL(string: "https://arena.ai/api/me")!)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let reply = try? await executor.perform(request) else {
+            return AnonymousIdentityResult(status: nil, contentType: nil, topLevelKeys: [], userIsNull: nil)
+        }
+        let object = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any]
+        return AnonymousIdentityResult(
+            status: reply.status, contentType: reply.contentType, topLevelKeys: object.map { $0.keys.sorted() } ?? [],
+            userIsNull: object.map { $0["user"] == nil || $0["user"] is NSNull })
+    }
+
     /// Explicit single-shot feasibility experiment, not a production Send action.
     /// No automatic retry, no challenge escalation, no continuation or remote stop claim.
     public func testOneGeneration() async throws -> GenerationObservation {
@@ -249,6 +304,17 @@ public actor NativeAuthClient {
             // Request may have reached Arena. The attempted flag remains set; never resend automatically.
             throw ResearchFailure.transportFailed
         }
+    }
+
+    /// Tests only: adopt an identity decoded from a scripted `/api/me` reply, without Keychain.
+    func restoreForTesting(_ reply: HTTPReply) throws -> ObservedIdentity {
+        guard let decoded = try? JSONDecoder().decode(IdentityResponse.self, from: reply.body) else {
+            throw ResearchFailure.identityShapeUnverified
+        }
+        let observed = ObservedIdentity(
+            id: decoded.user.id, supabaseUserID: decoded.user.supabaseUserId, email: decoded.user.email)
+        identity = observed
+        return observed
     }
 
     private func fetchIdentity() async throws -> ObservedIdentity {
@@ -290,4 +356,30 @@ private struct IdentityResponse: Decodable {
         let email: String
     }
     let user: User
+}
+
+public struct AnonymousIdentityResult: Sendable, Equatable, Encodable {
+    public let status: Int?
+    public let contentType: String?
+    public let topLevelKeys: [String]
+    /// nil when the body was not a JSON object.
+    public let userIsNull: Bool?
+}
+
+enum HistoryPageRecipe {
+    /// RFC 3986 unreserved characters only, so opaque cursors (e.g. containing `+` or `/`) survive intact.
+    private static let unreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+    static func url(limit: Int, includeArchived: Bool, cursor: String?) -> URL? {
+        guard (1...100).contains(limit) else { return nil }
+        var query = "limit=\(limit)&includeArchived=\(includeArchived)"
+        if let cursor {
+            guard !cursor.isEmpty, cursor.utf8.count <= 4096,
+                let encoded = cursor.addingPercentEncoding(withAllowedCharacters: unreserved)
+            else { return nil }
+            query += "&cursor=" + encoded
+        }
+        return URL(string: "https://arena.ai/api/history/unified?" + query)
+    }
 }

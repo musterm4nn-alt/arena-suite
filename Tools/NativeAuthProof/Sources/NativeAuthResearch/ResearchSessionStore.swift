@@ -7,16 +7,46 @@ public protocol ResearchSessionStoring: Sendable {
     func remove() throws
 }
 
-/// A single explicitly authorized research slot, separate from production account storage.
+public enum KeychainPreflight: String, Sendable, Encodable {
+    /// Readable without any user interaction.
+    case found
+    case notFound
+    /// Present, but reading it would require a Keychain approval prompt (e.g. after a signature change).
+    case wouldPrompt
+    case failed
+}
+
+/// Explicitly authorized research slots, separate from production account storage.
+/// Slot "A" keeps the original account name so sessions saved by earlier builds still restore.
 public struct KeychainResearchSessionStore: ResearchSessionStoring {
-    public init() {}
+    public let slot: String
+    public init(slot: String = "A") { self.slot = slot }
+    private var account: String { slot == "A" ? "single-research-session" : "research-session-\(slot)" }
     private var query: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "ArenaSuite.NativeAuthProof.Session.v1",
-            kSecAttrAccount as String: "single-research-session",
+            kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
         ]
+    }
+
+    /// A6: reads the item with Keychain user interaction disabled, so a would-be approval prompt
+    /// is reported instead of shown. The data read here is discarded.
+    public func preflight() -> (KeychainPreflight, Int32) {
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(true) }
+        var request = query
+        request[kSecReturnData as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        switch status {
+        case errSecSuccess: return (.found, status)
+        case errSecItemNotFound: return (.notFound, status)
+        case errSecInteractionNotAllowed, errSecAuthFailed: return (.wouldPrompt, status)
+        default: return (.failed, status)
+        }
     }
     public func load() throws -> Data? {
         var request = query
@@ -47,8 +77,13 @@ public struct KeychainResearchSessionStore: ResearchSessionStoring {
 }
 
 protocol CookieSessionExecuting: HTTPExecuting {
+    func cookieMetadata() -> [CookieMetadata]
     func exportCookieData() throws -> Data
     func importCookieData(_ data: Data) throws
+}
+
+extension CookieSessionExecuting {
+    func cookieMetadata() -> [CookieMetadata] { [] }
 }
 
 struct SavedResearchSession: Codable {
@@ -85,4 +120,19 @@ enum ResearchCookieCodec {
             return cookie
         }
     }
+}
+
+public struct CookieMetadata: Sendable, Equatable, Encodable {
+    public let name: String
+    public let domain: String
+    public let path: String
+    /// ISO 8601, or nil for a session cookie.
+    public let expires: String?
+    public let secure: Bool
+    public let httpOnly: Bool
+    public let sameSite: String?
+    /// In-memory only; excluded from encoding.
+    let valueDigest: String
+
+    private enum CodingKeys: String, CodingKey { case name, domain, path, expires, secure, httpOnly, sameSite }
 }

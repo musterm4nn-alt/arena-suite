@@ -14,3 +14,7 @@ opencode.json*
 private-fixtures.json
 Private/
 __pycache__/
+
+# Local signing identity
+Config/Signing.local.env
+Config/Signing.local.xcconfig

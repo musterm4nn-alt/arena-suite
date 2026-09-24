@@ -34,7 +34,7 @@ decision, made after reading them.
 - Accepted risk (e.g. account suspension) and any limits you want:
   **I accept that Arena may suspend or terminate the account, including because of this client, and
   that I would then lose the account (already-archived conversations stay local).** Limits I want,
-  matching plan §2: single account only, sync only when I start it (no schedules by default), one
+  matching plan §2: ~~single account only~~ **multiple accounts, each fully isolated (changed by the user on 2026-09-24, after the A7 question)**, sync only when I start it (no schedules by default), one
   request in flight, honor `Retry-After`/429/503, stop on any 403 or challenge, no automated
   voting or reveal, no browser-identity spoofing.
 
@@ -51,9 +51,9 @@ or I ask for it to be re-opened.
   message IDs; 0 parent and 0 last-message references outside the response. No continuation, no
   pagination, no generation. One account, one build, one request each. See
   `Docs/native-detail-observation-2026-09-24.md`. The detail fixture (A8) is still pending.
-- A2 pagination: _
-- A3 entry types: _
-- A4/A5 session lifetime and expiry: _
-- A6 cross-build restore / signing: _
-- A7 two accounts: _
-- A8 detail fixture: _
+- A2 pagination: **Verified (N-008).** `cursor=<pagination.cursor>`; pages 5/5/4, no overlap, union equals the full list.
+- A3 entry types: **Observed (N-008):** `evaluation`, `agentic` (no archived entries). Accepted limitation: `agentic` archived as list entries only until a detail route is observed.
+- A4/A5 session lifetime and expiry: **A5 verified** (no session → 401 JSON). **A4 partly:** auth cookies expire 2027-10, re-issued on some request (not `/api/me`); ≥24 h behaviour pending.
+- A6 cross-build restore / signing: **Verified (N-009)** with the Apple Development identity, once the item is created by a signed build.
+- A7 two accounts: **Verified (N-010)** in one process: distinct principals, 0 shared entries, 0 shared cookie values.
+- A8 detail fixture: **Done** — `Fixtures/SanitizedArena/native-detail.fixture.json` (metadata telemetry masked).

@@ -95,13 +95,13 @@ Evidence vocabulary is unchanged: `verified_observation`, `repository_evidence`,
 |---|---|---|
 | Sign-in | POST `/nextjs-api/sign-in/email`, JSON `{email, password, shouldLinkHistory}`; sets session cookies | **Verified** once (N-002); one earlier unexplained 401 (N-001) |
 | Identity | GET `/api/me` → `user.id`, `user.supabaseUserId`, `user.email` | **Verified** (N-002/N-003); returned email may differ in formatting from input — compare IDs, never emails |
-| Session restore | Keychain-saved cookies → `/api/me` IDs match | **Verified** same-build relaunch (N-006); one cross-build restore (N-007, Keychain-prompt interactivity unknown) |
-| History list | GET `/api/history/unified?limit=20&includeArchived=false` → `entries`, `pagination{hasMore,cursor,limit}`, `partial`, `failedSources` | **Verified** one page (N-005); non-null cursor never observed |
-| History detail | GET `/api/evaluation/{id}` → `id`, `title`, `mode`, `visibility`, `lastMessageIds`, `archivedAt`, `deletedAt`, `messages[]` (with `id`, `role`, `status`, `parentMessageIds`, `evaluationSessionId`, attachments) | Browser-verified (H-002); native verified once (N-007) |
+| Session restore | Keychain-saved cookies → `/api/me` IDs match | **Verified** same-build relaunch (N-006); cross-build without prompts once the item is created by an identity-signed build (N-009) |
+| History list | GET `/api/history/unified?limit=N&includeArchived=…[&cursor=…]` → `entries`, `pagination{hasMore,cursor,limit}`, `partial`, `failedSources` | **Verified** incl. cursor pagination (N-005, N-008) |
+| History detail | GET `/api/evaluation/{id}` → `id`, `title`, `mode`, `visibility`, `lastMessageIds`, `archivedAt`, `deletedAt`, `messages[]` (with `id`, `role`, `status`, `parentMessageIds`, `evaluationSessionId`, attachments) | **Verified** natively (N-007, N-008); `messages[].metadata` holds per-user anti-abuse telemetry (N-008); fixture `native-detail.fixture.json` |
 | Create / follow-up | POST `/nextjs-api/stream/create-evaluation`, POST `/nextjs-api/stream/post-to-evaluation/{id}`; body includes `recaptchaV3Token`; response is prefixed lines (`a0` text, `a2` arrays, `ad` finish) | Browser-observed (C-001/C-002); **native blocked** (N-004, 403) |
-| Refresh / expiry | — | Not observed |
-| Two accounts | Synthetic cookie-jar isolation passes locally | Not observed live |
-| Other types in history | List `type` values other than `evaluation` (e.g. agent/realtime per R-001) | Not observed |
+| Refresh / expiry | Auth cookies `arena-auth-prod-v1.0/1.1`, ~13-month expiry, re-issued on some request (not `/api/me`); no session → `/api/me` 401 JSON | Partly observed (N-008); ≥24 h behaviour pending |
+| Two accounts | Separate URLSession configurations/jars in one process | **Verified** (N-010): distinct principals, 0 shared entries or cookie values |
+| Other types in history | `agentic` entries (no `mode`/`modality`) | Observed in list (N-008); detail route not observed — archived list-only |
 
 Transport: Foundation `URLSession` is **accepted for Track A**. Its known limits (decoded gzip, merged duplicate headers, no trailers — `Docs/transport-results.md`) do not matter for JSON history responses. Record them as declared observation-boundary limits. Re-evaluate only for Track B.
 
@@ -264,6 +264,8 @@ A conversation missing from a later listing, or a 404 on detail, is recorded as 
 | Raw JSON | Selected records: envelopes, base64 payloads, hashes, declared observation layer and credential omissions |
 | Normalized JSON | Versioned entities and edges with provenance and value states |
 | Markdown | Human-readable transcript per branch/lane, with a capture-scope footer; explicitly lossy |
+
+**Telemetry in detail responses (N-008).** `messages[].metadata` contains per-user anti-abuse data (bot/reCAPTCHA scores, JA4 fingerprint ratios, Cloudflare geo fields and hashed IP, activity and vote counts) and routing/usage data. It is the user's own data and stays in the journal, but Normalized JSON and Markdown exclude `metadata` subtrees by default (opt-in per export), Raw JSON marks records containing them as sensitive, and diagnostics never include them. Any fixture must mask them.
 
 Exports read a frozen snapshot (journal high-water + projection generation), write to a staging file, then move atomically into Downloads or a chosen folder; no silent overwrite. Repeated exports of the same frozen input produce identical bytes.
 

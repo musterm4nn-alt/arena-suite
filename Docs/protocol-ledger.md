@@ -30,10 +30,17 @@ references outside the response. Same run restored the astra-saved Keychain sess
 opus-repo build without manual login (prompt interactivity unknown). One account, one build, one
 request each; no raw native fixture, in-memory capture only.
 
+N-008/N-009/N-010: [phase0a-observation-2026-09-24.md](phase0a-observation-2026-09-24.md) records
+native cursor pagination (`cursor=<pagination.cursor>`, pages 5/5/4, union equals the full list),
+entry types `evaluation`/`agentic`, auth-cookie names and lifetimes, `/api/me` without a session
+(401 JSON `message`), cross-build Keychain restore with a stable signing identity, and two-account
+isolation in one process. Also records that detail `messages[].metadata` contains per-user
+anti-abuse telemetry. The native detail fixture now exists (`native-detail.fixture.json`).
+
 H-001/H-002: [history-observation-2026-09-22.md](history-observation-2026-09-22.md) records browser
 list query and observed evaluation detail GET, including synthetic-message relationship checks.
 A projected sanitized list fixture now exists. N-005/N-006 verify narrow native list access and
-N-007 adds narrow native detail access; a native detail fixture remains pending.
+N-007 adds narrow native detail access; N-008 adds the sanitized native detail fixture.
 
 C-001/C-002 and S-002 are recorded in [conversation-observation-2026-09-22.md](conversation-observation-2026-09-22.md).
 Browser create/follow-up succeeded; sanitized response fixtures now exist. The inspected public
