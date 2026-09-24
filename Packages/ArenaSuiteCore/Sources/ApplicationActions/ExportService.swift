@@ -57,8 +57,13 @@ public struct ExportService: Sendable {
         account: AccountID, remoteID: String, snapshot: UInt64?, options: ExportOptions, to directory: URL
     ) async throws -> ExportResult {
         let rendered = try await render(account: account, remoteID: remoteID, snapshot: snapshot, options: options)
-        try Task.checkCancellation()
+        guard !Task.isCancelled else { throw ExportError.cancelled }
         let url = try Self.write(rendered.data, baseName: rendered.baseName, extension: options.format.fileExtension, into: directory)
+        // Cancelled while writing: remove the finished file so a cancelled export leaves nothing.
+        guard !Task.isCancelled else {
+            unlink(url.path)
+            throw ExportError.cancelled
+        }
         return ExportResult(url: url, byteCount: rendered.data.count, sha256: Self.hex(SHA256.hash(data: rendered.data)))
     }
 
@@ -82,7 +87,7 @@ public struct ExportService: Sendable {
 
     // MARK: Raw JSON
 
-    static func rawJSON(detail: ConversationDetail, evidence: RawEvidence, exact: Bool) throws -> Data {
+    public static func rawJSON(detail: ConversationDetail, evidence: RawEvidence, exact: Bool) throws -> Data {
         let original = evidence.payload
         let exported = exact ? original : maskMetadata(original)
         let transformed = exported != original
@@ -101,7 +106,8 @@ public struct ExportService: Sendable {
         record["transformations"] =
             transformed
             ? [["scope": "every JSON subtree under a key named metadata", "reason": "Arena per-message anti-abuse telemetry (plan v3 §12)",
-                "policy": redactionPolicy, "mapping": "value replaced by the string [omitted: telemetry]; body re-serialized with sorted keys; original bytes remain in the journal"]]
+                "policy": redactionPolicy,
+                "mapping": "value of every key spelled metadata in any letter case, at any depth, replaced by the string [omitted: telemetry]; the whole body is re-parsed and re-serialized (sorted keys, pretty-printed), so number formatting, string escapes and duplicate keys may differ from the original; the original bytes remain in the journal"]]
             : []
         let root: [String: Any] = [
             "schema": "arena-suite.raw-export/1",
@@ -113,15 +119,16 @@ public struct ExportService: Sendable {
         return try canonical(root)
     }
 
-    /// Replaces the value of every `metadata` key (at any depth) with a marker; nothing else changes.
-    static func maskMetadata(_ body: Data) -> Data {
+    /// Replaces the value of every key spelled `metadata` in any letter case (at any depth, inside arrays
+    /// too) with a marker. The body is re-serialized, which is declared in the transformation.
+    public static func maskMetadata(_ body: Data) -> Data {
         guard let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed]) else { return body }
         var masked = false
         func walk(_ value: Any) -> Any {
             if let dictionary = value as? [String: Any] {
                 var out: [String: Any] = [:]
                 for (key, child) in dictionary {
-                    if key == "metadata", !(child is NSNull) {
+                    if key.lowercased() == "metadata", !(child is NSNull) {
                         out[key] = "[omitted: telemetry]"
                         masked = true
                     } else {
@@ -188,23 +195,23 @@ public struct ExportService: Sendable {
         let names = Dictionary(
             detail.claims.filter { $0.source == "detail_revealed" }.compactMap { claim in claim.displayName.map { (claim.modelID, $0) } },
             uniquingKeysWith: { first, _ in first })
-        var out = "# \(oneLine(detail.summary.title ?? "Untitled"))\n\n"
-        out += "_\([detail.summary.kind, detail.summary.mode, detail.summary.modality].compactMap { $0 }.joined(separator: " · "))_\n\n"
+        var out = "# \(inline(detail.summary.title ?? "Untitled"))\n\n"
+        out += "_\(inline([detail.summary.kind, detail.summary.mode, detail.summary.modality].compactMap { $0 }.joined(separator: " · ")))_\n\n"
         for (index, turn) in layout.turns.enumerated() {
             out += "## Turn \(index + 1)\n\n"
             if let prompt = turn.prompt { out += "### You\n\n" + body(prompt) }
             for lane in turn.lanes {
                 for entry in lane.messages {
                     let model = entry.message.modelRemoteID.map { names[$0] ?? $0 }
-                    out += "### " + (lane.lane.map { "Lane \($0.uppercased())" } ?? "Response (lane not exposed)") + (model.map { " · \(oneLine($0))" } ?? "") + "\n\n"
-                    if !entry.otherParents.isEmpty { out += "_Replies to \(entry.otherParents.joined(separator: ", "))_\n\n" }
+                    out += "### " + (lane.lane.map { "Lane \(inline($0.uppercased()))" } ?? "Response (lane not exposed)") + (model.map { " · \(inline($0))" } ?? "") + "\n\n"
+                    if !entry.otherParents.isEmpty { out += "_Replies to \(inline(entry.otherParents.joined(separator: ", ")))_\n\n" }
                     out += body(entry.message)
                 }
             }
-            for message in turn.otherRoles { out += "### Role: \(message.role ?? "not stated")\n\n" + body(message) }
-            for vote in turn.votes { out += "_Vote: \(vote.value ?? "unknown")_\n\n" }
+            for message in turn.otherRoles { out += "### Role: \(inline(message.role ?? "not stated"))\n\n" + body(message) }
+            for vote in turn.votes { out += "_Vote: \(inline(vote.value ?? "unknown"))_\n\n" }
         }
-        for vote in layout.unmatchedVotes { out += "_Vote not tied to a single turn: \(vote.value ?? "unknown")_\n\n" }
+        for vote in layout.unmatchedVotes { out += "_Vote not tied to a single turn: \(inline(vote.value ?? "unknown"))_\n\n" }
         out += "---\n\n"
         out += "Exported from the Arena Suite archive. Source: journal record \(evidence.location.sequence), SHA-256 `\(evidence.digest)`, decoder `\(evidence.decoderVersion)`. "
         out += "This Markdown view is lossy: raw bytes, timing, per-message metadata, encrypted reasoning and attachment files are not included. "
@@ -214,19 +221,19 @@ public struct ExportService: Sendable {
 
     private static func body(_ message: DetailMessage) -> String {
         var out = ""
-        if let status = message.status, status != "success" { out += "_Status: \(status)_\n\n" }
+        if let status = message.status, status != "success" { out += "_Status: \(inline(status))_\n\n" }
         for block in message.blocks {
             switch block.kind {
-            case .text: out += (block.text ?? "") + "\n\n"
-            case .reasoning: out += "> **Reasoning**\n>\n" + quoted(block.text ?? "") + "\n\n"
-            case .toolCall: out += "**Tool call** `\(oneLine(block.toolName ?? "unknown"))`\n\n" + fenced(block.payload ?? "", language: "json")
-            case .toolResult: out += "**Tool result** `\(oneLine(block.toolName ?? block.toolCallID ?? ""))`\n\n" + fenced(block.payload ?? "", language: "json")
+            case .text: out += prose(block.text ?? "") + "\n\n"
+            case .reasoning: out += "> **Reasoning**\n>\n" + quoted(prose(block.text ?? "")) + "\n\n"
+            case .toolCall: out += "**Tool call** " + inline(block.toolName ?? "unknown") + "\n\n" + fenced(block.payload ?? "", language: "json")
+            case .toolResult: out += "**Tool result** " + inline(block.toolName ?? block.toolCallID ?? "") + "\n\n" + fenced(block.payload ?? "", language: "json")
             case .sources: out += "**Sources**\n\n" + fenced(block.payload ?? "", language: "json")
             case .opaque: out += "**Unrecognized block** (kept as-is)\n\n" + fenced(block.payload ?? "", language: "json")
             }
         }
         for attachment in message.attachments {
-            out += "_Attachment: \(oneLine(attachment.name ?? "unnamed"))\(attachment.contentType.map { " (\($0))" } ?? "")_\n\n"
+            out += "_Attachment: \(inline(attachment.name ?? "unnamed"))\(attachment.contentType.map { " (\(inline($0)))" } ?? "")_\n\n"
         }
         return out
     }
@@ -243,8 +250,26 @@ public struct ExportService: Sendable {
         return "\(fence)\(language)\n\(text)\n\(fence)\n\n"
     }
 
+    /// Conversation text is untrusted: every ASCII punctuation character that Markdown or HTML could
+    /// interpret is backslash-escaped, so text renders literally and cannot open fences, headings,
+    /// lists, links, images or HTML. Line breaks are kept as hard breaks.
+    public static func prose(_ text: String) -> String {
+        let special = Set("\\`*_{}[]()#+-.!<>|~=:\"'&$^@%")
+        var out = ""
+        out.reserveCapacity(text.count)
+        for character in text {
+            if special.contains(character) { out.append("\\") }
+            out.append(character)
+        }
+        return out.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "  \n")
+    }
+
+    /// Single-line untrusted value (titles, names, votes): escaped and without line breaks.
+    public static func inline(_ text: String) -> String { prose(oneLine(text)) }
+
     private static func quoted(_ text: String) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
+        text.replacingOccurrences(of: "  \n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)  " }.joined(separator: "\n")
     }
 
     private static func oneLine(_ text: String) -> String {
@@ -275,21 +300,34 @@ public struct ExportService: Sendable {
 
     static func hex(_ digest: SHA256.Digest) -> String { digest.map { String(format: "%02x", $0) }.joined() }
 
-    static func baseName(title: String?, remoteID: String, sequence: UInt64) -> String {
+    public static func baseName(title: String?, remoteID: String, sequence: UInt64) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
         let cleaned = String((title ?? "Untitled").unicodeScalars.map { allowed.contains($0) ? Character($0) : " " })
             .split(separator: " ").joined(separator: " ")
         let short = String(cleaned.prefix(60)).trimmingCharacters(in: .whitespaces)
-        return "\(short.isEmpty ? "Untitled" : short) \(remoteID.prefix(8)) r\(sequence)"
+        let idAllowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        let idPart = String(remoteID.unicodeScalars.filter { idAllowed.contains($0) }.prefix(8).map(Character.init))
+        return "\(short.isEmpty ? "Untitled" : short) \(idPart.isEmpty ? "id" : idPart) r\(sequence)"
     }
 
     /// Temp file in the destination (same volume) → full sync → hard link to the first free name →
     /// remove the temp file. `link` never replaces an existing file, so nothing is overwritten, and a
     /// failure or cancellation leaves no partially written file under a final name.
     public static func write(_ data: Data, baseName: String, extension ext: String, into directory: URL) throws -> URL {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard !baseName.contains("/"), !baseName.contains("\0"), !baseName.hasPrefix("."), !ext.contains("/") else {
+            throw ExportError.writeFailed("unsafe file name")
+        }
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        // Remove temp files left by an export that was killed mid-write.
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasPrefix(".arena-suite-export-") && name.hasSuffix(".tmp") {
+            unlink(directory.appendingPathComponent(name).path)
+        }
         let temporary = directory.appendingPathComponent(".arena-suite-export-\(UUID().uuidString).tmp")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)
+        // Owner-only, like the rest of the archive: exports contain private conversations.
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw ExportError.writeFailed("create temp file (errno \(errno))") }
         defer { unlink(temporary.path) }
         let written = data.withUnsafeBytes { buffer -> Bool in
@@ -310,6 +348,9 @@ public struct ExportService: Sendable {
         for attempt in 1...1_000 {
             let name = attempt == 1 ? "\(baseName).\(ext)" : "\(baseName) \(attempt).\(ext)"
             let target = directory.appendingPathComponent(name)
+            guard target.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else {
+                throw ExportError.writeFailed("file name escapes the destination")
+            }
             if link(temporary.path, target.path) == 0 { return target }
             guard errno == EEXIST else { throw ExportError.writeFailed("link (errno \(errno))") }
         }

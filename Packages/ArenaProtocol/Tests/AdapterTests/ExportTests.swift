@@ -108,7 +108,7 @@ func exportsAreDeterministicAndNeverOverwrite(_ format: ExportFormat) async thro
     let text = String(decoding: try Data(contentsOf: try await h.export(.markdown).url), as: UTF8.self)
     #expect(text.contains("### Lane A · Model A") && text.contains("### Lane B · Model B"))
     #expect(text.contains("_Vote: a_"))
-    #expect(text.contains("Answer with ``` fence"))
+    #expect(text.contains("Answer with \\`\\`\\` fence"), "prose backticks are escaped, not live")
     #expect(text.contains("journal record 1"))
     #expect(!text.contains("botScore"))
     let fenced = ExportService.fenced("a ```` b", language: "json")
@@ -122,4 +122,74 @@ func exportsAreDeterministicAndNeverOverwrite(_ format: ExportFormat) async thro
         _ = try ExportService.write(Data("x".utf8), baseName: "n", extension: "md", into: blocker.appendingPathComponent("sub"))
     }
     #expect(try Data(contentsOf: blocker) == Data("file".utf8))
+}
+
+
+// MARK: - Review follow-ups (Phase 6 review)
+
+@Test func hostileIDsAndTitlesCannotEscapeTheDestination() throws {
+    let name = ExportService.baseName(title: "../../etc/passwd", remoteID: "../../ev/il", sequence: 1)
+    #expect(!name.contains("/") && !name.contains(".."))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dest-\(UUID().uuidString)")
+    let url = try ExportService.write(Data("x".utf8), baseName: name, extension: "md", into: directory)
+    #expect(url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL)
+    #expect(throws: (any Error).self) { _ = try ExportService.write(Data("x".utf8), baseName: "a/../../b", extension: "md", into: directory) }
+}
+
+@Test func markdownProseCannotInjectStructure() {
+    let hostile = "# Evil\n```\ncode\n```\n[click](https://evil)\n<img src=x onerror=alert(1)>\n- item\n1. one"
+    let escaped = ExportService.prose(hostile)
+    for line in escaped.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        #expect(!trimmed.hasPrefix("#") && !trimmed.hasPrefix("```") && !trimmed.hasPrefix("- ") && !trimmed.hasPrefix("1."))
+    }
+    // Every character that could open a link, image, HTML tag or code span is escaped.
+    let characters = Array(escaped)
+    for (index, character) in characters.enumerated() where "<[`(".contains(character) {
+        #expect(index > 0 && characters[index - 1] == "\\", "unescaped \(character) at \(index)")
+    }
+    #expect(escaped.contains("Evil") && escaped.contains("click") && escaped.contains("evil"))
+    #expect(!ExportService.inline("a\n## Injected").contains("\n"))
+}
+
+@Test func exportedFilesAndNewFoldersAreOwnerOnlyAndStaleTempsAreSwept() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("perm-\(UUID().uuidString)/new")
+    let url = try ExportService.write(Data("x".utf8), baseName: "n", extension: "md", into: directory)
+    let file = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+    let folder = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+    #expect(file?.intValue == 0o600 && folder?.intValue == 0o700)
+    let stale = directory.appendingPathComponent(".arena-suite-export-stale.tmp")
+    try Data("partial".utf8).write(to: stale)
+    _ = try ExportService.write(Data("y".utf8), baseName: "m", extension: "md", into: directory)
+    #expect(!FileManager.default.fileExists(atPath: stale.path))
+}
+
+@Test func cancelledExportLeavesNothing() async throws {
+    let h = try await ExportHarness()
+    let task = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return try await h.export(.markdown)
+    }
+    await #expect(throws: ExportError.cancelled) { _ = try await task.value }
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: h.output.path)) ?? []
+    #expect(files.isEmpty)
+}
+
+@Test func maskingIsCaseInsensitiveAndReserializationIsDeclared() throws {
+    let body = Data(#"{"id":"c1","big":9007199254740993,"messages":[{"id":"m1","Metadata":{"botScore":1},"metaData":[1]}]}"#.utf8)
+    let masked = String(decoding: ExportService.maskMetadata(body), as: UTF8.self)
+    #expect(!masked.contains("botScore") && masked.components(separatedBy: "[omitted: telemetry]").count == 3)
+    let h = """
+        re-parsed and re-serialized
+        """
+    let evidence = RawEvidence(
+        location: RecordRef(account: AccountID(), sequence: 1, segment: 1, offset: 0, length: 1), envelope: Data("{}".utf8),
+        payload: body, digest: "d", decoderVersion: "v")
+    let detail = ConversationDetail(
+        summary: ConversationSummary(
+            account: AccountID(), remoteID: "c1", kind: "evaluation", title: nil, mode: nil, modality: nil, updatedAt: nil,
+            snapshotCount: 1, latestSnapshotSequence: 1, messageCount: 0, isAbsent: false),
+        snapshotSequences: [1], messages: [], claims: [], feedback: [])
+    let raw = String(decoding: try ExportService.rawJSON(detail: detail, evidence: evidence, exact: false), as: UTF8.self)
+    #expect(raw.contains(h) && raw.contains("\"transformed\""))
 }

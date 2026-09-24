@@ -156,4 +156,12 @@ public struct RawEvidence: Sendable, Equatable {
     public let payload: Data
     public let digest: String
     public let decoderVersion: String
+
+    public init(location: RecordRef, envelope: Data, payload: Data, digest: String, decoderVersion: String) {
+        self.location = location
+        self.envelope = envelope
+        self.payload = payload
+        self.digest = digest
+        self.decoderVersion = decoderVersion
+    }
 }
