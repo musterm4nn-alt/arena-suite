@@ -528,4 +528,7 @@ struct SourceInstant: Comparable, Sendable {
     static func < (lhs: SourceInstant, rhs: SourceInstant) -> Bool {
         (lhs.seconds, lhs.nanoseconds) < (rhs.seconds, rhs.nanoseconds)
     }
+
+    /// The instant as integer microseconds since 1970, for the index's sortable `updated_order`.
+    var microseconds: Int64 { seconds * 1_000_000 + nanoseconds / 1_000 }
 }

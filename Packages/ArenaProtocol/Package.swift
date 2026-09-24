@@ -25,6 +25,8 @@ let package = Package(
             name: "AdapterTests",
             dependencies: [
                 "ArenaAdapter", "FoundationTransport", .product(name: "CaptureJournal", package: "ArenaSuiteCore"),
+                .product(name: "ApplicationActions", package: "ArenaSuiteCore"),
+                .product(name: "ArchiveIndex", package: "ArenaSuiteCore"),
             ]),
         .testTarget(name: "TransportTests", dependencies: ["FoundationTransport"]),
     ],

@@ -12,8 +12,8 @@ Updated 2026-09-24.
 | **1** Journal | **Done (offline), reviewed** | `CaptureJournal`, spec `Docs/journal-format-v1.md`, golden fixture + independent Python reader, 28 unit tests, SIGKILL crash gate (9 boundaries). Independent review findings all fixed: `Docs/reviews/2026-09-24-phase1-phase0a.md` |
 | **2** Accounts & sessions | **Done, reviewed** | Live: 3 accounts restored after relaunch and rebuild (N-011). Review findings fixed: `Docs/reviews/2026-09-24-phase2.md`. Keychain: legacy login Keychain kept by decision (ACL-protected, not device-bound) |
 | **3** History sync | **Done, reviewed** | Live: 3 accounts synced (57 entries, 51 archived), kill -9 mid-sync resumed with no refetch, incremental re-sync fetched nothing (N-012). `Docs/phase3-history-sync-2026-09-24.md` |
-| 4 Decoding & index | **Next** | GRDB 7.11.1 pinned; decode from journal only; `metadata` telemetry excluded from default views/exports (plan §12) |
-| 5 UI · 6 Exports · 7 Release | Not started | |
+| **4** Decoding & index | **Done, reviewed** | Real archive: 57 conversations / 628 messages / 3 422 blocks; rebuild digest identical; 0 unknown fields (N-013). `Docs/phase4-index-2026-09-24.md` |
+| 5 UI · 6 Exports · 7 Release | **5 next** | Wire ArchiveService into the app: browse, transcript, search, inspector |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next
