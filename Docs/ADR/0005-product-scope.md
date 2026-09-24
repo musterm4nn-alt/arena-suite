@@ -45,7 +45,12 @@ or I ask for it to be re-opened.
 
 ## Phase 0-A result (to complete when A1–A8 are recorded)
 
-- A1 detail: _
+- A1 detail: **Verified (N-007, 2026-09-24).** One fresh observed history-list page → first
+  `evaluation` entry → one GET `/api/evaluation/{id}`: HTTP 200, complete transport, 49084 bytes;
+  detail ID equals the selected list entry; message session IDs match; 3 messages; 0 duplicate
+  message IDs; 0 parent and 0 last-message references outside the response. No continuation, no
+  pagination, no generation. One account, one build, one request each. See
+  `Docs/native-detail-observation-2026-09-24.md`. The detail fixture (A8) is still pending.
 - A2 pagination: _
 - A3 entry types: _
 - A4/A5 session lifetime and expiry: _

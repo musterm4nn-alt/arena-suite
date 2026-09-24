@@ -95,9 +95,9 @@ Evidence vocabulary is unchanged: `verified_observation`, `repository_evidence`,
 |---|---|---|
 | Sign-in | POST `/nextjs-api/sign-in/email`, JSON `{email, password, shouldLinkHistory}`; sets session cookies | **Verified** once (N-002); one earlier unexplained 401 (N-001) |
 | Identity | GET `/api/me` → `user.id`, `user.supabaseUserId`, `user.email` | **Verified** (N-002/N-003); returned email may differ in formatting from input — compare IDs, never emails |
-| Session restore | Keychain-saved cookies → `/api/me` IDs match | **Verified** same-build relaunch (N-006); cross-build (new signature) unverified |
+| Session restore | Keychain-saved cookies → `/api/me` IDs match | **Verified** same-build relaunch (N-006); one cross-build restore (N-007, Keychain-prompt interactivity unknown) |
 | History list | GET `/api/history/unified?limit=20&includeArchived=false` → `entries`, `pagination{hasMore,cursor,limit}`, `partial`, `failedSources` | **Verified** one page (N-005); non-null cursor never observed |
-| History detail | GET `/api/evaluation/{id}` → `id`, `title`, `mode`, `visibility`, `lastMessageIds`, `archivedAt`, `deletedAt`, `messages[]` (with `id`, `role`, `status`, `parentMessageIds`, `evaluationSessionId`, attachments) | Browser-verified (H-002); native probe built, **not yet run** |
+| History detail | GET `/api/evaluation/{id}` → `id`, `title`, `mode`, `visibility`, `lastMessageIds`, `archivedAt`, `deletedAt`, `messages[]` (with `id`, `role`, `status`, `parentMessageIds`, `evaluationSessionId`, attachments) | Browser-verified (H-002); native verified once (N-007) |
 | Create / follow-up | POST `/nextjs-api/stream/create-evaluation`, POST `/nextjs-api/stream/post-to-evaluation/{id}`; body includes `recaptchaV3Token`; response is prefixed lines (`a0` text, `a2` arrays, `ad` finish) | Browser-observed (C-001/C-002); **native blocked** (N-004, 403) |
 | Refresh / expiry | — | Not observed |
 | Two accounts | Synthetic cookie-jar isolation passes locally | Not observed live |

@@ -22,10 +22,18 @@ N-005/N-006: [native-history-restoration-2026-09-24.md](native-history-restorati
 records native history-list HTTP 200 following manual login and then after verified Keychain
 restoration in a fresh process. One-account, same-build scope only; no raw native fixture exported.
 
+N-007: [native-detail-observation-2026-09-24.md](native-detail-observation-2026-09-24.md) records
+the A1 detail experiment run live: one observed list page, first `evaluation` entry, one GET
+`/api/evaluation/{id}` → HTTP 200, complete transport, 49084 bytes; detail ID equals the selected
+list entry, message session IDs match, 3 messages, 0 duplicate message IDs, 0 parent/last-message
+references outside the response. Same run restored the astra-saved Keychain session in the
+opus-repo build without manual login (prompt interactivity unknown). One account, one build, one
+request each; no raw native fixture, in-memory capture only.
+
 H-001/H-002: [history-observation-2026-09-22.md](history-observation-2026-09-22.md) records browser
 list query and observed evaluation detail GET, including synthetic-message relationship checks.
-A projected sanitized list fixture now exists. N-005/N-006 verify narrow native list access;
-native detail access and a detail fixture remain pending.
+A projected sanitized list fixture now exists. N-005/N-006 verify narrow native list access and
+N-007 adds narrow native detail access; a native detail fixture remains pending.
 
 C-001/C-002 and S-002 are recorded in [conversation-observation-2026-09-22.md](conversation-observation-2026-09-22.md).
 Browser create/follow-up succeeded; sanitized response fixtures now exist. The inspected public
@@ -115,11 +123,12 @@ grammar/terminal semantics remain unknown. R-001 remains a source lead, not a se
 Every Arena question in master-plan section 22 retains unresolved scope. B-001/B-002 provide
 partial browser evidence for Q01/Q03/Q16, and N-002/N-003 demonstrate Q01's initial native login
 and same-session identity substeps. N-005/N-006 additionally demonstrate same-build relaunch
-restoration and native history listing. Refresh/expiration, cross-build access and full feasibility remain open.
+restoration and native history listing. N-007 adds one cross-build Keychain restore with unknown
+prompt interactivity. Refresh/expiration, settled cross-build access and full feasibility remain open.
 
 | ID | NEEDS PROTOCOL VERIFICATION | Next evidence required |
 |---|---|---|
-| Q01 | Broader session retention, refresh/expiration, cross-build restoration | N-002/N-003 login and N-006 same-build restart observed; verify remaining lifecycle and live forgetting |
+| Q01 | Broader session retention, refresh/expiration, cross-build restoration | N-002/N-003 login and N-006 same-build restart observed; N-007 adds one cross-build restore (Keychain-prompt interactivity unknown); verify remaining lifecycle and live forgetting |
 | Q02 | Browser-bound challenge/runtime or unavailable registration | Observe legitimate login/send requirements; no bypass |
 | Q03 | Cookies/bearer/CSRF, OAuth callback/email/OTP, rotation, multiple origins | Redacted full auth/request/redirect sequence |
 | Q04 | Two simultaneous accounts and session invalidation | Native A/B identity/refresh/isolation run |

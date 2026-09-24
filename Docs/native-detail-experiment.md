@@ -24,5 +24,10 @@ an observation exists, not that all semantic checks passed. Read its HTTP/transp
 Captured bytes are bounded and memory-only; the report is not a raw fixture.
 
 Tests cover observed selection and GET recipe, unsafe IDs, identity mismatch before list dispatch,
-unknown bytes, ID/session mismatch, duplicates and outside-response references. Live native detail
-acceptance remains pending until the reviewed build's value-free report is inspected.
+unknown bytes, ID/session mismatch, duplicates and outside-response references.
+
+Result: the reviewed build's value-free report was inspected on 2026-09-24. Acceptance met — list
+page and one detail GET both HTTP 200 with complete transport, detail ID and message session IDs
+match the selected list entry, no duplicate or outside-response references. Recorded as N-007 in
+[native-detail-observation-2026-09-24.md](native-detail-observation-2026-09-24.md); the raw bytes
+stayed in memory, so a detail fixture (A8) remains pending.
