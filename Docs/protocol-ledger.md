@@ -37,6 +37,9 @@ entry types `evaluation`/`agentic`, auth-cookie names and lifetimes, `/api/me` w
 isolation in one process. Also records that detail `messages[].metadata` contains per-user
 anti-abuse telemetry. The native detail fixture now exists (`native-detail.fixture.json`).
 
+N-011: [phase2-accounts-2026-09-24.md](phase2-accounts-2026-09-24.md) records three accounts signed in
+through the product app's adapter and restored after relaunch and after a rebuild with a new signature.
+
 H-001/H-002: [history-observation-2026-09-22.md](history-observation-2026-09-22.md) records browser
 list query and observed evaluation detail GET, including synthetic-message relationship checks.
 A projected sanitized list fixture now exists. N-005/N-006 verify narrow native list access and

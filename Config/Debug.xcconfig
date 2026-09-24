@@ -14,3 +14,6 @@ INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.productivity
 INFOPLIST_KEY_CFBundleDisplayName = Arena Suite
 MARKETING_VERSION = 0.0.1
 CURRENT_PROJECT_VERSION = 1
+
+// Optional, git-ignored local signing (stable identity keeps Keychain access across rebuilds).
+#include? "Signing.local.xcconfig"

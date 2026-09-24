@@ -5,11 +5,14 @@ import re
 
 root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
-    "App": {"AppKit", "SwiftUI", "ApplicationActions"},
+    "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
     "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain"},
     "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
-    "Packages/ArenaProtocol/Sources/ArenaAdapter": {"Foundation", "SuiteDomain"},
+    "Packages/ArenaProtocol/Sources/ArenaAdapter": {
+        "Foundation", "SuiteDomain", "ApplicationActions", "FoundationTransport", "Security",
+    },
+    "Packages/ArenaProtocol/Sources/FoundationTransport": {"Foundation", "Darwin"},
 }
 files = list((root / "App").rglob("*.swift"))
 for package in (root / "Packages").iterdir():
@@ -26,8 +29,12 @@ for path in files:
             path.read_text(),
         )
     )
-    assert imports <= allowed[owners[0]], (
-        f"Forbidden imports in {relative}: {imports - allowed[owners[0]]}"
+    permitted = set(allowed[owners[0]])
+    # The composition root alone may wire concrete adapter implementations.
+    if relative == "App/AppComposition.swift":
+        permitted.add("ArenaAdapter")
+    assert imports <= permitted, (
+        f"Forbidden imports in {relative}: {imports - permitted}"
     )
     if owners[0] != "Packages/ArenaProtocol/Sources/ArenaAdapter":
         assert not re.search(

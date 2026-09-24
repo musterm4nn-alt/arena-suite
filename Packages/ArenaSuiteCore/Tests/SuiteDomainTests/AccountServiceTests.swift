@@ -1,0 +1,171 @@
+import ApplicationActions
+import Foundation
+import SuiteDomain
+import Testing
+
+private func principal(_ name: String) -> PrincipalIdentity {
+    PrincipalIdentity(namespace: "arena", claims: ["id": "id-\(name)", "supabaseUserId": "sb-\(name)"])
+}
+
+/// Scripted provider: email → principal (or failure); account → restore result.
+private actor FakeSessions: AccountSessionProviding {
+    var principals: [String: PrincipalIdentity] = ["a@x": principal("A"), "b@x": principal("B"), "a2@x": principal("A")]
+    var restoreResults: [AccountID: SessionCheck] = [:]
+    var signInFailure: SignInFailure?
+    var persistFails = false
+    var signInDelay: Duration = .zero
+    private(set) var persisted: [AccountID: PrincipalIdentity] = [:]
+    private(set) var discarded: [AccountID] = []
+    private(set) var forgotten: [AccountID] = []
+    private(set) var restoreCalls: [AccountID] = []
+
+    func setRestore(_ id: AccountID, _ check: SessionCheck) { restoreResults[id] = check }
+    func setFailure(_ failure: SignInFailure?) { signInFailure = failure }
+    func setPersistFails(_ value: Bool) { persistFails = value }
+    func setPrincipal(_ email: String, _ value: PrincipalIdentity) { principals[email] = value }
+    func setDelay(_ value: Duration) { signInDelay = value }
+
+    func signIn(account: AccountID, email: String, password: String) async throws -> PrincipalIdentity {
+        if signInDelay > .zero { try? await Task.sleep(for: signInDelay) }
+        if let signInFailure { throw signInFailure }
+        guard let value = principals[email] else { throw SignInFailure.rejected(status: 401) }
+        return value
+    }
+    func persist(account: AccountID, principal: PrincipalIdentity) async throws {
+        if persistFails { throw SignInFailure.sessionStorageFailed }
+        persisted[account] = principal
+    }
+    func restore(account: AccountID, expected: PrincipalIdentity) async -> SessionCheck {
+        restoreCalls.append(account)
+        return restoreResults[account] ?? .noSavedSession
+    }
+    func verify(account: AccountID, expected: PrincipalIdentity) async -> SessionCheck {
+        restoreResults[account] ?? .unreachable
+    }
+    func discard(account: AccountID) async { discarded.append(account) }
+    func forget(account: AccountID) async throws {
+        forgotten.append(account)
+        persisted[account] = nil
+    }
+}
+
+private func makeService(_ sessions: FakeSessions) throws -> (AccountService, AccountRegistryStore) {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("accounts-\(UUID().uuidString)")
+    let store = AccountRegistryStore(url: directory.appendingPathComponent("accounts/registry.json"))
+    return (AccountService(registry: store, sessions: sessions), store)
+}
+
+@Test func addedAccountIsPersistedPrivatelyAndSignedIn() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let added = try await service.addAccount(email: "a@x", password: "p", displayName: "  Work  ")
+    #expect(added.state == .signedIn && added.displayName == "Work" && added.credentialGeneration == 1)
+    #expect(await fake.persisted[added.id] == principal("A"))
+    let records = try store.load()
+    #expect(records.map(\.id) == [added.id] && records.first?.principal == principal("A"))
+    let mode = try FileManager.default.attributesOfItem(atPath: store.url.path)[.posixPermissions] as? NSNumber
+    #expect(mode?.intValue == 0o600)
+    let text = try String(contentsOf: store.url, encoding: .utf8)
+    #expect(!text.contains("password") && !text.contains("a@x"))
+    let context = try await service.context(for: added.id)
+    #expect(context.accountID == added.id && context.credentialGeneration == 1)
+}
+
+@Test func sameArenaAccountCannotBeAddedTwice() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let first = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    await #expect(throws: AccountError.duplicateAccount(existing: first.id)) {
+        _ = try await service.addAccount(email: "a2@x", password: "p", displayName: nil)
+    }
+    #expect(try store.load().count == 1)
+    #expect(await fake.discarded.count == 1)
+}
+
+@Test func concurrentDuplicateAddsLeaveOneAccount() async throws {
+    let fake = FakeSessions()
+    await fake.setDelay(.milliseconds(20))
+    let (service, store) = try makeService(fake)
+    async let one = try? service.addAccount(email: "a@x", password: "p", displayName: nil)
+    async let two = try? service.addAccount(email: "a2@x", password: "p", displayName: nil)
+    let results = await [one, two].compactMap { $0 }
+    #expect(results.count == 1)
+    #expect(try store.load().count == 1)
+    #expect(await fake.persisted.count == 1)
+}
+
+@Test(arguments: [SignInFailure.rejected(status: 401), .identityUnverified, .unreachable])
+func failedSignInAddsNothing(_ failure: SignInFailure) async throws {
+    let fake = FakeSessions()
+    await fake.setFailure(failure)
+    let (service, store) = try makeService(fake)
+    await #expect(throws: AccountError.signIn(failure)) {
+        _ = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    }
+    #expect(try store.load().isEmpty)
+    #expect(await service.accounts().isEmpty)
+}
+
+@Test func storageFailureAddsNothing() async throws {
+    let fake = FakeSessions()
+    await fake.setPersistFails(true)
+    let (service, store) = try makeService(fake)
+    await #expect(throws: AccountError.signIn(.sessionStorageFailed)) {
+        _ = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    }
+    #expect(try store.load().isEmpty)
+}
+
+@Test func restoreAllSetsEachAccountIndependently() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    var ids: [AccountID] = []
+    for email in ["a@x", "b@x"] { ids.append(try await service.addAccount(email: email, password: "p", displayName: nil).id) }
+    await fake.setPrincipal("c@x", principal("C"))
+    await fake.setPrincipal("d@x", principal("D"))
+    await fake.setPrincipal("e@x", principal("E"))
+    for email in ["c@x", "d@x", "e@x"] { ids.append(try await service.addAccount(email: email, password: "p", displayName: nil).id) }
+    let checks: [SessionCheck] = [.verified, .rejected(status: 401), .mismatch, .unreachable, .noSavedSession]
+    for (id, check) in zip(ids, checks) { await fake.setRestore(id, check) }
+
+    let relaunched = AccountService(registry: store, sessions: fake)
+    try await relaunched.load()
+    #expect(await relaunched.accounts().allSatisfy { $0.state == .unverified })
+    await relaunched.restoreAll()
+    let states = Dictionary(uniqueKeysWithValues: await relaunched.accounts().map { ($0.id, $0.state) })
+    #expect(ids.map { states[$0] } == [.signedIn, .needsSignIn, .quarantined, .unreachable, .needsSignIn])
+    _ = try await relaunched.context(for: ids[0])
+    await #expect(throws: AccountError.notSignedIn(.quarantined)) { _ = try await relaunched.context(for: ids[2]) }
+}
+
+@Test func signingInAgainMustKeepThePrincipal() async throws {
+    let fake = FakeSessions()
+    let (service, _) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    await #expect(throws: AccountError.principalChanged) {
+        _ = try await service.signInAgain(account.id, email: "b@x", password: "p")
+    }
+    #expect(await service.accounts().first?.credentialGeneration == 1)
+    let again = try await service.signInAgain(account.id, email: "a2@x", password: "p")
+    #expect(again.credentialGeneration == 2 && again.state == .signedIn)
+}
+
+@Test func removeForgetsSessionAndPersists() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let a = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    let b = try await service.addAccount(email: "b@x", password: "p", displayName: nil)
+    try await service.remove(a.id)
+    #expect(await fake.forgotten == [a.id])
+    #expect(try store.load().map(\.id) == [b.id])
+    await #expect(throws: AccountError.unknownAccount) { try await service.remove(a.id) }
+}
+
+@Test func corruptRegistryIsReportedNotReplaced() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    try FileManager.default.createDirectory(at: store.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("{not json".utf8).write(to: store.url)
+    await #expect(throws: AccountError.registryUnavailable) { try await service.load() }
+    #expect(try Data(contentsOf: store.url) == Data("{not json".utf8))
+}

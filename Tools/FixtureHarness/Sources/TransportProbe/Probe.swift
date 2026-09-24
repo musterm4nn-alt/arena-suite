@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import FoundationTransport
 import NativeAuthResearch
 
 struct Unit: Sendable {
@@ -231,6 +232,62 @@ func require(_ condition: Bool, _ message: String) throws {
         try require(limited.observedByteCount > limited.body.count, "Native truncation counter missing")
         print(
             "native research capture: callback bytes/offsets/ticks, interrupted prefix, explicit cap, fresh jar and POST 307/308 refusal passed"
+        )
+
+        // Production per-account transport (Phase 2): same contract, exercised against real sockets.
+        let host: Set<String> = [base.host ?? "127.0.0.1"]
+        let accountA = AccountHTTPSession()
+        let accountB = AccountHTTPSession()
+        _ = try await accountA.perform(URLRequest(url: base.appendingPathComponent("set-a")))
+        _ = try await accountB.perform(URLRequest(url: base.appendingPathComponent("set-b")))
+        async let accountAR = accountA.perform(URLRequest(url: base.appendingPathComponent("cookies")))
+        async let accountBR = accountB.perform(URLRequest(url: base.appendingPathComponent("cookies")))
+        let accountReplies = try await (accountAR, accountBR)
+        try require(accountReplies.0.body == Data("probe=A".utf8), "Account A cookie contamination")
+        try require(accountReplies.1.body == Data("probe=B".utf8), "Account B cookie contamination")
+        try require(accountReplies.0.startTicks > 0 && accountReplies.0.endTicks >= accountReplies.0.startTicks, "Ticks missing")
+        // Saved cookies restore into a fresh session and nowhere else.
+        let restored = AccountHTTPSession()
+        try restored.importCookies(try accountA.exportCookies(domains: host), domains: host)
+        let restoredReply = try await restored.perform(URLRequest(url: base.appendingPathComponent("cookies")))
+        try require(restoredReply.body == Data("probe=A".utf8), "Exported session did not restore")
+        try require(
+            restored.cookieFingerprint(domains: host) == accountA.cookieFingerprint(domains: host),
+            "Fingerprint differs for identical jars")
+        let untouched = try await AccountHTTPSession().perform(URLRequest(url: base.appendingPathComponent("cookies")))
+        try require(untouched.body.isEmpty, "Fresh account session inherited cookies")
+        var accountRedirect = URLRequest(url: base.appendingPathComponent("redirect"))
+        accountRedirect.setValue("synthetic-test-only", forHTTPHeaderField: "Authorization")
+        try require(try await accountA.perform(accountRedirect).status == 302, "Account session followed a redirect")
+        for status in [307, 308] {
+            var request = URLRequest(url: base.appendingPathComponent("redirect-\(status)"))
+            request.httpMethod = "POST"
+            request.httpBody = Data("synthetic-test-only".utf8)
+            try require(try await accountA.perform(request).status == status, "Account POST redirect followed")
+        }
+        let gzipReply = try await accountA.perform(URLRequest(url: base.appendingPathComponent("gzip")))
+        try require(gzipReply.transferEnd == .complete && gzipReply.body == expected, "Account gzip body mismatch")
+        let accountTruncated = try await accountA.perform(URLRequest(url: base.appendingPathComponent("truncated")))
+        try require(
+            accountTruncated.transferEnd == .interrupted && accountTruncated.body == expected,
+            "Account interrupted prefix not preserved")
+        let accountLimited = try await AccountHTTPSession(maximumBodyBytes: 64).perform(
+            URLRequest(url: base.appendingPathComponent("large")))
+        try require(
+            accountLimited.transferEnd == .captureLimit && accountLimited.body == Data(repeating: 120, count: 64)
+                && accountLimited.observedByteCount > 64, "Account capture limit not declared")
+        let accountCancel = AccountHTTPSession()
+        let accountTransfer = Task {
+            try await accountCancel.perform(URLRequest(url: base.appendingPathComponent("cancel-prefix")))
+        }
+        try await Task.sleep(for: .seconds(1))
+        let accountCancelStart = ContinuousClock.now
+        accountTransfer.cancel()
+        let accountCanceled = try await accountTransfer.value
+        try require(accountCancelStart.duration(to: .now) < .seconds(2), "Account cancellation not prompt")
+        try require(accountCanceled.transferEnd == .interrupted, "Account cancellation not declared")
+        print(
+            "account transport: isolated jars, export/import restore, redirect refusal, gzip, interrupted prefix, capture limit, cancellation passed"
         )
 
         let ws = sa.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)/ws")!)
