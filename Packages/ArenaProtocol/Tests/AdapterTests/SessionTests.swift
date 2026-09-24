@@ -156,7 +156,7 @@ func rejectedSignInNeverChecksIdentity(_ status: Int) async throws {
     #expect(await provider.session(for: account) != nil)
 }
 
-@Test(arguments: [401, 403])
+@Test(arguments: [401])
 func rejectedRestoreDeletesSavedSession(_ status: Int) async throws {
     let vault = MemoryVault()
     let account = AccountID()
@@ -179,6 +179,19 @@ func rejectedRestoreDeletesSavedSession(_ status: Int) async throws {
     #expect(transport.requestCount == 1)
 }
 
+@Test func blockedRestoreKeepsTheSavedSession() async throws {
+    let vault = MemoryVault()
+    let account = AccountID()
+    try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
+    let provider = sessions(vault, TransportFactory([
+        FakeTransport([HTTPExchange(status: 403, body: Data())]),
+        FakeTransport([HTTPExchange(status: 200, headers: ["Content-Type": "text/html"], body: Data("<html>".utf8))]),
+    ]))
+    #expect(await provider.restore(account: account, expected: principalA) == .blocked(status: 403))
+    #expect(await provider.restore(account: account, expected: principalA) == .blocked(status: 200))
+    #expect(vault[account] != nil, "a block is not an expired session")
+}
+
 @Test func transientFailuresKeepTheSavedSession() async throws {
     let vault = MemoryVault()
     let account = AccountID()
@@ -187,7 +200,7 @@ func rejectedRestoreDeletesSavedSession(_ status: Int) async throws {
         FakeTransport([HTTPExchange(status: 503, body: Data())]),
         FakeTransport([HTTPExchange(status: 429, body: Data())]),
         FakeTransport(results: [.failure(URLError(.notConnectedToInternet))]),
-        FakeTransport([HTTPExchange(status: 200, body: Data("<html>".utf8))]),
+        FakeTransport([HTTPExchange(status: 200, body: Data("{}".utf8))]),
         FakeTransport([HTTPExchange(status: 200, body: Data(), transferEnd: .interrupted)]),
     ]
     let provider = sessions(vault, TransportFactory(failures))

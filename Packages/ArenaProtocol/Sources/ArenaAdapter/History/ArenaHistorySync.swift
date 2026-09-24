@@ -33,6 +33,8 @@ struct ArchivedState {
     var snapshots: [String: String?] = [:]
     /// Entry ID → last `updatedAt` seen in any recorded list page.
     var listed: [String: String?] = [:]
+    /// Conversation ID → `updatedAt` when its detail request was answered 404 (observed absence).
+    var absent: [String: String?] = [:]
     /// The most recent history job that never recorded `job.finished` (e.g. the app was killed).
     var interrupted: Interrupted?
     /// Older unfinished jobs, closed as `interrupted` without resuming.
@@ -77,12 +79,20 @@ struct ArchivedState {
                     interrupted.lastHasMore = page.hasMore
                     open[job] = interrupted
                 }
+            case "exchange" where role == "detail" && envelope.metadata["status"] == .integer(404):
+                guard case .string(let id) = envelope.metadata["entry_id"] else { return }
+                if case .string(let updated) = envelope.metadata["source_updated_at"] {
+                    state.absent[id] = updated
+                } else {
+                    state.absent[id] = String?.none
+                }
             case "exchange" where role == "detail":
                 guard case .string(let id) = envelope.metadata["entry_id"],
                     envelope.metadata["status"] == .integer(200),
                     envelope.metadata["transfer_end"] == .string("complete"),
                     DetailCheck.isValid(record.payload, id: id)
                 else { return }
+                state.absent[id] = nil
                 if case .string(let updated) = envelope.metadata["source_updated_at"] {
                     state.snapshots[id] = updated
                 } else {
@@ -99,15 +109,16 @@ struct ArchivedState {
 
     func isUnchanged(_ entry: ListEntry) -> Bool {
         guard let updated = entry.updatedAt, listed[entry.id] == updated else { return false }
-        return entry.type != "evaluation" || snapshots[entry.id] == updated
+        return entry.type != "evaluation" || snapshots[entry.id] == updated || absent[entry.id] == updated
     }
 
     func needsDetail(_ entry: ListEntry) -> Bool {
         guard entry.type == "evaluation" else { return false }
-        // Refetch only when the server's `updatedAt` differs from the one archived with the snapshot.
-        // (Without `updatedAt` a change is undetectable; a full refresh is a separate, explicit job.)
-        guard let archived = snapshots[entry.id] else { return true }
-        return archived != entry.updatedAt
+        // Without `updatedAt` a change is undetectable, so such conversations are always refetched.
+        guard let updated = entry.updatedAt else { return true }
+        if snapshots[entry.id] == updated { return false }
+        // A 404 for this same version is remembered; a changed `updatedAt` retries it.
+        return absent[entry.id] != updated
     }
 }
 
@@ -124,6 +135,7 @@ final class SyncJob {
     private var manifest: SyncManifest
     private var session: ArenaAccountSession?
     private var requestsSent = 0
+    private lazy var recorder = ExchangeRecorder(journal: journal, account: account, jobID: jobID)
 
     init(
         account: AccountID, principal: PrincipalIdentity, sessions: ArenaAccountSessions, journal: JournalWriter,
@@ -147,18 +159,6 @@ final class SyncJob {
 
     func run() async -> SyncManifest {
         report(SyncProgress(stage: .verifying, pages: 0, entries: 0, detailsDone: 0, detailsNeeded: 0))
-        // Identity first: nothing else is sent before the principal is verified again for this job.
-        switch await sessions.verify(account: account, expected: principal) {
-        case .verified: break
-        case .rejected, .noSavedSession: return finishWithoutJournal(.needsSignIn, "session rejected or absent")
-        case .mismatch: return finishWithoutJournal(.needsSignIn, "identity mismatch; session discarded")
-        case .unreachable: return finishWithoutJournal(.partial, "identity check unreachable")
-        }
-        guard let session = await sessions.session(for: account) else {
-            return finishWithoutJournal(.needsSignIn, "no verified session")
-        }
-        self.session = session
-
         let state: ArchivedState
         do { state = try ArchivedState.scan(journalRoot) } catch {
             return finishWithoutJournal(.storageFailed, "journal could not be read")
@@ -175,19 +175,21 @@ final class SyncJob {
             ]
             if let resumed = manifest.resumedJobID { started["resumes"] = .string(resumed.uuidString) }
             try append(JournalDraft(kind: JournalKind.jobStarted, accountID: account.rawValue, jobID: jobID, metadata: started))
-            try append(
-                JournalDraft(
-                    kind: "session.verified", accountID: account.rawValue, jobID: jobID,
-                    metadata: ["namespace": .string(principal.namespace)]))
             try journal.synchronize()
         } catch {
             return finishWithoutJournal(.storageFailed, "journal could not be written")
         }
 
         do {
+            try await verifyIdentity()
             let entries = try await list(state: state)
             try await fetchDetails(entries, state: state)
-            manifest.outcome = .completed
+            if manifest.detailsFailed > 0 {
+                manifest.outcome = .partial
+                manifest.reason = "\(manifest.detailsFailed) detail request(s) failed; resumable"
+            } else {
+                manifest.outcome = .completed
+            }
         } catch Stop.outcome(let outcome, let reason) {
             manifest.outcome = outcome
             manifest.reason = reason
@@ -196,6 +198,38 @@ final class SyncJob {
             manifest.reason = "journal could not be written"
         }
         return finish()
+    }
+
+    /// Identity first: nothing else is sent before the principal is verified again for this job.
+    /// The `/api/me` response is journaled (role `identity`) before it is interpreted.
+    private func verifyIdentity() async throws {
+        let recorder = self.recorder
+        let failure = RecordFailure()
+        let request = ArenaRoutes.identity()
+        let (check, session) = await sessions.verifyRecording(account: account, expected: principal) { exchange in
+            do {
+                try recorder.record(exchange, request: request, role: "identity", route: "/api/me", extra: [:])
+            } catch {
+                failure.set()
+                throw error
+            }
+        }
+        requestsSent += 1
+        if failure.isSet { throw Stop.outcome(.storageFailed, "journal could not be written") }
+        switch check {
+        case .verified: break
+        case .rejected(let status): throw Stop.outcome(.needsSignIn, "identity HTTP \(status.map(String.init) ?? "rejected")")
+        case .noSavedSession: throw Stop.outcome(.needsSignIn, "no verified session")
+        case .mismatch: throw Stop.outcome(.needsSignIn, "identity mismatch; session discarded")
+        case .blocked(let status): throw Stop.outcome(.blocked, "identity HTTP \(status.map(String.init) ?? "blocked")")
+        case .unreachable: throw Stop.outcome(.partial, "identity check unreachable")
+        }
+        guard let session else { throw Stop.outcome(.needsSignIn, "no verified session") }
+        self.session = session
+        try append(
+            JournalDraft(
+                kind: "session.verified", accountID: account.rawValue, jobID: jobID,
+                metadata: ["namespace": .string(principal.namespace)]))
     }
 
     // MARK: Listing
@@ -234,6 +268,9 @@ final class SyncJob {
                 throw Stop.outcome(Self.looksLikeChallenge(exchange) ? .blocked : .partial, "list page not recognized")
             }
             manifest.pagesListed += 1
+            if page.skippedEntries > 0 {
+                manifest.warnings.append("page \(manifest.pagesListed): \(page.skippedEntries) entry(ies) without a usable id skipped (raw bytes kept)")
+            }
             if page.partial == true || page.failedSources > 0 {
                 manifest.warnings.append("page \(manifest.pagesListed): partial=\(page.partial ?? false), failedSources=\(page.failedSources)")
             }
@@ -267,9 +304,11 @@ final class SyncJob {
     }
 
     /// Early stop is only safe if the page is visibly ordered by `updatedAt`, newest first.
+    /// Compares parsed instants, never strings: mixed precision or offsets must not fake an order.
+    /// Any missing or unparseable stamp disables the early stop.
     static func isNewestFirst(_ entries: [ListEntry]) -> Bool {
-        let stamps = entries.compactMap(\.updatedAt)
-        return stamps.count == entries.count && zip(stamps, stamps.dropFirst()).allSatisfy { $0 >= $1 }
+        let instants = entries.compactMap { $0.updatedAt.flatMap(SourceInstant.init) }
+        return instants.count == entries.count && zip(instants, instants.dropFirst()).allSatisfy { $0 >= $1 }
     }
 
     // MARK: Details
@@ -277,6 +316,10 @@ final class SyncJob {
     private func fetchDetails(_ entries: [ListEntry], state: ArchivedState) async throws {
         let needed = entries.filter(state.needsDetail)
         manifest.detailsUnchanged = entries.filter { $0.type == "evaluation" }.count - needed.count
+        let unstamped = needed.filter { $0.updatedAt == nil }.count
+        if unstamped > 0 {
+            manifest.warnings.append("\(unstamped) conversation(s) without updatedAt refetched (change not detectable)")
+        }
         for (index, entry) in needed.enumerated() {
             report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: index, detailsNeeded: needed.count))
             guard let request = HistoryRoutes.detail(id: entry.id) else {
@@ -287,7 +330,9 @@ final class SyncJob {
             var extra: [String: JournalValue] = ["entry_id": .string(entry.id), "entry_type": .string(entry.type)]
             if let updated = entry.updatedAt { extra["source_updated_at"] = .string(updated) }
             let exchange = try await fetch(request, role: "detail", route: HistoryRoutes.detailTemplate, extra: extra, allowNotFound: true)
-            if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: entry.id) {
+            if exchange.status == 404 {
+                manifest.detailsAbsent += 1  // plan §9.5: an observation of absence; local evidence kept
+            } else if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: entry.id) {
                 manifest.detailsFetched += 1
             } else if exchange.status == 200 && Self.looksLikeChallenge(exchange) {
                 throw Stop.outcome(.blocked, "detail response not recognized")
@@ -356,41 +401,14 @@ final class SyncJob {
         return .seconds(seconds)
     }
 
-    static func looksLikeChallenge(_ exchange: HTTPExchange) -> Bool {
-        let type = exchange.contentType?.lowercased() ?? ""
-        return type.contains("html") || exchange.body.prefix(64).contains(UInt8(ascii: "<"))
-    }
+    static func looksLikeChallenge(_ exchange: HTTPExchange) -> Bool { ArenaRoutes.looksLikeChallenge(exchange) }
 
     // MARK: Journal
 
     private func record(
         _ exchange: HTTPExchange, request: URLRequest, role: String, route: String, extra: [String: JournalValue]
     ) throws {
-        var headers: [String: JournalValue] = [:]
-        for (name, value) in exchange.headers {
-            // Session material is never archived (plan v3 §5 invariant 7).
-            headers[name] = name.caseInsensitiveCompare("Set-Cookie") == .orderedSame ? .string("[omitted]") : .string(value)
-        }
-        var metadata = extra
-        metadata["role"] = .string(role)
-        metadata["method"] = .string(request.httpMethod ?? "GET")
-        metadata["route"] = .string(route)
-        metadata["path"] = .string(request.url?.path ?? "")
-        metadata["query"] = request.url?.query.map(JournalValue.string) ?? .null
-        metadata["status"] = exchange.status.map { .integer(Int64($0)) } ?? .null
-        metadata["transfer_end"] = .string(exchange.transferEnd.rawValue)
-        metadata["observed_bytes"] = .integer(Int64(exchange.observedByteCount))
-        metadata["response_headers"] = .object(headers)
-        metadata["request_header_names"] = .array((request.allHTTPHeaderFields ?? [:]).keys.sorted().map(JournalValue.string))
-        metadata["end_ticks"] = .string(String(exchange.endTicks))
-        let now = Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
-        try append(
-            JournalDraft(
-                kind: "exchange", payload: exchange.body, accountID: account.rawValue, jobID: jobID,
-                timestamp: JournalTimestamp(wallMilliseconds: now, monotonicTicks: exchange.startTicks),
-                payloadRepresentation: "foundation_decoded_entity", transformations: ["credential_omitted"],
-                metadata: metadata))
-        try journal.synchronize()
+        try recorder.record(exchange, request: request, role: role, route: route, extra: extra)
     }
 
     private func append(_ draft: JournalDraft) throws {
@@ -425,5 +443,89 @@ final class SyncJob {
         manifest.outcome = outcome
         manifest.reason = reason
         return manifest
+    }
+}
+
+/// Appends one `exchange` record (and syncs) before anything interprets the response.
+/// Sendable so it can run inside the session actor for identity checks.
+struct ExchangeRecorder: Sendable {
+    let journal: JournalWriter
+    let account: AccountID
+    let jobID: UUID
+
+    func record(
+        _ exchange: HTTPExchange, request: URLRequest, role: String, route: String, extra: [String: JournalValue]
+    ) throws {
+        var headers: [String: JournalValue] = [:]
+        for (name, value) in exchange.headers {
+            // Session material is never archived (plan v3 §5 invariant 7).
+            headers[name] = name.caseInsensitiveCompare("Set-Cookie") == .orderedSame ? .string("[omitted]") : .string(value)
+        }
+        var metadata = extra
+        metadata["role"] = .string(role)
+        metadata["method"] = .string(request.httpMethod ?? "GET")
+        metadata["route"] = .string(route)
+        metadata["path"] = .string(request.url?.path ?? "")
+        metadata["query"] = request.url?.query.map(JournalValue.string) ?? .null
+        metadata["status"] = exchange.status.map { .integer(Int64($0)) } ?? .null
+        metadata["transfer_end"] = .string(exchange.transferEnd.rawValue)
+        metadata["observed_bytes"] = .integer(Int64(exchange.observedByteCount))
+        metadata["response_headers"] = .object(headers)
+        metadata["request_header_names"] = .array((request.allHTTPHeaderFields ?? [:]).keys.sorted().map(JournalValue.string))
+        metadata["end_ticks"] = .string(String(exchange.endTicks))
+        let now = Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        _ = try journal.append(
+            JournalDraft(
+                kind: "exchange", payload: exchange.body, accountID: account.rawValue, jobID: jobID,
+                timestamp: JournalTimestamp(wallMilliseconds: now, monotonicTicks: exchange.startTicks),
+                payloadRepresentation: "foundation_decoded_entity", transformations: ["credential_omitted"],
+                metadata: metadata))
+        try journal.synchronize()
+    }
+}
+
+final class RecordFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failed = false
+    func set() { lock.withLock { failed = true } }
+    var isSet: Bool { lock.withLock { failed } }
+}
+
+/// An exact instant parsed from a server timestamp, compared as integers (no floating point).
+/// Accepts the observed PostgreSQL text form (N-012: `2026-09-24 10:00:00.123456+00`, 4–6 fraction
+/// digits, hour-only offset) and ISO 8601 (`T`, `Z` or `±hh:mm`). Anything else is nil.
+struct SourceInstant: Comparable, Sendable {
+    let seconds: Int64
+    let nanoseconds: Int64
+
+    init?(_ text: String) {
+        let pattern = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}(?::?\d{2})?)$/
+        guard let match = text.wholeMatch(of: pattern),
+            let year = Int(match.1), let month = Int(match.2), let day = Int(match.3),
+            let hour = Int(match.4), let minute = Int(match.5), let second = Int(match.6),
+            (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second < 61
+        else { return nil }
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(identifier: "UTC")
+        (components.year, components.month, components.day) = (year, month, day)
+        (components.hour, components.minute, components.second) = (hour, minute, second)
+        guard let date = components.date else { return nil }
+        var offsetSeconds = 0
+        let zone = String(match.8)
+        if zone != "Z" {
+            let sign = zone.hasPrefix("-") ? -1 : 1
+            let digits = zone.dropFirst().filter(\.isNumber)
+            guard let hours = Int(digits.prefix(2)), hours <= 23 else { return nil }
+            let minutes = digits.count > 2 ? Int(digits.dropFirst(2)) ?? 0 : 0
+            offsetSeconds = sign * (hours * 3600 + minutes * 60)
+        }
+        seconds = Int64(date.timeIntervalSince1970) - Int64(offsetSeconds)
+        let fraction = match.7.map(String.init) ?? ""
+        nanoseconds = Int64(fraction.padding(toLength: 9, withPad: "0", startingAt: 0)) ?? 0
+    }
+
+    static func < (lhs: SourceInstant, rhs: SourceInstant) -> Bool {
+        (lhs.seconds, lhs.nanoseconds) < (rhs.seconds, rhs.nanoseconds)
     }
 }

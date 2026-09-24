@@ -4,8 +4,8 @@ import SuiteDomain
 
 /// Plan v3 §2 and §9. Defaults follow the traffic policy; spacing may only be raised.
 public struct SyncOptions: Sendable, Equatable {
-    /// Minimum delay between history requests of one account.
-    public var requestSpacing: Duration
+    /// Minimum delay between history requests of one account. Never below 1 s outside tests.
+    public private(set) var requestSpacing: Duration
     /// List every page even when the newest pages show nothing changed.
     public var fullPass: Bool
     /// Longest `Retry-After` the job waits for (once) before stopping with `partial`.
@@ -13,17 +13,24 @@ public struct SyncOptions: Sendable, Equatable {
     /// Safety bound on pages per job.
     public var maximumPages: Int
 
+    public static let minimumSpacing: Duration = .seconds(1)
+
     public init(
         requestSpacing: Duration = .seconds(1), fullPass: Bool = false, maximumRetryWait: Duration = .seconds(120),
         maximumPages: Int = 1_000
     ) {
-        self.requestSpacing = max(requestSpacing, .seconds(1))
+        self.requestSpacing = max(requestSpacing, Self.minimumSpacing)
         self.fullPass = fullPass
         self.maximumRetryWait = maximumRetryWait
         self.maximumPages = maximumPages
     }
 
-    /// Tests only: no spacing floor.
+    /// Spacing can only be raised above the policy minimum.
+    public mutating func setRequestSpacing(_ spacing: Duration) {
+        requestSpacing = max(spacing, Self.minimumSpacing)
+    }
+
+    /// Tests only: the single way to get zero spacing.
     public static func testing(fullPass: Bool = false, maximumRetryWait: Duration = .seconds(120)) -> SyncOptions {
         var options = SyncOptions(fullPass: fullPass, maximumRetryWait: maximumRetryWait)
         options.requestSpacing = .zero
@@ -32,7 +39,8 @@ public struct SyncOptions: Sendable, Equatable {
 }
 
 public enum SyncOutcome: String, Codable, Sendable {
-    /// Listing reached `hasMore == false` (or caught up) and every needed detail was fetched.
+    /// Listing reached `hasMore == false` (or caught up) and every needed detail was fetched or
+    /// observed absent (404). Any other detail failure makes the job `partial`.
     case completed
     /// Stopped early for a recorded reason (rate limit, pagination anomaly, transport); resumable.
     case partial
@@ -60,6 +68,8 @@ public struct SyncManifest: Sendable, Codable, Equatable {
     public var detailsFetched = 0
     public var detailsUnchanged = 0
     public var detailsFailed = 0
+    /// Detail requests answered 404: recorded as absence, not retried until the entry changes.
+    public var detailsAbsent = 0
     public var listOnlyEntries = 0
     /// "Complete" always names its scope: listing ended on `hasMore == false`, or caught up early.
     public var listingEnd: String?
@@ -129,7 +139,8 @@ public actor HistorySyncService {
     private let engine: any HistorySyncing
     private var running: [AccountID: Task<SyncManifest, Never>] = [:]
     private var lastManifest: [AccountID: SyncManifest] = [:]
-    private var progress: [AccountID: SyncProgress] = [:]
+    /// Written synchronously by the engine's progress callback, so updates keep their order.
+    private let progress = ProgressBox()
 
     public init(accounts: AccountService, journals: JournalStore, engine: any HistorySyncing) {
         self.accounts = accounts
@@ -149,13 +160,11 @@ public actor HistorySyncService {
         let writer = try await journals.writer(for: account)
         let root = await journals.root(for: account)
         let engine = self.engine
-        let service = self  // held only for the job's duration
+        let progress = self.progress
         let task = Task {
             await engine.sync(
                 account: context, principal: principal, journal: writer, journalRoot: root, options: options
-            ) { update in
-                Task { await service.record(update, for: account) }
-            }
+            ) { update in progress[account] = update }
         }
         running[account] = task
         let manifest = await task.value
@@ -166,8 +175,13 @@ public actor HistorySyncService {
     }
 
     public func cancel(_ account: AccountID) { running[account]?.cancel() }
+}
 
-    private func record(_ update: SyncProgress, for account: AccountID) {
-        if running[account] != nil { progress[account] = update }
+final class ProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [AccountID: SyncProgress] = [:]
+    subscript(account: AccountID) -> SyncProgress? {
+        get { lock.withLock { values[account] } }
+        set { lock.withLock { values[account] = newValue } }
     }
 }

@@ -54,21 +54,25 @@ struct ListPage: Equatable, Sendable {
     let cursor: String?
     let partial: Bool?
     let failedSources: Int
+    /// Entries without a usable `id`: skipped here, still present in the journal's raw bytes.
+    let skippedEntries: Int
 
-    /// Lenient structural decode. Unknown fields stay only in the journal's raw bytes.
+    /// Lenient structural decode. Unknown fields stay only in the journal's raw bytes. A page is
+    /// unrecognized only if it has no `entries` array, or has entries of which none is usable.
     static func decode(_ data: Data) -> ListPage? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let rawEntries = object["entries"] as? [[String: Any]]
+            let rawEntries = object["entries"] as? [Any]
         else { return nil }
-        let entries = rawEntries.compactMap { entry -> ListEntry? in
-            guard let id = entry["id"] as? String, !id.isEmpty else { return nil }
+        let entries = rawEntries.compactMap { raw -> ListEntry? in
+            guard let entry = raw as? [String: Any], let id = entry["id"] as? String, !id.isEmpty else { return nil }
             return ListEntry(id: id, type: entry["type"] as? String ?? "[absent]", updatedAt: entry["updatedAt"] as? String)
         }
-        guard entries.count == rawEntries.count else { return nil }
+        guard entries.count > 0 || rawEntries.isEmpty else { return nil }
         let pagination = object["pagination"] as? [String: Any]
         return ListPage(
             entries: entries, hasMore: pagination?["hasMore"] as? Bool, cursor: pagination?["cursor"] as? String,
-            partial: object["partial"] as? Bool, failedSources: (object["failedSources"] as? [Any])?.count ?? 0)
+            partial: object["partial"] as? Bool, failedSources: (object["failedSources"] as? [Any])?.count ?? 0,
+            skippedEntries: rawEntries.count - entries.count)
     }
 }
 

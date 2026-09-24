@@ -39,6 +39,14 @@ enum ArenaRoutes {
         let user: User
     }
 
+    /// A challenge or HTML page where JSON was expected: HTML content type, or a body whose first
+    /// non-whitespace byte is `<`. JSON that merely contains `<` is not a challenge.
+    static func looksLikeChallenge(_ exchange: HTTPExchange) -> Bool {
+        if exchange.contentType?.lowercased().contains("html") == true { return true }
+        let first = exchange.body.first { ![0x20, 0x09, 0x0A, 0x0D].contains($0) }
+        return first == UInt8(ascii: "<")
+    }
+
     static func principal(from exchange: HTTPExchange) -> PrincipalIdentity? {
         guard exchange.status == 200, exchange.transferEnd == .complete,
             let decoded = try? JSONDecoder().decode(IdentityResponse.self, from: exchange.body),
@@ -93,22 +101,35 @@ actor ArenaAccountSession {
         return principal
     }
 
-    func check(expected: PrincipalIdentity) async -> SessionCheck {
+    /// `record` (e.g. a journal append) sees the response before it is interpreted. If it throws,
+    /// the check reports `.unreachable` and the error is rethrown to the caller via `recordError`.
+    func check(
+        expected: PrincipalIdentity, record: (@Sendable (HTTPExchange) throws -> Void)? = nil
+    ) async -> SessionCheck {
         let reply: HTTPExchange
         do { reply = try await send(ArenaRoutes.identity()) } catch { return .unreachable }
+        if let record {
+            do { try record(reply) } catch { return .unreachable }
+        }
         guard reply.transferEnd == .complete, let status = reply.status else { return .unreachable }
         switch status {
         case 200:
-            guard let principal = ArenaRoutes.principal(from: reply) else { return .unreachable }
+            guard let principal = ArenaRoutes.principal(from: reply) else {
+                return ArenaRoutes.looksLikeChallenge(reply) ? .blocked(status: 200) : .unreachable
+            }
             guard principal == expected else {
                 verified = nil
                 return .mismatch
             }
             verified = principal
             return .verified
-        case 401, 403:
+        case 401:
             verified = nil
             return .rejected(status: status)
+        case 403:
+            // A block is not an expired session (plan v3 §2, §15): keep saved material, retry nothing.
+            verified = nil
+            return .blocked(status: status)
         default:
             return .unreachable
         }
@@ -199,6 +220,17 @@ public actor ArenaAccountSessions: AccountSessionProviding {
         return await settle(session, account: account, expected: expected, check: session.check(expected: expected))
     }
 
+    /// Job-start verification of the active session, with the identity response handed to `record`
+    /// before it is interpreted. Returns `.noSavedSession` if the account has no active session.
+    func verifyRecording(
+        account: AccountID, expected: PrincipalIdentity, record: @escaping @Sendable (HTTPExchange) throws -> Void
+    ) async -> (SessionCheck, ArenaAccountSession?) {
+        guard let session = active[account] else { return (.noSavedSession, nil) }
+        let check = await settle(
+            session, account: account, expected: expected, check: session.check(expected: expected, record: record))
+        return (check, check == .verified ? session : nil)
+    }
+
     /// Drops a pending (unsaved) sign-in only. The active session is kept.
     public func discard(account: AccountID) async { pending[account] = nil }
 
@@ -233,7 +265,7 @@ public actor ArenaAccountSessions: AccountSessionProviding {
                 active[account] = nil
                 try? vault.delete(account: account)
             }
-        case .noSavedSession, .unreachable:
+        case .noSavedSession, .unreachable, .blocked:
             break
         }
         return check

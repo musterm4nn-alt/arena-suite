@@ -107,7 +107,8 @@ extension FakeTransport {
     #expect(queries == ["limit=20&includeArchived=true", "limit=20&includeArchived=true&cursor=cur%2Bsor%2F1"])
 
     let kinds = h.records.map(\.envelope.kind)
-    #expect(kinds == ["job.started", "session.verified", "exchange", "exchange", "exchange", "exchange", "exchange", "job.finished"])
+    #expect(kinds == ["job.started", "exchange", "session.verified", "exchange", "exchange", "exchange", "exchange", "exchange", "job.finished"])
+    #expect(h.exchanges("identity").count == 1, "identity response journaled before interpretation")
     let firstList = try #require(h.exchanges("list").first)
     #expect(firstList.payload == listReply(page1, hasMore: true, cursor: "cur+sor/1").body, "raw body stored exactly")
     #expect(firstList.envelope.transformations == ["credential_omitted"])
@@ -251,21 +252,31 @@ func rejectionsStopTheJobCleanly(_ status: Int, _ outcome: SyncOutcome) async th
     #expect(replacement.requestCount == 2, "the job never used the new session")
 }
 
-@Test func identityFailureAtStartWritesNothing() async throws {
+@Test(arguments: [
+    (HTTPExchange(status: 401, body: Data()), SyncOutcome.needsSignIn, false),
+    (HTTPExchange(status: 403, body: Data()), SyncOutcome.blocked, true),
+    (HTTPExchange(status: 200, headers: ["Content-Type": "text/html"], body: Data("<html>".utf8)), SyncOutcome.blocked, true),
+    (HTTPExchange(status: 503, body: Data()), SyncOutcome.partial, true),
+])
+func identityOutcomesAtJobStart(_ reply: HTTPExchange, _ outcome: SyncOutcome, _ keepsSavedSession: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("sync-\(UUID().uuidString)")
     let journal = try JournalWriter.open(at: root, options: JournalOptions(durability: .fsync))
     let vault = MemoryVault()
     let account = AccountID()
     try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
-    let factory = TransportFactory([FakeTransport([me(), HTTPExchange(status: 401, body: Data())])])
+    let transport = FakeTransport([me(), reply])
+    let factory = TransportFactory([transport])
     let provider = ArenaAccountSessions(vault: vault, makeTransport: { factory.make() })
     _ = await provider.restore(account: account, expected: principalA)
     let record = AccountRecord(id: account, displayName: "A", principal: principalA, createdAt: Date(), credentialGeneration: 1)
     let manifest = await ArenaHistorySync(sessions: provider, sleep: { _ in }).sync(
         account: record.context, principal: principalA, journal: journal, journalRoot: root, options: .testing(),
         progress: { _ in })
-    #expect(manifest.outcome == .needsSignIn)
-    #expect(try JournalReader(root: root).readAll().isEmpty)
+    #expect(manifest.outcome == outcome)
+    #expect(transport.requestCount == 2, "nothing but identity was requested")
+    #expect((vault[account] != nil) == keepsSavedSession)
+    let kinds = try JournalReader(root: root).readAll().map(\.envelope.kind)
+    #expect(kinds == ["job.started", "exchange", "job.finished"], "the identity response itself is evidence")
 }
 
 @Test func cancellationStopsAndIsRecorded() async throws {
@@ -277,7 +288,108 @@ func rejectionsStopTheJobCleanly(_ status: Int, _ outcome: SyncOutcome) async th
 }
 
 @Test func newestFirstCheckRequiresOrderedTimestamps() {
-    #expect(SyncJob.isNewestFirst([ListEntry(id: "a", type: "evaluation", updatedAt: "2"), ListEntry(id: "b", type: "evaluation", updatedAt: "1")]))
-    #expect(!SyncJob.isNewestFirst([ListEntry(id: "a", type: "evaluation", updatedAt: "1"), ListEntry(id: "b", type: "evaluation", updatedAt: "2")]))
+    let newer = "2026-09-24T10:00:00Z"
+    let older = "2026-09-23T10:00:00Z"
+    #expect(SyncJob.isNewestFirst([ListEntry(id: "a", type: "evaluation", updatedAt: newer), ListEntry(id: "b", type: "evaluation", updatedAt: older)]))
+    #expect(!SyncJob.isNewestFirst([ListEntry(id: "a", type: "evaluation", updatedAt: older), ListEntry(id: "b", type: "evaluation", updatedAt: newer)]))
     #expect(!SyncJob.isNewestFirst([ListEntry(id: "a", type: "agentic", updatedAt: nil)]))
+}
+
+
+// MARK: - Review follow-ups (Phase 3 review)
+
+@Test func conversationsWithoutUpdatedAtAreAlwaysRefetched() async throws {
+    let unstamped = [("e1", "evaluation", String?.none), ("e2", "evaluation", "2026-09-24T10:00:00Z")]
+    let h = try await Harness([listReply(unstamped, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2")])
+    #expect(await h.run().detailsFetched == 2)
+    h.script([listReply(unstamped, hasMore: false, cursor: nil), detailReply("e1")])
+    let manifest = await h.run()
+    #expect(manifest.detailsFetched == 1 && manifest.detailsUnchanged == 1)
+    #expect(manifest.warnings.contains { $0.contains("without updatedAt") })
+}
+
+@Test func notFoundIsRememberedUntilTheEntryChanges() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), HTTPExchange(status: 404, body: Data()), detailReply("e2")])
+    let first = await h.run()
+    #expect(first.outcome == .completed && first.detailsAbsent == 1 && first.detailsFailed == 0)
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let second = await h.run(.testing(fullPass: true))
+    #expect(second.detailsFetched == 0 && second.detailsAbsent == 0)
+    #expect(h.exchanges("detail").count == 2, "known-absent conversation not requested again")
+    let changed = [("e1", "evaluation", "2026-09-26T10:00:00Z"), page1[1]]
+    h.script([listReply(changed, hasMore: false, cursor: nil), detailReply("e1")])
+    #expect(await h.run().detailsFetched == 1)
+}
+
+@Test func failedDetailsMakeTheJobPartial() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: false, cursor: nil),
+        HTTPExchange(status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"id":"other"}"#.utf8)),
+        detailReply("e2"),
+    ])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .partial && manifest.detailsFailed == 1 && manifest.detailsFetched == 1)
+    #expect(manifest.reason?.contains("1 detail request(s) failed") == true)
+}
+
+@Test func detailServerErrorStopsTheQueueResumably() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), HTTPExchange(status: 500, body: Data())])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .partial && manifest.reason == "HTTP 500")
+    #expect(!h.transport.paths.contains("/api/evaluation/e2"))
+}
+
+@Test func newestFirstUsesInstantsNotStrings() {
+    func entries(_ stamps: [String]) -> [ListEntry] { stamps.map { ListEntry(id: $0, type: "evaluation", updatedAt: $0) } }
+    // String order says newest-first, time order does not.
+    #expect(!SyncJob.isNewestFirst(entries(["2026-09-24T10:00:00Z", "2026-09-24T10:00:00.500Z"])))
+    #expect(!SyncJob.isNewestFirst(entries(["2026-09-24T10:00:00+02:00", "2026-09-24T09:00:00Z"])))
+    #expect(SyncJob.isNewestFirst(entries(["2026-09-24T10:00:00.500Z", "2026-09-24T10:00:00Z", "2026-09-24T10:00:00Z"])))
+    #expect(!SyncJob.isNewestFirst(entries(["not a date"])))
+}
+
+@Test func oneBadEntryDoesNotDiscardThePage() async throws {
+    let body = Data(#"{"entries":[{"id":"e1","type":"evaluation","updatedAt":"2026-09-24T10:00:00Z"},{"type":"evaluation"},{"id":"e2","type":"evaluation","updatedAt":"2026-09-23T10:00:00Z"}],"pagination":{"hasMore":false,"cursor":null},"partial":false,"failedSources":[]}"#.utf8)
+    let h = try await Harness([HTTPExchange(status: 200, headers: ["Content-Type": "application/json"], body: body), detailReply("e1"), detailReply("e2")])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .completed && manifest.entriesListed == 2 && manifest.detailsFetched == 2)
+    #expect(manifest.warnings.contains { $0.contains("1 entry(ies) without a usable id") })
+}
+
+@Test func jsonContainingAngleBracketIsNotAChallenge() async throws {
+    let h = try await Harness([HTTPExchange(status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"note":"<b>new shape</b>"}"#.utf8))])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .partial && manifest.reason == "list page not recognized")
+}
+
+@Test func requestSpacingCannotBeLoweredBelowPolicy() {
+    var options = SyncOptions(requestSpacing: .milliseconds(10))
+    #expect(options.requestSpacing == .seconds(1))
+    options.setRequestSpacing(.milliseconds(1))
+    #expect(options.requestSpacing == .seconds(1))
+    options.setRequestSpacing(.seconds(3))
+    #expect(options.requestSpacing == .seconds(3))
+}
+
+@Test func observedPostgresTimestampsParseExactly() throws {
+    // Observed shapes (N-012): 4–6 fraction digits, space separator, hour-only offset.
+    // Mixed fraction lengths under the same "+00" offset keep string and time order in agreement...
+    let short = try #require(SourceInstant("2026-09-24 10:00:00.1234+00"))
+    let long = try #require(SourceInstant("2026-09-24 10:00:00.123401+00"))
+    #expect(short < long)
+    // ...but a different offset breaks string order, which is why instants are parsed.
+    let plusTwo = try #require(SourceInstant("2026-09-24 11:00:00.0000+02"))  // 09:00Z
+    let utc = try #require(SourceInstant("2026-09-24 10:00:00.0000+00"))  // 10:00Z
+    #expect(plusTwo < utc)
+    #expect("2026-09-24 11:00:00.0000+02" > "2026-09-24 10:00:00.0000+00")
+    #expect(SourceInstant("2026-09-24 12:00:00.0000+02") == SourceInstant("2026-09-24T10:00:00Z"))
+    #expect(SourceInstant("2026-09-24T10:00:00.5-01:30") == SourceInstant("2026-09-24 11:30:00.500000+00"))
+    for bad in ["2026-09-24", "2026-13-01 00:00:00+00", "yesterday", "2026-09-24 10:00:00"] {
+        #expect(SourceInstant(bad) == nil, "\(bad)")
+    }
+    let entries = ["2026-09-24 10:00:00.0000+00", "2026-09-24 11:00:00.0000+02"].map {
+        ListEntry(id: $0, type: "evaluation", updatedAt: $0)
+    }
+    #expect(SyncJob.isNewestFirst(entries))
+    #expect(!SyncJob.isNewestFirst(entries.reversed()))
 }

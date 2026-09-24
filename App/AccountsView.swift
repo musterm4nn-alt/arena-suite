@@ -89,7 +89,7 @@ struct AccountsView: View {
                 }
                 if model.syncing[account.id] != nil {
                     EmptyView()
-                } else if account.state == .signedIn || account.state == .unreachable {
+                } else if account.state == .signedIn || account.state == .unreachable || account.state == .blocked {
                     Button("Verify") { Task { await model.verify(account.id) } }
                 } else {
                     Button("Sign In…") { sheet = .signIn(account) }
@@ -111,6 +111,7 @@ struct AccountsView: View {
 
     static func describe(_ manifest: SyncManifest) -> String {
         let counts = "\(manifest.entriesListed) listed, \(manifest.detailsFetched) archived, \(manifest.detailsUnchanged) unchanged"
+            + (manifest.detailsAbsent > 0 ? ", \(manifest.detailsAbsent) no longer on Arena" : "")
             + (manifest.detailsFailed > 0 ? ", \(manifest.detailsFailed) failed" : "")
         switch manifest.outcome {
         case .completed: return "Last sync complete (observed pagination): " + counts
@@ -130,6 +131,7 @@ struct AccountsView: View {
         case .needsSignIn: "Sign in needed"
         case .quarantined: "Identity mismatch — session discarded. Sign in again."
         case .unreachable: "Arena unreachable — will retry on Verify"
+        case .blocked: "Arena blocked the request — nothing retried; try Verify later"
         }
     }
 
@@ -137,7 +139,7 @@ struct AccountsView: View {
         switch state {
         case .signedIn: .green
         case .quarantined: .red
-        case .needsSignIn, .unreachable: .orange
+        case .needsSignIn, .unreachable, .blocked: .orange
         case .unverified: .secondary
         }
     }

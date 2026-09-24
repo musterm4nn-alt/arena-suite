@@ -12,6 +12,8 @@ public enum SessionCheck: Equatable, Sendable {
     case mismatch
     /// Transport failure, rate limit or server error; nothing was concluded.
     case unreachable
+    /// 403 or a challenge page. Not an expired session: saved material is kept, nothing is retried.
+    case blocked(status: Int?)
 }
 
 public enum SignInFailure: Error, Equatable, Sendable {
@@ -249,6 +251,7 @@ public actor AccountService {
         case .noSavedSession, .rejected: .needsSignIn
         case .mismatch: .quarantined
         case .unreachable: .unreachable
+        case .blocked: .blocked
         }
     }
 }

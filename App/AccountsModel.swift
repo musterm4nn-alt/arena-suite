@@ -27,7 +27,7 @@ final class AccountsModel {
     func syncHistory(_ id: AccountID) async {
         guard syncing[id] == nil else { return }
         syncing[id] = SyncProgress(stage: .verifying, pages: 0, entries: 0, detailsDone: 0, detailsNeeded: 0)
-        let poll = Task { [sync] in
+        let poll = Task { @MainActor [sync] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(300))
                 if let progress = await sync.currentProgress(id) { self.syncing[id] = progress }

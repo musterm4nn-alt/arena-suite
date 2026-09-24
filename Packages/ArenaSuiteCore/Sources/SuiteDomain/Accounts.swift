@@ -31,6 +31,8 @@ public enum AccountAuthState: String, Codable, Sendable {
     case quarantined
     /// Verification failed for a transport reason; retry later.
     case unreachable
+    /// Arena refused the request (403 or a challenge page). Nothing is retried; the saved session is kept.
+    case blocked
 }
 
 /// A persisted local account. Holds no credentials or email; the Keychain holds session material.

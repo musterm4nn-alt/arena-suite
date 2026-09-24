@@ -11,9 +11,10 @@ Plan v3 §9 and §13, Phase 3. Completed 2026-09-24.
 | **403 / 429 stop the job cleanly** | Offline tests: 403 → `blocked`, 401 → `needsSignIn`, both recorded then stopped with `job.finished`; 429/503 honor a `Retry-After` ≤ 120 s once, else `partial`. Not provoked live (no reason to). |
 | Incremental | A second live sync of all three accounts: 1 list page each, 0 details, `caught up: page 1 unchanged and newest-first`. |
 
-**New observation:** on every page seen live, entries are ordered newest-first by `updatedAt`
-(evaluation and agentic mixed). The early stop checks this per page and falls back to listing
-everything if a page is not ordered.
+**New observations:** on every page seen live, entries are ordered newest-first by `updatedAt`
+(evaluation and agentic mixed). `updatedAt` is PostgreSQL text (`2026-09-24 10:00:00.123456+00`,
+4–6 fraction digits). The early stop parses each stamp to an exact instant, checks the order per page,
+and falls back to listing everything if any stamp is missing, unparseable or out of order.
 
 ## Design
 
@@ -25,11 +26,14 @@ everything if a page is not ordered.
 - **Journal is the checkpoint.** At job start `ArchivedState.scan` derives, from raw records only,
   which conversations have a valid snapshot (and for which `updatedAt`), which entries were listed,
   and which job never finished. No separate state file.
-- **Jobs:** verify identity → `job.started`, `session.verified` → list (`limit=20`,
+- **Jobs:** `job.started` → identity check (the `/api/me` response is journaled as role `identity`
+  before it is interpreted) → `session.verified` → list (`limit=20`,
   `includeArchived=true`, cursor from the previous page) → details for `evaluation` entries that are
   new or whose `updatedAt` changed → `job.finished` with the manifest. `agentic` entries are archived
   list-only (no observed detail route).
-- **Stops:** 401 → needs sign-in; 403, HTML/challenge → blocked; repeated cursor, repeated page,
+- **Stops:** 401 → needs sign-in; 403, HTML/challenge (also on the identity check; the saved session
+  is kept) → blocked; any failed detail → partial; 404 → recorded absence, not retried until the entry
+  changes; missing `updatedAt` → always refetched; repeated cursor, repeated page,
   `hasMore` without cursor, transport failure, other HTTP → partial (resumable); session replaced by a
   new sign-in → stop; cancellation → cancelled. `partial=true`/`failedSources` become warnings.
 - **Traffic:** one request in flight per account (session single-flight), ≥ 1 s between requests,
@@ -42,6 +46,8 @@ changed-only refetch, full pass, resume from an interrupted journal, 403/401, Re
 challenge and undecodable pages recorded first, session replacement, identity failure writes nothing,
 cancellation. Service tests: signed-in only, one job per account, accounts independent.
 `Tools/FixtureHarness/audit_archive_journals.py` re-reads live journals with an independent spec reader.
+
+Review: `Docs/reviews/2026-09-24-phase3.md` (all findings fixed).
 
 ## Not in Phase 3
 
