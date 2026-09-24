@@ -1,20 +1,28 @@
-# Capture guarantees at the end of offline Phase 0
+# Capture guarantees
 
-**No production capture or durability is implemented.** No prompts are sent to Arena, no
-archive is created, and no transcript is represented as saved. The native shell reports pending
-feasibility. Research probes retain only small known synthetic responses in memory.
+Updated 2026-09-24, end of Phase 1. Nothing is captured from Arena by the product yet; these are
+the guarantees of the `CaptureJournal` module that later phases write through.
 
-Verified locally: opaque fixture bytes round-trip across every split, one-byte/whole partitions
-and 200 seeded partitions; invalid UTF-8 and incomplete bytes survive without semantic parsing.
-HTTP delivered entity bytes match the scripted source for fragmented/gzip/chunked responses.
-Callback units have contiguous offsets and monotonic entry ticks. Server writes need not map
-one-to-one to Foundation callbacks. WS text is transport-delivered text, not original frame bytes.
+**Appended** (an `AppendReceipt` was returned): every byte of the record was handed to the OS.
+The record survives the app being killed at any point afterwards. Verified by the SIGKILL crash
+gate (`Tools/CrashHarness`) at each write boundary: before the header, envelope, payload and digest,
+in the middle of the payload, after the append, after a sync, and during segment sealing.
 
-Future contract: record before interpreting; durable raw append acknowledgement and sync boundary
-must be separate; unknown protocol data survives; credential omission is explicit; auth-only
-secrets stay out of ordinary evidence. In-flight account ownership is frozen. Unknown outcome
-is not completion. Parser/storage failures cannot quietly erase admitted evidence.
+**Synchronized** (`synchronize()` returned): `F_FULLFSYNC` succeeded for the active segment
+(`fsync` fallback, or `fsync` in test configurations). Protection against power loss is only as
+good as the storage device honoring that call; it has not been tested with real power loss.
 
-Sanitized captures are transformed evidence, with mappings/reasons. Synthetic fixtures establish
-local mechanisms only. They prove neither Arena grammar nor full source coverage. See
-`fixture-format.md`, `transport-results.md`, and ADRs 0002–0004.
+**Not guaranteed:** records whose append did not return; exact reconstruction of network wire
+bytes (payloads are what Foundation delivered); protection against deliberate rewriting of the
+whole journal (digests detect damage, not tampering).
+
+**On damage:**
+- A torn or corrupt tail in the active segment is copied verbatim to `quarantine/` before
+  truncation, and a `journal.recovered` record is appended.
+- Corruption inside a sealed segment blocks opening and changes nothing.
+- An unknown format version is refused, not quarantined.
+- A write or sync error (e.g. `ENOSPC`, `EIO`) stops the writer until it is reopened.
+
+Unknown protocol data survives because payloads are opaque to the journal; interpretation happens
+in later phases, and never modifies journal bytes. Credential values never enter records; exchanges
+declare a `credential_omitted` transformation (enforced in Phase 3, where exchanges are recorded).

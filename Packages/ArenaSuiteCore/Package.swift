@@ -7,11 +7,14 @@ let package = Package(
     products: [
         .library(name: "SuiteDomain", targets: ["SuiteDomain"]),
         .library(name: "ApplicationActions", targets: ["ApplicationActions"]),
+        .library(name: "CaptureJournal", targets: ["CaptureJournal"]),
     ],
     targets: [
         .target(name: "SuiteDomain"),
         .target(name: "ApplicationActions", dependencies: ["SuiteDomain"]),
+        .target(name: "CaptureJournal"),
         .testTarget(name: "SuiteDomainTests", dependencies: ["SuiteDomain", "ApplicationActions"]),
+        .testTarget(name: "CaptureJournalTests", dependencies: ["CaptureJournal"]),
     ],
     swiftLanguageModes: [.v6]
 )

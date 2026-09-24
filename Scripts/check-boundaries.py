@@ -8,6 +8,7 @@ allowed = {
     "App": {"AppKit", "SwiftUI", "ApplicationActions"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
     "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain"},
+    "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
     "Packages/ArenaProtocol/Sources/ArenaAdapter": {"Foundation", "SuiteDomain"},
 }
 files = list((root / "App").rglob("*.swift"))
