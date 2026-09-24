@@ -169,3 +169,58 @@ func failedSignInAddsNothing(_ failure: SignInFailure) async throws {
     await #expect(throws: AccountError.registryUnavailable) { try await service.load() }
     #expect(try Data(contentsOf: store.url) == Data("{not json".utf8))
 }
+
+// MARK: - Review follow-ups (ses_f2d263478ffe3Zrc1wEU4yZ50M)
+
+private func mode(_ url: URL) throws -> Int {
+    (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue ?? -1
+}
+
+@Test func registryTightensExistingPermissionsOnLoadAndSave() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    _ = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    let directory = store.url.deletingLastPathComponent()
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.url.path)
+    _ = try store.load()
+    #expect(try mode(directory) == 0o700 && mode(store.url) == 0o600)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    try store.save(try store.load())
+    #expect(try mode(directory) == 0o700 && mode(store.url) == 0o600)
+}
+
+@Test func registrySymlinksAreRefusedNotFollowed() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("symlink-\(UUID().uuidString)")
+    let directory = root.appendingPathComponent("accounts")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let target = root.appendingPathComponent("elsewhere.json")
+    try Data("outside".utf8).write(to: target)
+    let link = directory.appendingPathComponent("registry.json")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    let store = AccountRegistryStore(url: link)
+    #expect(throws: AccountError.registryUnavailable) { _ = try store.load() }
+    #expect(throws: AccountError.registryUnavailable) { try store.save([]) }
+    #expect(try Data(contentsOf: target) == Data("outside".utf8))
+}
+
+@Test func privateFileWritesEmptyDataAndReplacesAtomically() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("pf-\(UUID().uuidString)/status.json")
+    try PrivateFile.write(Data(), to: url)
+    #expect(try PrivateFile.read(url) == Data())
+    try PrivateFile.write(Data("two".utf8), to: url)
+    #expect(try PrivateFile.read(url) == Data("two".utf8))
+    #expect(try mode(url) == 0o600 && mode(url.deletingLastPathComponent()) == 0o700)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path) == ["status.json"])
+}
+
+@Test func failedReSignInKeepsTheAccountSignedIn() async throws {
+    let fake = FakeSessions()
+    let (service, _) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    await #expect(throws: AccountError.signIn(.rejected(status: 401))) {
+        _ = try await service.signInAgain(account.id, email: "unknown@x", password: "p")
+    }
+    #expect(await service.accounts().first?.state == .signedIn)
+    #expect(await fake.forgotten.isEmpty)
+}

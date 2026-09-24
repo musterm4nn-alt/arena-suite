@@ -90,11 +90,11 @@ final class AccountsModel {
             })
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(status) else { return }
-        let directory = statusURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try? data.write(to: statusURL, options: .atomic)
+        do {
+            try PrivateFile.write(try encoder.encode(status), to: statusURL)
+        } catch {
+            message = "The diagnostics status file could not be written."
+        }
     }
 
     static func describe(_ error: any Error) -> String {

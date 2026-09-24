@@ -42,3 +42,32 @@ private func cookie(_ name: String, _ value: String, domain: String = "arena.ai"
     #expect(throws: TransportError.invalidCookieData) { _ = try CookieCodec.decode(Data("not a plist".utf8)) }
     #expect(throws: TransportError.invalidCookieData) { _ = try CookieCodec.decode(Data(count: CookieCodec.maximumBytes + 1)) }
 }
+
+/// Cookies parsed from real `Set-Cookie` headers, as the server path produces them, survive the
+/// codec with every attribute Arena uses (N-008: Expires, Path, Secure, HttpOnly, SameSite).
+@Test func headerParsedCookiesWithEveryAttributeRoundTrip() throws {
+    let url = URL(string: "https://arena.ai/api/me")!
+    let headers = [
+        "Set-Cookie":
+            "auth=v1; Domain=arena.ai; Path=/; Expires=Wed, 29 Oct 2027 08:57:46 GMT; Max-Age=34000000; Secure; HttpOnly; SameSite=Lax"
+    ]
+    let parsed = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+    let original = try #require(parsed.first)
+    let data = try CookieCodec.encode(parsed)
+    let decoded = try #require(try CookieCodec.decode(data).first)
+    #expect(decoded.name == original.name && decoded.value == original.value)
+    #expect(decoded.domain == original.domain && decoded.path == original.path)
+    #expect(decoded.isSecure && decoded.isHTTPOnly)
+    #expect(decoded.expiresDate == original.expiresDate)
+    #expect(decoded.sameSitePolicy == original.sameSitePolicy)
+    let session = AccountHTTPSession()
+    try session.importCookies(data, domains: ["arena.ai"])
+    #expect(try CookieCodec.decode(try session.exportCookies(domains: ["arena.ai"])).map(\.value) == ["v1"])
+}
+
+@Test func cookieCountLimitIsEnforced() throws {
+    let many = (0...CookieCodec.maximumCookies).map { cookie("c\($0)", "v") }
+    #expect(throws: TransportError.invalidCookieData) { _ = try CookieCodec.decode(try CookieCodec.encode(many)) }
+    let atLimit = Array(many.prefix(CookieCodec.maximumCookies))
+    #expect(try CookieCodec.decode(try CookieCodec.encode(atLimit)).count == CookieCodec.maximumCookies)
+}

@@ -25,15 +25,15 @@ public enum SignInFailure: Error, Equatable, Sendable {
 /// than sign-in and identity verification is sent before the principal is verified.
 public protocol AccountSessionProviding: Sendable {
     /// Signs in on a fresh isolated session for `account` and returns the verified principal.
-    /// The session stays in memory until `persist` is called.
+    /// The new session is *pending*: it does not replace the account's active session until `persist`.
     func signIn(account: AccountID, email: String, password: String) async throws -> PrincipalIdentity
-    /// Saves the account's verified session to secure storage.
+    /// Saves the pending session to secure storage and makes it the account's active session.
     func persist(account: AccountID, principal: PrincipalIdentity) async throws
     /// Loads saved session material into a fresh isolated session and verifies it.
     func restore(account: AccountID, expected: PrincipalIdentity) async -> SessionCheck
     /// Verifies the live session again (and saves rotated session material).
     func verify(account: AccountID, expected: PrincipalIdentity) async -> SessionCheck
-    /// Drops the in-memory session only.
+    /// Drops a pending (unsaved) sign-in. The active session and saved material are kept.
     func discard(account: AccountID) async
     /// Drops the in-memory session and deletes saved session material.
     func forget(account: AccountID) async throws
@@ -257,12 +257,14 @@ public struct AccountRegistryStore: Sendable {
     }
 
     public func load() throws -> [AccountRecord] {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: url), let file = try? decoder.decode(File.self, from: data),
-            file.format == 1
-        else { throw AccountError.registryUnavailable }
+        let data: Data?
+        do { data = try PrivateFile.read(url) } catch { throw AccountError.registryUnavailable }
+        guard let data else { return [] }
+        guard let file = try? decoder.decode(File.self, from: data), file.format == 1 else {
+            throw AccountError.registryUnavailable
+        }
         return file.accounts
     }
 
@@ -270,35 +272,8 @@ public struct AccountRegistryStore: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(File(format: 1, accounts: accounts))
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let temporary = directory.appendingPathComponent(url.lastPathComponent + ".tmp")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
-        guard fd >= 0 else { throw AccountError.registryUnavailable }
-        let written = data.withUnsafeBytes { buffer -> Bool in
-            var offset = 0
-            while offset < buffer.count {
-                let result = write(fd, buffer.baseAddress! + offset, buffer.count - offset)
-                if result < 0 {
-                    if errno == EINTR { continue }
-                    return false
-                }
-                offset += result
-            }
-            return true
-        }
-        let synced = written && (fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0)
-        close(fd)
-        guard synced, rename(temporary.path, url.path) == 0 else {
-            unlink(temporary.path)
-            throw AccountError.registryUnavailable
-        }
-        let directoryFD = open(directory.path, O_RDONLY)
-        if directoryFD >= 0 {
-            _ = fsync(directoryFD)
-            close(directoryFD)
-        }
+        do {
+            try PrivateFile.write(try encoder.encode(File(format: 1, accounts: accounts)), to: url)
+        } catch { throw AccountError.registryUnavailable }
     }
 }

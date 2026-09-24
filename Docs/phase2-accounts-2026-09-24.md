@@ -20,7 +20,10 @@ Plan v3 §13, Phase 2. Completed 2026-09-24.
 - `ArenaAdapter` (`Authentication/`): observed sign-in and identity recipes, `ArenaAccountSession`
   (verification gate), `ArenaAccountSessions` (`AccountSessionProviding`; never shares a transport),
   `KeychainSessionVault` (one item per account, service `ArenaSuite.Account.Session.v1`,
-  this-device-only, principal + cookies, never passwords). Rotated cookies are re-saved after each
+  principal + cookies, never passwords, not synchronized). It uses the legacy login Keychain, which
+  **ignores** `kSecAttrAccessible`: prompt-free access is limited by the code-signing ACL, but the item
+  is not device-bound (it travels with login-Keychain backups/migration). Moving to the
+  data-protection Keychain needs a keychain-access-group entitlement and provisioning profile. Rotated cookies are re-saved after each
   successful verification (Arena re-issues them, N-008).
 - `ApplicationActions.AccountService`: registry (`Archive/accounts/registry.json`, `0600`, atomic
   write with full sync), add / sign in again / restore all (concurrent, one request per account) /

@@ -1,4 +1,5 @@
 import ApplicationActions
+import Security
 import Foundation
 import FoundationTransport
 import SuiteDomain
@@ -48,7 +49,13 @@ final class FakeTransport: HTTPTransporting, @unchecked Sendable {
 final class MemoryVault: SessionVault, @unchecked Sendable {
     private let lock = NSLock()
     private var items: [AccountID: StoredSession] = [:]
-    func load(account: AccountID) throws -> StoredSession? { lock.withLock { items[account] } }
+    var loadError: SessionVaultError?
+    func load(account: AccountID) throws -> StoredSession? {
+        try lock.withLock {
+            if let loadError { throw loadError }
+            return items[account]
+        }
+    }
     func save(_ session: StoredSession, account: AccountID) throws { lock.withLock { items[account] = session } }
     func delete(account: AccountID) throws { lock.withLock { items[account] = nil } }
     subscript(account: AccountID) -> StoredSession? { lock.withLock { items[account] } }
@@ -227,4 +234,149 @@ func rejectedRestoreDeletesSavedSession(_ status: Int) async throws {
     for text in [String(describing: exchange), String(reflecting: exchange)] {
         #expect(!text.contains("secret"))
     }
+}
+
+
+// MARK: - Review follow-ups (ses_f2d263478ffe3Zrc1wEU4yZ50M)
+
+@Test(arguments: [errSecInteractionNotAllowed, errSecAuthFailed, errSecNotAvailable])
+func keychainReadErrorsKeepTheSavedSession(_ status: OSStatus) async throws {
+    let vault = MemoryVault()
+    let account = AccountID()
+    try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
+    vault.loadError = .keychain(status)
+    let factory = TransportFactory([])
+    #expect(await sessions(vault, factory).restore(account: account, expected: principalA) == .unreachable)
+    vault.loadError = nil
+    #expect(vault[account] != nil)
+    #expect(factory.made.isEmpty)
+}
+
+@Test func corruptKeychainItemIsDropped() async throws {
+    let vault = MemoryVault()
+    let account = AccountID()
+    try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
+    vault.loadError = .corrupt
+    #expect(await sessions(vault, TransportFactory([])).restore(account: account, expected: principalA) == .rejected(status: nil))
+    vault.loadError = nil
+    #expect(vault[account] == nil)
+}
+
+@Test func failedOrForeignReSignInKeepsTheActiveSession() async throws {
+    let vault = MemoryVault()
+    let account = AccountID()
+    try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
+    let factory = TransportFactory([
+        FakeTransport([me()]),  // restore
+        FakeTransport([HTTPExchange(status: 401, body: Data())]),  // wrong password
+        FakeTransport([ok, me("user-B", "principal-B")]),  // signs into another Arena account
+    ])
+    let provider = sessions(vault, factory)
+    #expect(await provider.restore(account: account, expected: principalA) == .verified)
+    let original = try #require(await provider.session(for: account))
+
+    await #expect(throws: SignInFailure.rejected(status: 401)) {
+        _ = try await provider.signIn(account: account, email: "e", password: "wrong")
+    }
+    #expect(await provider.session(for: account) === original)
+
+    let foreign = try await provider.signIn(account: account, email: "b", password: "p")
+    #expect(foreign != principalA)
+    await provider.discard(account: account)  // what AccountService does on principalChanged
+    #expect(await provider.session(for: account) === original)
+    #expect(await provider.isCurrent(original, for: account))
+    #expect(vault[account]?.principal == principalA)
+}
+
+@Test func reSignInSupersedesOldHandles() async throws {
+    let vault = MemoryVault()
+    let account = AccountID()
+    try vault.save(StoredSession(principal: principalA, cookies: Data("c".utf8)), account: account)
+    let provider = sessions(vault, TransportFactory([FakeTransport([me()]), FakeTransport([ok, me()])]))
+    #expect(await provider.restore(account: account, expected: principalA) == .verified)
+    let first = try #require(await provider.session(for: account))
+    _ = try await provider.signIn(account: account, email: "e", password: "p")
+    #expect(await provider.isCurrent(first, for: account), "pending sign-in must not replace the active session")
+    try await provider.persist(account: account, principal: principalA)
+    #expect(await !provider.isCurrent(first, for: account))
+    #expect(await provider.session(for: account) !== first)
+}
+
+/// Replies after a delay and records the peak number of concurrent requests.
+final class CountingTransport: HTTPTransporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = 0
+    private(set) var peak = 0
+    let reply: HTTPExchange
+    init(reply: HTTPExchange) { self.reply = reply }
+    func perform(_ request: URLRequest) async throws -> HTTPExchange {
+        lock.withLock {
+            current += 1
+            peak = max(peak, current)
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        lock.withLock { current -= 1 }
+        return reply
+    }
+    func exportCookies(domains: Set<String>) throws -> Data { Data() }
+    func importCookies(_ data: Data, domains: Set<String>) throws {}
+    func cookieFingerprint(domains: Set<String>) -> String { "" }
+    var observedPeak: Int { lock.withLock { peak } }
+}
+
+@Test func oneRequestInFlightPerSession() async throws {
+    let transport = CountingTransport(reply: me())
+    let session = ArenaAccountSession(transport: transport)
+    #expect(await session.check(expected: principalA) == .verified)
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for index in 0..<6 {
+            group.addTask {
+                if index.isMultiple(of: 2) {
+                    _ = await session.check(expected: principalA)
+                } else {
+                    _ = try await session.performVerified(URLRequest(url: URL(string: "https://arena.ai/x")!))
+                }
+            }
+        }
+        try await group.waitForAll()
+    }
+    #expect(transport.observedPeak == 1)
+}
+
+/// Touches the real login Keychain, so it only runs when explicitly requested:
+/// `ARENA_SUITE_KEYCHAIN_TESTS=1 swift test --package-path Packages/ArenaProtocol --filter realKeychain`
+@Test(.enabled(if: ProcessInfo.processInfo.environment["ARENA_SUITE_KEYCHAIN_TESTS"] == "1"))
+func realKeychainVaultRoundTripAndAttributes() throws {
+    let vault = KeychainSessionVault(service: "ArenaSuite.Tests.\(UUID().uuidString)")
+    let account = AccountID()
+    defer { try? vault.delete(account: account) }
+    #expect(try vault.load(account: account) == nil)
+    let stored = StoredSession(principal: principalA, cookies: Data("cookie".utf8))
+    try vault.save(stored, account: account)
+    try vault.save(stored, account: account)  // update path
+    #expect(try vault.load(account: account) == stored)
+
+    var query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: vault.service,
+        kSecAttrAccount as String: account.rawValue.uuidString, kSecReturnAttributes as String: true,
+        kSecReturnData as String: true,
+    ]
+    var result: CFTypeRef?
+    #expect(SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess)
+    let attributes = try #require(result as? [String: Any])
+    // The legacy login Keychain ignores accessibility (nil); the data-protection Keychain would honor it.
+    let accessible = attributes[kSecAttrAccessible as String] as? String
+    #expect(accessible == nil || accessible == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+    #expect((attributes[kSecAttrSynchronizable as String] as? Bool) != true)
+    let blob = String(decoding: try #require(attributes[kSecValueData as String] as? Data), as: UTF8.self)
+    #expect(!blob.contains("password") && !blob.contains("@"))
+
+    query = [
+        kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: vault.service,
+        kSecAttrAccount as String: account.rawValue.uuidString,
+    ]
+    #expect(SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data("junk".utf8)] as CFDictionary) == errSecSuccess)
+    #expect(throws: SessionVaultError.corrupt) { _ = try vault.load(account: account) }
+    try vault.delete(account: account)
+    #expect(try vault.load(account: account) == nil)
 }

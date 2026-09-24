@@ -28,7 +28,14 @@ public enum SessionVaultError: Error, Equatable, Sendable {
 }
 
 /// One generic-password item per account (service `ArenaSuite.Account.Session.v1`, account = local
-/// account UUID), this device only, not synchronized. Separate from the research proof's items.
+/// account UUID), not synchronized. Separate from the research proof's items.
+///
+/// Storage is the legacy file-based login Keychain: access without a prompt is limited to apps with
+/// the same code-signing identity (ACL), and the item is never synced to iCloud. That Keychain
+/// **ignores** `kSecAttrAccessible` (observed 2026-09-24), so "this device only" is *not* enforced:
+/// the item travels with backups/migration of the login Keychain. The attribute is still set so it
+/// takes effect if the vault moves to the data-protection Keychain, which needs a keychain-access-group
+/// entitlement and provisioning profile (currently `errSecMissingEntitlement`, −34018).
 public struct KeychainSessionVault: SessionVault {
     public let service: String
 

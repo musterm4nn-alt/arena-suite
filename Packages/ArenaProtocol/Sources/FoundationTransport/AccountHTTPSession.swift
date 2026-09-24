@@ -215,6 +215,8 @@ enum CookieCodec {
     static func encode(_ cookies: [HTTPCookie]) throws -> Data {
         let list = try cookies.map { cookie -> [String: Any] in
             guard let properties = cookie.properties else { throw TransportError.invalidCookieData }
+            // Defensive: `HTTPCookie(properties:)` raises an Objective-C exception for URL-typed
+            // values on macOS 27 (observed 2026-09-24), so any URL is stored as its string.
             return Dictionary(
                 uniqueKeysWithValues: properties.map { key, value in
                     (key.rawValue, (value as? URL).map { $0.absoluteString as Any } ?? value)
