@@ -1,4 +1,5 @@
 import ApplicationActions
+import ArchiveIndex
 import ArenaAdapter
 import Foundation
 
@@ -7,6 +8,7 @@ enum AppComposition {
     struct Services {
         let accounts: AccountService
         let sync: HistorySyncService
+        let archive: ArchiveService
     }
 
     /// `~/Library/Application Support/Arena Suite/Archive`, or `--archive-root <path>` for development.
@@ -24,9 +26,18 @@ enum AppComposition {
         let accounts = AccountService(
             registry: AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json")),
             sessions: sessions)
-        let sync = HistorySyncService(
-            accounts: accounts, journals: JournalStore(archiveRoot: archiveRoot),
-            engine: ArenaHistorySync(sessions: sessions))
-        return Services(accounts: accounts, sync: sync)
+        let journals = JournalStore(archiveRoot: archiveRoot)
+        let sync = HistorySyncService(accounts: accounts, journals: journals, engine: ArenaHistorySync(sessions: sessions))
+        let registry = AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json"))
+        let index: ArchiveIndex
+        do {
+            index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
+        } catch {
+            fatalError("The archive index could not be opened: \(error)")  // journal untouched; delete index/ to rebuild
+        }
+        let archive = ArchiveService(
+            index: index, journals: journals, decoder: ArenaArchiveDecoder(),
+            accounts: { ((try? registry.load()) ?? []).map(\.id) })
+        return Services(accounts: accounts, sync: sync, archive: archive)
     }
 }

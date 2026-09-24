@@ -122,6 +122,23 @@ public actor ArchiveService {
         try index.unknownFields(account: account)
     }
 
+    public nonisolated func warnings(account: AccountID?) throws -> [IndexWarning] {
+        try index.warnings(account: account)
+    }
+
+    /// The exact journal record behind a snapshot, read and digest-checked from the journal
+    /// (never from the index). For the evidence inspector.
+    public func rawEvidence(account: AccountID, snapshotSequence: UInt64) async throws -> RawEvidence? {
+        guard let ref = try index.snapshotLocation(account: account, sequence: snapshotSequence) else { return nil }
+        let root = await journals.root(for: account)
+        let record = try JournalReader(root: root).read(
+            at: JournalLocation(segment: ref.segment, offset: ref.offset, length: ref.length))
+        guard record.envelope.sequence == snapshotSequence else { return nil }
+        return RawEvidence(
+            location: ref, envelope: record.envelopeBytes, payload: record.payload,
+            digest: record.digest.map { String(format: "%02x", $0) }.joined(), decoderVersion: decoder.version)
+    }
+
     public nonisolated func counts() throws -> [String: Int] {
         try index.counts()
     }
@@ -129,4 +146,14 @@ public actor ArchiveService {
     public nonisolated func contentDigest() throws -> String {
         try index.contentDigest()
     }
+}
+
+public struct RawEvidence: Sendable, Equatable {
+    public let location: RecordRef
+    /// Stored envelope bytes (UTF-8 JSON); contains no credentials (plan v3 §7).
+    public let envelope: Data
+    /// Response body exactly as recorded. May contain `metadata` telemetry: show it only on request.
+    public let payload: Data
+    public let digest: String
+    public let decoderVersion: String
 }

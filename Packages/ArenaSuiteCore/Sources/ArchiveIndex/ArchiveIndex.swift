@@ -46,13 +46,16 @@ public struct DetailBlock: Sendable, Equatable {
     public let toolName: String?
     public let toolCallID: String?
     public let payload: String?
+    /// JSON path of the block inside its snapshot's raw body (for the evidence inspector).
+    public let pointer: String
 
-    public init(kind: BlockKind, text: String?, toolName: String?, toolCallID: String?, payload: String?) {
+    public init(kind: BlockKind, text: String?, toolName: String?, toolCallID: String?, payload: String?, pointer: String = "") {
         self.kind = kind
         self.text = text
         self.toolName = toolName
         self.toolCallID = toolCallID
         self.payload = payload
+        self.pointer = pointer
     }
 }
 
@@ -118,6 +121,12 @@ public struct SearchHit: Sendable, Equatable {
         self.kind = kind
         self.snippet = snippet
     }
+}
+
+public struct IndexWarning: Sendable, Equatable, Hashable {
+    public let sequence: UInt64
+    public let code: String
+    public let detail: String
 }
 
 public struct UnknownFieldCount: Sendable, Equatable, Hashable {
@@ -783,6 +792,36 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// Where a snapshot's raw evidence lives in the account journal.
+    public func snapshotLocation(account: AccountID, sequence: UInt64) throws -> RecordRef? {
+        try pool.read { db in
+            guard
+                let row = try Row.fetchOne(
+                    db,
+                    sql: "SELECT segment, record_offset, record_length FROM snapshots WHERE account_id = ? AND seq = ?",
+                    arguments: [account.rawValue.uuidString, Int64(sequence)])
+            else { return nil }
+            return RecordRef(
+                account: account, sequence: sequence, segment: row["segment"], offset: row["record_offset"],
+                length: row["record_length"])
+        }
+    }
+
+    public func warnings(account: AccountID?) throws -> [IndexWarning] {
+        try pool.read { db in
+            var sql = "SELECT account_id, seq, code, detail FROM warnings"
+            var arguments: [any DatabaseValueConvertible] = []
+            if let account {
+                sql += " WHERE account_id = ?"
+                arguments.append(account.rawValue.uuidString)
+            }
+            sql += " ORDER BY account_id, seq, ordinal"
+            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).map {
+                IndexWarning(sequence: UInt64($0["seq"] as Int64), code: $0["code"], detail: $0["detail"])
+            }
+        }
+    }
+
     public func unknownFields(account: AccountID?) throws -> [UnknownFieldCount] {
         try pool.read { db in
             var sql = "SELECT path, count FROM unknown_fields"
@@ -877,7 +916,7 @@ public final class ArchiveIndex: Sendable {
         try Row.fetchAll(
             db,
             sql: """
-                SELECT kind, text, tool_name, tool_call_id, payload FROM blocks
+                SELECT kind, text, tool_name, tool_call_id, payload, pointer FROM blocks
                 WHERE account_id = :account AND snapshot_seq = :seq AND message_id = :message ORDER BY ordinal
                 """,
             arguments: args(["account": accountID, "seq": Int64(seq), "message": messageID])
@@ -885,7 +924,7 @@ public final class ArchiveIndex: Sendable {
             let kind: String = row["kind"]
             return DetailBlock(
                 kind: BlockKind(rawValue: kind) ?? .opaque, text: row["text"], toolName: row["tool_name"],
-                toolCallID: row["tool_call_id"], payload: row["payload"])
+                toolCallID: row["tool_call_id"], payload: row["payload"], pointer: row["pointer"] ?? "")
         }
     }
 

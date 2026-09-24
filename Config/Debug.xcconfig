@@ -16,4 +16,5 @@ MARKETING_VERSION = 0.0.1
 CURRENT_PROJECT_VERSION = 1
 
 // Optional, git-ignored local signing (stable identity keeps Keychain access across rebuilds).
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG
 #include? "Signing.local.xcconfig"

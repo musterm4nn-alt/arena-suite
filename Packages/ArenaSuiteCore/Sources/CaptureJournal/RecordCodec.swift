@@ -22,6 +22,12 @@ public struct JournalLocation: Sendable, Equatable, Hashable, Codable {
     public let segment: Int
     public let offset: Int
     public let length: Int
+
+    public init(segment: Int, offset: Int, length: Int) {
+        self.segment = segment
+        self.offset = offset
+        self.length = length
+    }
 }
 
 public struct AppendReceipt: Sendable, Equatable {

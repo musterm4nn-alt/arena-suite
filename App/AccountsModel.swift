@@ -43,11 +43,18 @@ final class AccountsModel {
         poll.cancel()
         syncing[id] = nil
         await refresh()
+        await onSyncFinished?(id)
     }
 
     func cancelSync(_ id: AccountID) async { await sync.cancel(id) }
 
+    /// Called after each finished sync (the app updates the archive index).
+    var onSyncFinished: ((AccountID) async -> Void)?
+    private var started = false
+
     func start() async {
+        guard !started else { return }
+        started = true
         do {
             try await service.load()
             accounts = await service.accounts()

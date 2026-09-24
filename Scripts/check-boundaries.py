@@ -5,7 +5,7 @@ import re
 
 root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
-    "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation"},
+    "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation", "ArchiveIndex", "CoreText"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
     "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain", "CaptureJournal", "ArchiveIndex"},
     "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
