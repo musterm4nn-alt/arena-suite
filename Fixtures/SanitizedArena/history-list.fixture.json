@@ -1,0 +1,20 @@
+{
+  "schema": "arena-suite.fixture/1",
+  "id": "browser-history-list-20260922",
+  "scenario": "Observed read-only first history page; projected subset, not a full server response",
+  "source": "H-001 in Docs/history-observation-2026-09-22.md; transient private controller memory",
+  "provenance": "sanitized_capture",
+  "authorization_reference": "User requested remaining Phase 0 history checks with generation on hold",
+  "review_reference": "H-001 structural inspection and explicit allowlisted projection",
+  "observation_layer": "playwright_complete_decoded_body_projected_subset",
+  "clock": "research-order/1: synthetic ordinals, not callback timing",
+  "adapter_version": "not_implemented",
+  "parser_version": "not_implemented",
+  "expected_associations": [{"scope": "history projection only", "detail_id": "scope-2", "rule": "Source ID matched H-002 detail ID"}],
+  "fidelity": "transformed",
+  "transformations": [{"scope": "entire JSON body", "reason": "Exclude private titles, timestamps, models and identifiers", "policy": "phase0-history-projection/1", "mapping": "Keep all 11 entries in source order, projecting id/type only; replace IDs with scope aliases; replace non-evaluation type strings with [type_omitted]; retain observed pagination, partial and empty failedSources; discard all other fields; compact JSON reserialization; original offsets unavailable"}],
+  "source_response_byte_count": 3857,
+  "source_response_sha256": "9c1e03eb51fdf08608e35fe8e89a27dd8c7f5c18315a51fda328cc64e72e5934",
+  "units": [{"stream": "response", "offset": 0, "ticks": 0, "base64": "eyJlbnRyaWVzIjpbeyJpZCI6InNjb3BlLTEiLCJ0eXBlIjoiZXZhbHVhdGlvbiJ9LHsiaWQiOiJzY29wZS0yIiwidHlwZSI6ImV2YWx1YXRpb24ifSx7ImlkIjoic2NvcGUtMyIsInR5cGUiOiJldmFsdWF0aW9uIn0seyJpZCI6InNjb3BlLTQiLCJ0eXBlIjoiZXZhbHVhdGlvbiJ9LHsiaWQiOiJzY29wZS01IiwidHlwZSI6ImV2YWx1YXRpb24ifSx7ImlkIjoic2NvcGUtNiIsInR5cGUiOiJldmFsdWF0aW9uIn0seyJpZCI6InNjb3BlLTciLCJ0eXBlIjoiZXZhbHVhdGlvbiJ9LHsiaWQiOiJzY29wZS04IiwidHlwZSI6Ilt0eXBlX29taXR0ZWRdIn0seyJpZCI6InNjb3BlLTkiLCJ0eXBlIjoiW3R5cGVfb21pdHRlZF0ifSx7ImlkIjoic2NvcGUtMTAiLCJ0eXBlIjoiW3R5cGVfb21pdHRlZF0ifSx7ImlkIjoic2NvcGUtMTEiLCJ0eXBlIjoiW3R5cGVfb21pdHRlZF0ifV0sInBhZ2luYXRpb24iOnsiaGFzTW9yZSI6ZmFsc2UsImN1cnNvciI6bnVsbCwibGltaXQiOjIwfSwicGFydGlhbCI6ZmFsc2UsImZhaWxlZFNvdXJjZXMiOltdfQ==", "sha256": "dd9bb14f58322cce5136d3d792f6bb5991164beb4e08f793a188098083508447"}],
+  "stream_sha256": {"response": "dd9bb14f58322cce5136d3d792f6bb5991164beb4e08f793a188098083508447"}
+}

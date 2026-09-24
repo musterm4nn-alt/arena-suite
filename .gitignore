@@ -1,0 +1,16 @@
+.DS_Store
+.playwright-mcp/
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+opencode.json*
+*.har
+*.pcap
+.env*
+*.key
+*.p12
+private-fixtures.json
+Private/
+__pycache__/

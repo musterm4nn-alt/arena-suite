@@ -1,0 +1,22 @@
+{
+  "schema": "arena-suite.fixture/1",
+  "id": "browser-direct-create-20260922",
+  "scenario": "Authorized synthetic prompt in official Direct UI; HTTP 200; complete-body response observation only",
+  "source": "C-001 in Docs/conversation-observation-2026-09-22.md; original response retained transiently in controller memory only",
+  "provenance": "sanitized_capture",
+  "authorization_reference": "User authorized Phase 0 browser research and continued feasibility verification",
+  "review_reference": "Manual structural inspection C-001; synthetic prompt and assembled answer compared before export",
+  "observation_layer": "playwright_complete_decoded_response_body_transformed",
+  "clock": "research-order/1: ticks are synthetic observation ordinals, not measured monotonic time or callback timing",
+  "adapter_version": "not_implemented",
+  "parser_version": "not_implemented",
+  "expected_associations": [{"scope": "this response only", "synthetic_answer": "Arena Suite feasibility check.", "rule": "research inspection joined a0 string rows; not a general Arena grammar"}],
+  "fidelity": "transformed",
+  "transformations": [{"scope": "a2 records and record serialization", "reason": "Omit provider metadata values; retain structure and synthetic answer", "policy": "phase0-conversation-sanitize/1", "mapping": "Seven source nonempty rows map one-to-one to seven exported LF-terminated rows; a2 string values replaced; all JSON reserialized; source offsets are not exported offsets"}],
+  "observed_request_at_utc": "2026-09-22T07:43:17.277Z",
+  "body_available_at_utc": "2026-09-22T07:43:21.048Z",
+  "source_response_byte_count": 160,
+  "source_response_sha256": "53ddda8af6052b62fb464afefb01aab307bade792d271dc94864cafcd7943dc5",
+  "units": [{"stream": "response", "offset": 0, "ticks": 0, "base64": "YTI6W3sidHlwZSI6IlttZXRhZGF0YV92YWx1ZV9vbWl0dGVkXSIsIm9yZ2FuaXphdGlvbiI6IlttZXRhZGF0YV92YWx1ZV9vbWl0dGVkXSJ9XQphMjpbeyJ0eXBlIjoiW21ldGFkYXRhX3ZhbHVlX29taXR0ZWRdIn1dCmEwOiJBcmVuYSAiCmEwOiJTdWl0ZSAiCmEwOiJmZWFzaWJpbGl0eSAiCmEwOiJjaGVjay4iCmFkOnsiZmluaXNoUmVhc29uIjoic3RvcCJ9Cg==", "sha256": "0c8f8361f803fadf8586e4e6c104256134978f71aa5568b7a420ebc21b68543c"}],
+  "stream_sha256": {"response": "0c8f8361f803fadf8586e4e6c104256134978f71aa5568b7a420ebc21b68543c"}
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "arena-suite.fixture/1",
+  "id": "synthetic-opaque-001",
+  "scenario": "Invalid UTF-8, NUL, CRLF, and an incomplete JSON opening; no Arena grammar claimed",
+  "source": "Arena Suite hand-authored synthetic fixture v1",
+  "provenance": "synthetic",
+  "observation_layer": "synthetic_byte_units",
+  "clock": "synthetic-clock-1; integer ticks; one arbitrary unit per partition; no wall-clock claim",
+  "adapter_version": "not_implemented",
+  "parser_version": "not_implemented",
+  "expected_associations": [],
+  "fidelity": "synthetic",
+  "transformations": [],
+  "units": [{
+    "stream": "synthetic-stream",
+    "offset": 0,
+    "ticks": 0,
+    "base64": "AP/DqQ0Kew==",
+    "sha256": "6e8441bd46727667f77be5144c2ca0f87d5024e61eadfd821db762e896c87ed0"
+  }],
+  "stream_sha256": {
+    "synthetic-stream": "6e8441bd46727667f77be5144c2ca0f87d5024e61eadfd821db762e896c87ed0"
+  }
+}

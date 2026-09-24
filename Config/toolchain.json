@@ -1,0 +1,13 @@
+{
+  "recorded_date": "2026-09-20",
+  "architecture": "arm64",
+  "macos": "27.2",
+  "macos_build": "26B5086k",
+  "xcode": "27.0",
+  "xcode_build": "27A266a",
+  "swift": "6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)",
+  "swift_language_mode": "6",
+  "deployment_target": "14.0",
+  "minimum_runtime_tested": false,
+  "dependency_lock": "Tools/DependencyProbe/Package.resolved"
+}
