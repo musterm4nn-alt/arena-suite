@@ -1,0 +1,145 @@
+# Session handoff
+
+Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
+`Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
+
+Updated 2026-09-25, after commit `1d85baa`.
+
+## Where things stand
+
+- v1 is complete: plan phases 0-A through 7 are all implemented, independently reviewed, fixed and
+  committed.
+  - Per-phase records: `Docs/phase*-*.md`.
+  - Reviews: `Docs/reviews/2026-09-24-*.md`.
+  - Release notes and known limits: `Docs/release-notes-1.0.md`.
+- Arena Suite 1.0.0 is installed at `~/Applications/Arena Suite.app` (signed Release, via
+  `Scripts/package.sh`).
+- Live archive: `~/Library/Application Support/Arena Suite/Archive`.
+  - 3 accounts, all signed in; 57 conversations; journals of 30 / 31 / 49 records.
+  - Verify is clean, and the live index equals a fresh replay.
+- Git is local only. There is no remote, and nothing has been pushed; do not push unless asked.
+
+## Open items
+
+1. **A4, the 24-hour session check.** It is due now (the last run was 2026-09-24). Ask the user to
+   run:
+   `open -n ~/Documents/arena-suite-opus/DerivedData/NativeAuthProof.app --args --phase0a`
+   Then record in the Phase 0-A docs, `Docs/status.md` and the protocol ledger whether the saved
+   session still verifies and whether cookies were re-issued.
+2. **Plan §14 items.** Each needs an explicit go decision from the user; none is implied by v1:
+   - read-only MCP (search, get conversation, export through ApplicationActions; no network
+     actions, voting or reveal);
+   - training/attribution datasets;
+   - Track B generation (blocked by reCAPTCHA v3, N-004);
+   - maintenance (selective purge with journal rewrite, reparse promotion/rollback, tiered
+     verification).
+
+   The last question to the user was which of these, if any, to do next. There is no answer yet.
+3. **Known test gaps** (from the Phase 7 review; they are covered by reading only, not by tests):
+   - a fault-injection test that changes accounts in the middle of a backup;
+   - cancelling a backup mid-copy.
+
+## User decisions that stay settled
+
+- **Gate R (terms)** was decided by the user (`Docs/ADR/0005-product-scope.md`). Do not reopen it
+  or add ToS caveats.
+- **Multiple accounts in v1:** each is isolated, with its own session, Keychain item and journal.
+- **Keychain:** keep the legacy login Keychain behavior (ACL-protected, not device-bound).
+- **Font:** Departure Mono (departuremono.com), 11 pt body and 22 pt headings.
+- **Voting/reveal:** Track B only, as manual user-clicked actions. Never automated, never exposed
+  through MCP.
+- **Signing:** use the Apple Development identity. It lives only in the git-ignored
+  `Config/Signing.local.env` and `Config/Signing.local.xcconfig`.
+
+## Hard constraints
+
+- No CAPTCHA or anti-abuse bypass, no browser-token transfer, and no WebView or browser runtime in
+  the product.
+- **Traffic policy:** sync is user-initiated, one request in flight per account, at least 1 s
+  spacing. Stop on 403 or a challenge page; honor `Retry-After` once.
+- **Never commit** credentials, cookies, passwords, the team ID, the email address or the signing
+  hash. Before every commit, scan the staged diff against the git-ignored pattern file (never
+  write these values into tracked files):
+  `git diff --cached | grep -nIFf Config/secret-scan.local` — the output must be empty.
+- **Screenshots:** capture only the Arena Suite window (`swift Tools/Dev/window_shot.swift
+  "Arena Suite" out.png`, or `ArenaSuite` for Debug builds). Never capture the full screen, and
+  never commit screenshots.
+- **Telemetry:** Arena `metadata` stays out of the index, views and default exports. Exact raw
+  bodies are shown or exported only after an explicit, confirmed action.
+- Tests and tools that read the real archive must print counts, digests and paths only, never
+  content.
+
+## Working process (user instructions)
+
+- Work phase by phase (`AGENTS.md`). State the acceptance criteria, implement, test, commit.
+- **Reviews go to a different LLM than the author**, via opencode, run in the background:
+  ```sh
+  opencode run --standalone --model 'opencode/muse-spark-1.3-contributor-free#xhigh' --agent reviewer "<scope + focus>" > $TMPDIR/review.txt 2>&1
+  ```
+  - Always pass `--standalone`: without it, `opencode run` hung once.
+  - The alternative reviewer model is deepseek v4.1 flash.
+  - The agent definition is `.opencode/agents/reviewer.md`.
+- After a review, fix every finding that holds up, write `Docs/reviews/<date>-<phase>.md`, and
+  commit "Address independent review of …".
+- **Then continue to the next phase without asking.** Exception: §14 items need the user's go
+  decision first.
+- Commit messages end with a `Co-Authored-By` line for the model that did the work.
+
+## Commands
+
+```sh
+bash Scripts/test-offline.sh        # boundaries, core + adapter tests, golden journal, crash gate, harnesses
+bash Scripts/build.sh Debug         # app → DerivedData/Build/Products/Debug/ArenaSuite.app
+bash Scripts/package.sh             # signed Release → ~/Applications/Arena Suite.app (refuses while running)
+# Opt-in:
+ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
+  swift test --package-path Packages/ArenaProtocol --filter realArchive    # rebuild, exports, verify+backup on real data
+ARENA_SUITE_SCALE_TEST=1 swift test --package-path Packages/ArenaProtocol --filter scale   # 10× synthetic history
+ARENA_SUITE_KEYCHAIN_TESTS=1 swift test --package-path Packages/ArenaProtocol --filter Session       # real Keychain test
+python3 Tools/FixtureHarness/audit_archive_journals.py                     # live journal audit (counts only)
+```
+
+Debug-only app flags:
+- `--archive-root <path>`
+- `--sync-on-launch`
+- `--preview-conversation "<title prefix>"`, optionally with `--preview-export`
+- `--preview-search <text>`
+- `--preview-maintenance`
+
+To test a clean install with the Release binary, point it at an empty home folder with
+`CFFIXED_USER_HOME=<empty dir>`. Setting `HOME` does not redirect Application Support.
+
+## Code map
+
+- **`Packages/ArenaSuiteCore`:**
+  - `SuiteDomain`: IDs, accounts, the archive vocabulary.
+  - `CaptureJournal`: the ASJ1 journal (writer, reader, verifier, recovery, `JournalCopy`).
+  - `ArchiveIndex`: GRDB/FTS5, `contentDigest`, `digestAndCheckpoints`.
+  - `ApplicationActions`: `AccountService`, `HistorySyncService` (holds the maintenance
+    exclusion), `JournalStore`, `ArchiveService` (projection, replay, `checkAgainstJournal`),
+    `ExportService`, `TranscriptLayout`, `VerificationService`, `BackupService`,
+    `DiagnosticsService`, `PrivateFile`.
+- **`Packages/ArenaProtocol`:**
+  - `FoundationTransport`: per-account `URLSession`.
+  - `ArenaAdapter`: sessions/Keychain, history routes and sync, `ArenaArchiveDecoder`. This is the
+    only module that knows Arena routes.
+  - Most integration tests live in `Tests/AdapterTests`.
+- **`App/`:** SwiftUI.
+  - `AppComposition.swift` is the only file allowed to import `ArenaAdapter`.
+  - Also: the Accounts, Archive and Maintenance models and views, and `Theme`.
+  - The Xcode project is hand-written. When adding a file, add both a `PBXFileReference` and a
+    `PBXBuildFile` entry to `ArenaSuite.xcodeproj/project.pbxproj`.
+- **Tools:** `Tools/NativeAuthProof` (Phase 0 research app, never linked), `Tools/CrashHarness`,
+  `Tools/FixtureHarness`, `Tools/Dev/window_shot.swift`.
+- **Boundaries:** `Scripts/check-boundaries.py` enforces the import rules.
+
+## Gotchas learned
+
+- On this macOS, `JSONSerialization` keeps the first of duplicate keys.
+- Arena list pages are ordered newest first by `updatedAt`. Timestamps are PostgreSQL text
+  (`2026-09-24 10:00:00.123456+00`), parsed by `SourceInstant`.
+- The legacy login Keychain ignores `kSecAttrAccessible`.
+- `FileManager.removeItem` is recursive. Never remove a parent folder that is "probably empty";
+  use `rmdir`.
+- `JournalStore.root(for:)` is nonisolated. Projection has no suspension points inside the actor,
+  so a rebuild cannot interleave with it.
