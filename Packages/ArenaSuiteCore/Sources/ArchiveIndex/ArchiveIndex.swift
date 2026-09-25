@@ -168,6 +168,46 @@ public final class ArchiveIndex: Sendable {
         for suffix in ["", "-wal", "-shm"] { try Self.tighten(url.path + suffix, to: 0o600, directory: false) }
     }
 
+    public enum ReadOnlyOpenError: Error, Equatable {
+        case missing(String)
+        case notOwnerOnly(String)
+        case schemaNotReady
+    }
+
+    /// Opens an existing index for reading only (plan v3 §14, read-only MCP): SQLite refuses every
+    /// write on this connection, and nothing is created, migrated or re-permissioned. Symlinks and
+    /// files readable by others are refused rather than tightened, because tightening is a write.
+    public init(readingExistingAt url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try Self.check(directory.path, mode: 0o700, directory: true, required: true)
+        try Self.check(url.path, mode: 0o600, directory: false, required: true)
+        for suffix in ["-wal", "-shm"] { try Self.check(url.path + suffix, mode: 0o600, directory: false, required: false) }
+        var configuration = Configuration()
+        configuration.readonly = true
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        guard try pool.read({ try Self.migrator.hasCompletedMigrations($0) }) else {
+            throw ReadOnlyOpenError.schemaNotReady
+        }
+        self.pool = pool
+    }
+
+    /// Like `tighten`, but only checks: `required` paths must exist, and none may be a symlink,
+    /// the wrong type, or carry permission bits beyond `mode`.
+    static func check(_ path: String, mode: mode_t, directory: Bool, required: Bool) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            if errno == ENOENT {
+                if required { throw ReadOnlyOpenError.missing(path) }
+                return
+            }
+            throw OpenError.permissions(path, errno)
+        }
+        let type = info.st_mode & S_IFMT
+        guard type != S_IFLNK else { throw OpenError.symlink(path) }
+        guard type == (directory ? S_IFDIR : S_IFREG) else { throw OpenError.permissions(path, EFTYPE) }
+        guard info.st_mode & 0o7777 & ~mode == 0 else { throw ReadOnlyOpenError.notOwnerOnly(path) }
+    }
+
     /// Missing paths are fine (created later); existing ones must be the right type, not symlinks,
     /// and end up with exactly `mode`.
     static func tighten(_ path: String, to mode: mode_t, directory: Bool) throws {

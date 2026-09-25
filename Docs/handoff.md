@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-09-25, after commit `1d85baa`.
+Updated 2026-09-25, after the read-only MCP commit.
 
 ## Where things stand
 
@@ -17,7 +17,8 @@ Updated 2026-09-25, after commit `1d85baa`.
 - Live archive: `~/Library/Application Support/Arena Suite/Archive`.
   - 3 accounts, all signed in; 57 conversations; journals of 30 / 31 / 49 records.
   - Verify is clean, and the live index equals a fresh replay.
-- Git is local only. There is no remote, and nothing has been pushed; do not push unless asked.
+- §14 read-only MCP is done and reviewed: `Packages/ArenaSuiteMCP`, `Docs/mcp-readonly-2026-09-25.md`.
+- Git remote: `origin` = private GitHub repo `musterm4nn-alt/arena-suite`. Push only when asked.
 
 ## Open items
 
@@ -26,7 +27,8 @@ Updated 2026-09-25, after commit `1d85baa`.
    `open -n ~/Documents/arena-suite-opus/DerivedData/NativeAuthProof.app --args --phase0a`
    Then record in the Phase 0-A docs, `Docs/status.md` and the protocol ledger whether the saved
    session still verifies and whether cookies were re-issued.
-2. **Plan §14 items.** Each needs an explicit go decision from the user; none is implied by v1:
+2. **Plan §14 items.** The user gave the go decision on 2026-09-25 ("get started on the §14 items").
+   Order: MCP (done), datasets (next), maintenance. Track B stays blocked (§1 condition 1).
    - read-only MCP (search, get conversation, export through ApplicationActions; no network
      actions, voting or reveal);
    - training/attribution datasets;
@@ -34,7 +36,6 @@ Updated 2026-09-25, after commit `1d85baa`.
    - maintenance (selective purge with journal rewrite, reparse promotion/rollback, tiered
      verification).
 
-   The last question to the user was which of these, if any, to do next. There is no answer yet.
 3. **Known test gaps** (from the Phase 7 review; they are covered by reading only, not by tests):
    - a fault-injection test that changes accounts in the middle of a backup;
    - cancelling a backup mid-copy.
@@ -131,7 +132,12 @@ To test a clean install with the Release binary, point it at an empty home folde
     `PBXBuildFile` entry to `ArenaSuite.xcodeproj/project.pbxproj`.
 - **Tools:** `Tools/NativeAuthProof` (Phase 0 research app, never linked), `Tools/CrashHarness`,
   `Tools/FixtureHarness`, `Tools/Dev/window_shot.swift`.
-- **Boundaries:** `Scripts/check-boundaries.py` enforces the import rules.
+- **`Packages/ArenaSuiteMCP`:** `ArchiveMCP` (tools, JSON-RPC, `LineFramer`) and the
+  `arena-suite-mcp` executable. It links ArenaSuiteCore only, opens the index with
+  `ArchiveIndex(readingExistingAt:)` and `ArchiveService(readOnly:)`, and reads the registry with
+  `loadWithoutTightening`. Build and install: `bash Scripts/build-mcp.sh`.
+- **Boundaries:** `Scripts/check-boundaries.py` enforces the import rules, plus a self-tested deny-list
+  of write and network APIs for the MCP module.
 
 ## Gotchas learned
 

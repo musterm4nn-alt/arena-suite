@@ -6,6 +6,7 @@ swift test --package-path Packages/ArenaSuiteCore
 python3 Tools/FixtureHarness/check_journal_golden.py
 swift run --package-path Tools/CrashHarness CrashHarness
 swift test --package-path Packages/ArenaProtocol
+swift test --package-path Packages/ArenaSuiteMCP
 swift test --package-path Tools/NativeAuthProof
 python3 Tools/FixtureHarness/run_transport.py
 python3 Tools/FixtureHarness/fixture_manifest.py

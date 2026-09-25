@@ -268,10 +268,22 @@ public struct AccountRegistryStore: Sendable {
     }
 
     public func load() throws -> [AccountRecord] {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         let data: Data?
         do { data = try PrivateFile.read(url) } catch { throw AccountError.registryUnavailable }
+        return try decode(data)
+    }
+
+    /// Like `load`, but never changes anything on disk: loose permissions are refused, not
+    /// tightened (read-only MCP, plan v3 §14).
+    public func loadWithoutTightening() throws -> [AccountRecord] {
+        let data: Data?
+        do { data = try PrivateFile.readWithoutTightening(url) } catch { throw AccountError.registryUnavailable }
+        return try decode(data)
+    }
+
+    private func decode(_ data: Data?) throws -> [AccountRecord] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         guard let data else { return [] }
         guard let file = try? decoder.decode(File.self, from: data), file.format == 1 else {
             throw AccountError.registryUnavailable

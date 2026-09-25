@@ -15,7 +15,8 @@ public protocol ArchiveDecoding: Sendable {
 public actor ArchiveService {
     private let index: ArchiveIndex
     private let journals: JournalStore
-    private let decoder: any ArchiveDecoding
+    /// nil in read-only mode: nothing can be projected, rebuilt or replayed.
+    private let decoder: (any ArchiveDecoding)?
     private let accounts: @Sendable () -> [AccountID]
 
     public init(
@@ -28,9 +29,26 @@ public actor ArchiveService {
         self.accounts = accounts
     }
 
+    /// Read-only access to an index opened with `ArchiveIndex(readingExistingAt:)` (plan v3 §14,
+    /// read-only MCP). Queries, raw evidence and exports work; `project`, `rebuild` and
+    /// `checkAgainstJournal` throw `ArchiveServiceError.readOnly`. The decoder version reported
+    /// with evidence is the one recorded in the index, i.e. the one that built this projection.
+    public init(readOnly index: ArchiveIndex, journals: JournalStore) {
+        self.index = index
+        self.journals = journals
+        self.decoder = nil
+        self.accounts = { [] }
+    }
+
+    private func requireDecoder() throws -> any ArchiveDecoding {
+        guard let decoder else { throw ArchiveServiceError.readOnly }
+        return decoder
+    }
+
     /// Applies this account's journal from its checkpoint. If the stored projection version differs
     /// from the decoder's (and is not nil), rebuilds every account instead.
     public func project(_ account: AccountID) async throws -> Int {
+        let decoder = try requireDecoder()
         if let stored = try index.projectionVersion(), stored != decoder.version {
             let counts = try await rebuildAll()
             return counts[account] ?? 0
@@ -48,6 +66,7 @@ public actor ArchiveService {
     }
 
     private func rebuildAll(accounts requested: [AccountID]? = nil) async throws -> [AccountID: Int] {
+        _ = try requireDecoder()
         try index.reset()
         var counts: [AccountID: Int] = [:]
         for account in requested ?? accounts() {
@@ -58,6 +77,7 @@ public actor ArchiveService {
 
     /// `limit`: apply nothing past this sequence (for replays that must match a given checkpoint).
     private func applyRecords(account: AccountID, through limit: UInt64? = nil) async throws -> Int {
+        let decoder = try requireDecoder()
         let checkpoint = try index.checkpoint(for: account)
         let root = journals.root(for: account)
         var pending: [(RecordRef, DecodedRecord)] = []
@@ -111,6 +131,7 @@ public actor ArchiveService {
     }
 
     private func replayAll(accounts: [AccountID], limits: [AccountID: UInt64]?) async throws {
+        _ = try requireDecoder()
         try index.reset()
         for account in accounts {
             let limit = limits.map { $0[account] ?? 0 }
@@ -122,6 +143,7 @@ public actor ArchiveService {
     /// Replays this archive's journals into a scratch index up to the live index's checkpoints and
     /// compares digests: equal means the live index is exactly what the journal produces.
     public func checkAgainstJournal(scratch: URL) async throws -> IndexCheck {
+        let decoder = try requireDecoder()
         let live = try index.digestAndCheckpoints()
         let known = Set(accounts()).union(live.checkpoints.keys)
         let replayed = try await Self.replay(
@@ -132,7 +154,10 @@ public actor ArchiveService {
             decoderVersion: decoder.version)
     }
 
-    public nonisolated var decoderVersion: String { decoder.version }
+    public nonisolated var decoderVersion: String {
+        // Read-only: the version recorded by the projection; "unprojected" if nothing was projected.
+        decoder?.version ?? (try? index.projectionVersion()).flatMap { $0 } ?? "unprojected"
+    }
 
     // MARK: Pass-through queries
 
@@ -179,7 +204,7 @@ public actor ArchiveService {
         guard record.envelope.sequence == snapshotSequence else { return nil }
         return RawEvidence(
             location: ref, envelope: record.envelopeBytes, payload: record.payload,
-            digest: record.digest.map { String(format: "%02x", $0) }.joined(), decoderVersion: decoder.version)
+            digest: record.digest.map { String(format: "%02x", $0) }.joined(), decoderVersion: decoderVersion)
     }
 
     public nonisolated func counts() throws -> [String: Int] {
@@ -189,6 +214,11 @@ public actor ArchiveService {
     public nonisolated func contentDigest() throws -> String {
         try index.contentDigest()
     }
+}
+
+public enum ArchiveServiceError: Error, Equatable, Sendable {
+    /// The service was opened read-only and was asked to project, rebuild or replay.
+    case readOnly
 }
 
 /// Result of `ArchiveService.checkAgainstJournal`.

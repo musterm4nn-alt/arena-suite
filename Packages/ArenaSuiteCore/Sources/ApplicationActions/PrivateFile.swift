@@ -30,6 +30,19 @@ public enum PrivateFile {
         return data
     }
 
+    /// Reads `url` without changing anything on disk (plan v3 §14, read-only MCP): the file and its
+    /// directory must already be owner-only (`0600`/`0700` or narrower); wider permissions and
+    /// symlinks are refused instead of tightened. Returns nil if absent.
+    public static func readWithoutTightening(_ url: URL) throws -> Data? {
+        let directory = url.deletingLastPathComponent()
+        guard try enforce(directory.path, mode: 0o700, directory: true, tighten: false) else { return nil }
+        guard try enforce(url.path, mode: 0o600, directory: false, tighten: false) else { return nil }
+        guard let data = FileManager.default.contents(atPath: url.path) else {
+            throw Failure.io("read \(url.lastPathComponent)", EIO)
+        }
+        return data
+    }
+
     /// `exclusive`: fail with `EEXIST` instead of replacing an existing file.
     public static func write(_ data: Data, to url: URL, exclusive: Bool = false) throws {
         let directory = url.deletingLastPathComponent()
@@ -78,9 +91,10 @@ public enum PrivateFile {
         }
     }
 
-    /// Returns false if the path does not exist. Throws on symlinks or wrong file types.
+    /// Returns false if the path does not exist. Throws on symlinks or wrong file types. Without
+    /// `tighten`, permissions beyond `mode` throw instead of being changed.
     @discardableResult
-    private static func enforce(_ path: String, mode: mode_t, directory: Bool) throws -> Bool {
+    private static func enforce(_ path: String, mode: mode_t, directory: Bool, tighten: Bool = true) throws -> Bool {
         var info = stat()
         guard lstat(path, &info) == 0 else {
             if errno == ENOENT { return false }
@@ -90,6 +104,12 @@ public enum PrivateFile {
         guard type != S_IFLNK else { throw Failure.symlink((path as NSString).lastPathComponent) }
         guard type == (directory ? S_IFDIR : S_IFREG) else {
             throw Failure.io("unexpected file type \((path as NSString).lastPathComponent)", EFTYPE)
+        }
+        if !tighten {
+            guard info.st_mode & 0o7777 & ~mode == 0 else {
+                throw Failure.io("permissions \((path as NSString).lastPathComponent)", EPERM)
+            }
+            return true
         }
         if info.st_mode & 0o7777 != mode {
             guard chmod(path, mode) == 0 else { throw Failure.io("chmod \((path as NSString).lastPathComponent)", errno) }
