@@ -99,7 +99,7 @@ public struct ArchiveTools: Sendable {
         [
             "account_id": accountProperty(required: true),
             "conversation_id": ["type": "string", "description": "conversation_id from list_conversations or search."],
-            "snapshot": ["type": "string", "description": "Journal sequence of an earlier snapshot; default latest."],
+            "snapshot": ["type": "string", "description": "Journal sequence of one of this conversation's snapshots; default latest. The result holds only what was observed up to that record."],
         ]
     }
 
@@ -224,7 +224,10 @@ public struct ArchiveTools: Sendable {
         }
         var snapshot: UInt64?
         if let value = arguments["snapshot"] {
-            guard let sequence = value.uint64Value, sequence > 0 else { throw ToolError("snapshot must be a positive journal sequence.") }
+            // Journal sequences are SQLite integers: at most Int64.max.
+            guard let sequence = value.uint64Value, sequence > 0, Int64(exactly: sequence) != nil else {
+                throw ToolError("snapshot must be a positive journal sequence of at most \(Int64.max).")
+            }
             snapshot = sequence
         }
         let rendered: (data: Data, baseName: String)
@@ -234,6 +237,8 @@ public struct ArchiveTools: Sendable {
                 options: ExportOptions(format: format, includeExactRawBodies: false))
         } catch ExportError.conversationNotFound {
             throw ToolError("No archived conversation \(remoteID) for account \(account.rawValue.uuidString)\(snapshot.map { " at snapshot \($0)" } ?? "").")
+        } catch ExportError.snapshotNotInConversation(let sequence) {
+            throw ToolError("Snapshot \(sequence) is not a snapshot of conversation \(remoteID); list_conversations shows the latest.")
         } catch ExportError.noSnapshot {
             throw ToolError("Conversation \(remoteID) has no archived detail snapshot (list-only entry).")
         } catch ExportError.rawRecordUnavailable {

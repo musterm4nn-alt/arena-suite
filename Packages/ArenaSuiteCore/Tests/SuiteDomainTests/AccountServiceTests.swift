@@ -25,6 +25,20 @@ private actor FakeSessions: AccountSessionProviding {
     func setPrincipal(_ email: String, _ value: PrincipalIdentity) { principals[email] = value }
     func setDelay(_ value: Duration) { signInDelay = value }
 
+    var forgetFails = false
+    func setForgetFails(_ value: Bool) { forgetFails = value }
+
+    /// `persist` for this account suspends until `releasePersist()`: a controlled suspension point.
+    private var holdPersistFor: AccountID?
+    private var heldPersist: CheckedContinuation<Void, Never>?
+    var persistIsHeld: Bool { heldPersist != nil }
+    func holdPersist(_ id: AccountID) { holdPersistFor = id }
+    func releasePersist() {
+        holdPersistFor = nil
+        heldPersist?.resume()
+        heldPersist = nil
+    }
+
     func signIn(account: AccountID, email: String, password: String) async throws -> PrincipalIdentity {
         if signInDelay > .zero { try? await Task.sleep(for: signInDelay) }
         if let signInFailure { throw signInFailure }
@@ -32,6 +46,7 @@ private actor FakeSessions: AccountSessionProviding {
         return value
     }
     func persist(account: AccountID, principal: PrincipalIdentity) async throws {
+        if account == holdPersistFor { await withCheckedContinuation { heldPersist = $0 } }
         if persistFails { throw SignInFailure.sessionStorageFailed }
         persisted[account] = principal
     }
@@ -45,6 +60,7 @@ private actor FakeSessions: AccountSessionProviding {
     func discard(account: AccountID) async { discarded.append(account) }
     func forget(account: AccountID) async throws {
         forgotten.append(account)
+        if forgetFails { throw SignInFailure.sessionStorageFailed }
         persisted[account] = nil
     }
 }
@@ -223,4 +239,69 @@ private func mode(_ url: URL) throws -> Int {
     }
     #expect(await service.accounts().first?.state == .signedIn)
     #expect(await fake.forgotten.isEmpty)
+}
+
+// Review 2026-10-18, findings 3 and 8.
+
+/// Removing an earlier account while another re-authenticates shifts positions in the registry; the
+/// re-authenticated account must still be the one updated (with two accounts the stale position
+/// would be past the end).
+@Test(arguments: [2, 3])
+func reauthenticationFindsItsAccountAgainAfterSuspending(_ count: Int) async throws {
+    let fake = FakeSessions()
+    await fake.setPrincipal("c@x", principal("C"))
+    let (service, store) = try makeService(fake)
+    var added: [AccountSummary] = []
+    for email in ["a@x", "b@x", "c@x"].prefix(count) {
+        added.append(try await service.addAccount(email: email, password: "p", displayName: nil))
+    }
+    let (first, target) = (added[0], added[1])
+    await fake.holdPersist(target.id)
+    let again = Task { try await service.signInAgain(target.id, email: "b@x", password: "p") }
+    var waited = 0
+    while await !fake.persistIsHeld, waited < 100_000 {
+        await Task.yield()
+        waited += 1
+    }
+    try #require(await fake.persistIsHeld, "re-authentication reached persist")
+    try await service.remove(first.id)
+    await fake.releasePersist()
+    let result = try await again.value
+    #expect(result.id == target.id && result.credentialGeneration == 2)
+    let generations = Dictionary(uniqueKeysWithValues: try store.load().map { ($0.id, $0.credentialGeneration) })
+    var expected = [target.id: UInt64(2)]
+    if count == 3 { expected[added[2].id] = 1 }
+    #expect(generations == expected, "only the re-authenticated account changed")
+}
+
+@Test func removalKeepsTheAccountWhenItsSavedSessionCannotBeDeleted() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    await fake.setForgetFails(true)
+    await #expect(throws: AccountError.sessionDeletionFailed) { try await service.remove(account.id) }
+    #expect(try store.load().map(\.id) == [account.id], "still listed, so the removal can be retried")
+    #expect(await service.accounts().first?.state == .needsSignIn)
+    #expect(await fake.persisted[account.id] != nil)
+
+    await fake.setForgetFails(false)
+    try await service.remove(account.id)
+    #expect(try store.load().isEmpty)
+    #expect(await fake.persisted[account.id] == nil)
+    #expect(await fake.forgotten == [account.id, account.id])
+}
+
+@Test func removalWhoseRegistrySaveFailsLeavesTheAccountUnableToSync() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    // The registry refuses to write through a symlink: the session is deleted, the save then fails.
+    let real = store.url.deletingLastPathComponent().appendingPathComponent("registry.real")
+    try FileManager.default.moveItem(at: store.url, to: real)
+    try FileManager.default.createSymbolicLink(at: store.url, withDestinationURL: real)
+    await #expect(throws: AccountError.registryUnavailable) { try await service.remove(account.id) }
+    #expect(await fake.persisted[account.id] == nil)
+    #expect(await service.accounts().map(\.id) == [account.id])
+    #expect(await service.accounts().first?.state == .needsSignIn)
+    await #expect(throws: AccountError.notSignedIn(.needsSignIn)) { _ = try await service.context(for: account.id) }
 }

@@ -24,7 +24,7 @@ func realArchiveRebuildIsIdentical() async throws {
     let first = try index.contentDigest()
     let counts = try index.counts()
     #expect(try await service.project(accounts[0]) == 0, "incremental replay applies nothing new")
-    try await service.rebuild(accounts: accounts)
+    try await service.rebuild()
     let second = try index.contentDigest()
     #expect(first == second, "rebuild must reproduce identical content")
     #expect(try index.counts() == counts)

@@ -56,7 +56,9 @@ enum AppComposition {
             let index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
             archive = ArchiveService(
                 index: index, journals: journals, decoder: ArenaArchiveDecoder(),
-                accounts: { ((try? registry.load()) ?? []).map(\.id) })
+                // With every journal on disk (the service adds those): an unreadable list fails the
+                // rebuild instead of replaying nothing.
+                accounts: { try registry.load().map(\.id) })
             unavailable = nil
         } catch {
             // Accounts and sync keep working; the journal is untouched. Removing index/ rebuilds it.
@@ -67,7 +69,7 @@ enum AppComposition {
         let maintenance = Maintenance(
             verification: VerificationService(
                 archive: archive, journals: journals,
-                accounts: { Array(Set(((try? registry.load()) ?? []).map(\.id)).union(journals.accountsOnDisk()))
+                accounts: { Array(Set(try registry.load().map(\.id)).union(try journals.journalAccounts()))
                     .sorted { $0.rawValue.uuidString < $1.rawValue.uuidString } },
                 scratch: FileManager.default.temporaryDirectory.appendingPathComponent("arena-suite-verify", isDirectory: true)),
             backups: BackupService(archiveRoot: archiveRoot, decoder: ArenaArchiveDecoder(), appVersion: appVersion),

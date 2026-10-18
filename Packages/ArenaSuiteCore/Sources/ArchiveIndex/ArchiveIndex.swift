@@ -94,16 +94,23 @@ public struct DetailMessage: Sendable, Equatable {
 public struct ConversationDetail: Sendable, Equatable {
     public let summary: ConversationSummary
     public let snapshotSequences: [UInt64]
+    /// The snapshot `messages` and `feedback` come from; nil for a list-only conversation.
+    public let snapshotSequence: UInt64?
+    /// True for an explicitly requested snapshot: `summary`'s title, update time, message count and
+    /// absence, and `claims`, hold only what was observed at or before that record.
+    public let isFrozen: Bool
     public let messages: [DetailMessage]
     public let claims: [ModelClaim]
     public let feedback: [ArchivedFeedback]
 
     public init(
         summary: ConversationSummary, snapshotSequences: [UInt64], messages: [DetailMessage], claims: [ModelClaim],
-        feedback: [ArchivedFeedback]
+        feedback: [ArchivedFeedback], snapshotSequence: UInt64? = nil, isFrozen: Bool = false
     ) {
         self.summary = summary
         self.snapshotSequences = snapshotSequences
+        self.snapshotSequence = snapshotSequence ?? summary.latestSnapshotSequence
+        self.isFrozen = isFrozen
         self.messages = messages
         self.claims = claims
         self.feedback = feedback
@@ -171,6 +178,12 @@ public final class ArchiveIndex: Sendable {
         try Self.migrator.migrate(pool)
         self.pool = pool
         for suffix in ["", "-wal", "-shm"] { try Self.tighten(url.path + suffix, to: 0o600, directory: false) }
+    }
+
+    public enum QueryError: Error, Equatable, Sendable {
+        /// The sequence is not one of the conversation's snapshots (it may belong to another
+        /// conversation, not exist, or be beyond SQLite's integer range).
+        case snapshotNotInConversation(UInt64)
     }
 
     public enum ReadOnlyOpenError: Error, Equatable {
@@ -723,16 +736,26 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// One conversation. `snapshot` nil is the live view: the latest snapshot's messages with what is
+    /// known about the conversation now (current title, every model claim, absence). An explicit
+    /// `snapshot` is a frozen view of that record: its own title, update time and message count, and
+    /// only the claims observed at or before it, so later syncs never change it. A sequence that is
+    /// not one of this conversation's snapshots throws `QueryError.snapshotNotInConversation`.
     public func conversation(account: AccountID, remoteID: String, snapshot: UInt64? = nil) throws -> ConversationDetail? {
-        try pool.read { db in
+        let accountID = account.rawValue.uuidString
+        return try pool.read { db in
             let rows = try Row.fetchAll(
                 db, sql: Self.summarySelect + " WHERE c.account_id = :account AND c.remote_id = :remote",
-                arguments: args(["account": account.rawValue.uuidString, "remote": remoteID]))
-            guard let summary = rows.compactMap(Self.summary(from:)).first else { return nil }
+                arguments: args(["account": accountID, "remote": remoteID]))
+            guard var summary = rows.compactMap(Self.summary(from:)).first else { return nil }
 
             let sequences = try UInt64.fetchAll(
                 db, sql: "SELECT seq FROM snapshots WHERE account_id = :account AND remote_id = :remote ORDER BY seq",
-                arguments: args(["account": account.rawValue.uuidString, "remote": remoteID]))
+                arguments: args(["account": accountID, "remote": remoteID]))
+            // Checked before any query uses it: messages, feedback and raw evidence are keyed by
+            // account and sequence only, so a foreign sequence would load another conversation's.
+            if let snapshot, !sequences.contains(snapshot) { throw QueryError.snapshotNotInConversation(snapshot) }
+            if let snapshot { summary = try Self.frozen(summary, db, accountID: accountID, seq: snapshot) }
             let target = snapshot ?? summary.latestSnapshotSequence
             var messages: [DetailMessage] = []
             if let target {
@@ -744,7 +767,7 @@ public final class ArchiveIndex: Sendable {
                         WHERE account_id = :account AND snapshot_seq = :seq
                         ORDER BY ordinal
                         """,
-                    arguments: args(["account": account.rawValue.uuidString, "seq": Int64(target)]))
+                    arguments: args(["account": accountID, "seq": Int64(target)]))
                 for row in messageRows {
                     let messageID: String = row["remote_id"]
                     messages.append(
@@ -753,31 +776,35 @@ public final class ArchiveIndex: Sendable {
                             role: row["role"],
                             status: row["status"],
                             lane: row["lane"],
-                            parentIDs: try Self.parents(db, accountID: account.rawValue.uuidString, seq: target, messageID: messageID),
+                            parentIDs: try Self.parents(db, accountID: accountID, seq: target, messageID: messageID),
                             modelRemoteID: row["model_remote_id"],
                             createdAt: row["created_at"],
-                            blocks: try Self.blocks(db, accountID: account.rawValue.uuidString, seq: target, messageID: messageID),
-                            attachments: try Self.attachments(db, accountID: account.rawValue.uuidString, seq: target, messageID: messageID)))
+                            blocks: try Self.blocks(db, accountID: accountID, seq: target, messageID: messageID),
+                            attachments: try Self.attachments(db, accountID: accountID, seq: target, messageID: messageID)))
                 }
             }
 
-            let claimRows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT subject, subject_id, role, model_id, display_name, organization, provider, source
-                    FROM model_claims
-                    WHERE account_id = :account AND conversation_id = :remote
-                    ORDER BY seq, subject, subject_id, role, source, model_id
-                    """,
-                arguments: args(["account": account.rawValue.uuidString, "remote": remoteID]))
+            var claimArguments = ["account": accountID, "remote": remoteID] as [String: Any]
+            var claimSQL = """
+                SELECT seq, subject, subject_id, role, model_id, display_name, organization, provider, source
+                FROM model_claims
+                WHERE account_id = :account AND conversation_id = :remote
+                """
+            if let snapshot {
+                claimSQL += " AND seq <= :through"
+                claimArguments["through"] = Int64(snapshot)
+            }
+            claimSQL += " ORDER BY seq, subject, subject_id, role, source, model_id"
+            let claimRows = try Row.fetchAll(db, sql: claimSQL, arguments: args(claimArguments))
             let claims = claimRows.compactMap { row -> ModelClaim? in
                 // Subjects are an open set: a kind written by a newer decoder is returned, not dropped.
                 let subject = ModelClaim.Subject(rawValue: row["subject"])
                 let role: String = row["role"]
+                let seq: Int64 = row["seq"]
                 return ModelClaim(
                     subject: subject, subjectID: row["subject_id"], role: role.isEmpty ? nil : role,
                     modelID: row["model_id"], displayName: row["display_name"], organization: row["organization"],
-                    provider: row["provider"], source: row["source"])
+                    provider: row["provider"], source: row["source"], recordSequence: UInt64(exactly: seq))
             }
 
             var feedback: [ArchivedFeedback] = []
@@ -788,7 +815,7 @@ public final class ArchiveIndex: Sendable {
                         SELECT remote_id, value, message_a, message_b FROM feedback
                         WHERE account_id = :account AND snapshot_seq = :seq ORDER BY remote_id
                         """,
-                    arguments: args(["account": account.rawValue.uuidString, "seq": Int64(target)]))
+                    arguments: args(["account": accountID, "seq": Int64(target)]))
                 feedback = feedbackRows.map {
                     ArchivedFeedback(
                         remoteID: $0["remote_id"], value: $0["value"], messageA: $0["message_a"],
@@ -797,8 +824,28 @@ public final class ArchiveIndex: Sendable {
             }
 
             return ConversationDetail(
-                summary: summary, snapshotSequences: sequences, messages: messages, claims: claims, feedback: feedback)
+                summary: summary, snapshotSequences: sequences, messages: messages, claims: claims, feedback: feedback,
+                snapshotSequence: target, isFrozen: snapshot != nil)
         }
+    }
+
+    /// `summary` as observed in snapshot `seq`: that record's title, update time and message count.
+    /// Mode, modality and kind stay the conversation's. Not absent: a snapshot is itself a presence
+    /// observation, and absence is only ever recorded after the last one. `updatedOrder` is nil
+    /// because the index keeps the parsed update instant per conversation, not per snapshot.
+    private static func frozen(_ summary: ConversationSummary, _ db: Database, accountID: String, seq: UInt64) throws
+        -> ConversationSummary
+    {
+        guard
+            let row = try Row.fetchOne(
+                db, sql: "SELECT title, updated_at, message_count FROM snapshots WHERE account_id = ? AND seq = ?",
+                arguments: [accountID, Int64(seq)])
+        else { return summary }
+        return ConversationSummary(
+            account: summary.account, remoteID: summary.remoteID, kind: summary.kind, title: row["title"],
+            mode: summary.mode, modality: summary.modality, updatedAt: row["updated_at"],
+            snapshotCount: summary.snapshotCount, latestSnapshotSequence: summary.latestSnapshotSequence,
+            messageCount: row["message_count"], isAbsent: false, updatedOrder: nil)
     }
 
     public func search(
@@ -839,12 +886,14 @@ public final class ArchiveIndex: Sendable {
 
     /// Where a snapshot's raw evidence lives in the account journal.
     public func snapshotLocation(account: AccountID, sequence: UInt64) throws -> RecordRef? {
-        try pool.read { db in
+        // Beyond SQLite's integer range no snapshot can exist; never trap on the conversion.
+        guard let stored = Int64(exactly: sequence) else { return nil }
+        return try pool.read { db in
             guard
                 let row = try Row.fetchOne(
                     db,
                     sql: "SELECT segment, record_offset, record_length FROM snapshots WHERE account_id = ? AND seq = ?",
-                    arguments: [account.rawValue.uuidString, Int64(sequence)])
+                    arguments: [account.rawValue.uuidString, stored])
             else { return nil }
             return RecordRef(
                 account: account, sequence: sequence, segment: row["segment"], offset: row["record_offset"],

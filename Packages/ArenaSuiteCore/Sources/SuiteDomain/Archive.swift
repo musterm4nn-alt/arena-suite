@@ -145,10 +145,12 @@ public struct ModelClaim: Hashable, Sendable {
     public var provider: String?
     /// e.g. `history_list`, `detail_revealed`, `message_model_id`, `pairwise_feedback`.
     public var source: String
+    /// Journal sequence of the record the claim was observed in. Set by the index; nil while decoding.
+    public var recordSequence: UInt64?
 
     public init(
         subject: Subject, subjectID: String, role: String?, modelID: String, displayName: String? = nil,
-        organization: String? = nil, provider: String? = nil, source: String
+        organization: String? = nil, provider: String? = nil, source: String, recordSequence: UInt64? = nil
     ) {
         self.subject = subject
         self.subjectID = subjectID
@@ -158,6 +160,7 @@ public struct ModelClaim: Hashable, Sendable {
         self.organization = organization
         self.provider = provider
         self.source = source
+        self.recordSequence = recordSequence
     }
 }
 

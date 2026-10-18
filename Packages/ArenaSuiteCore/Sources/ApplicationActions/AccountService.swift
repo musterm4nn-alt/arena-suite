@@ -50,6 +50,9 @@ public enum AccountError: Error, Equatable, Sendable {
     case busy
     case signIn(SignInFailure)
     case registryUnavailable
+    /// Removing the account could not delete its saved session. The account was kept, so the
+    /// removal can be retried; its in-memory session may already be gone.
+    case sessionDeletionFailed
 }
 
 /// What views and future MCP/CLI surfaces see. No credentials, no identity claim values.
@@ -159,12 +162,13 @@ public actor AccountService {
             await sessions.discard(account: id)
             throw AccountError.signIn((error as? SignInFailure) ?? .unreachable)
         }
-        // The account may have been removed while signing in.
-        guard let index = records.firstIndex(where: { $0.id == id }) else {
+        // Records are looked up by ID after every suspension, never by a position kept across one:
+        // other accounts may be added or removed meanwhile, which shifts positions.
+        guard let record = records.first(where: { $0.id == id }) else {
             await sessions.discard(account: id)
             throw AccountError.unknownAccount
         }
-        guard records[index].principal == principal else {
+        guard record.principal == principal else {
             await sessions.discard(account: id)
             throw AccountError.principalChanged
         }
@@ -174,12 +178,17 @@ public actor AccountService {
             await sessions.discard(account: id)
             throw AccountError.signIn(.sessionStorageFailed)
         }
+        // `busy` keeps this account from being removed, but check rather than assume.
+        guard let index = records.firstIndex(where: { $0.id == id }), records[index].principal == principal else {
+            try? await sessions.forget(account: id)
+            throw AccountError.unknownAccount
+        }
         var updated = records
         updated[index].credentialGeneration += 1
         do { try registry.save(updated) } catch { throw AccountError.registryUnavailable }
         records = updated
         states[id] = .signedIn
-        return summary(records[index])
+        return summary(updated[index])
     }
 
     /// Restores every account's saved session concurrently (one request in flight per account).
@@ -216,6 +225,17 @@ public actor AccountService {
         return state
     }
 
+    /// Applies what a sync job learned about the account's session (`SyncManifest.sessionState`).
+    /// Ignored if the account was signed in again since the job started (another credential
+    /// generation), if an operation on it is running (its result is newer), or if it is no longer
+    /// signed in.
+    public func noteSessionState(_ id: AccountID, generation: UInt64, state: AccountAuthState) {
+        guard let record = records.first(where: { $0.id == id }), record.credentialGeneration == generation,
+            !busy.contains(id), states[id] == .signedIn, state != .signedIn
+        else { return }
+        states[id] = state
+    }
+
     public func rename(_ id: AccountID, to name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let index = records.firstIndex(where: { $0.id == id }), !trimmed.isEmpty else {
@@ -228,13 +248,26 @@ public actor AccountService {
     }
 
     /// Deletes saved session material, then the registry entry. Local archive data is not deleted.
+    /// If the saved session cannot be deleted, the account is kept (so the removal can be retried
+    /// and the credentials stay reachable) and `sessionDeletionFailed` is thrown.
     public func remove(_ id: AccountID) async throws {
         guard records.contains(where: { $0.id == id }) else { throw AccountError.unknownAccount }
         guard busy.insert(id).inserted else { throw AccountError.busy }
         defer { busy.remove(id) }
-        try? await sessions.forget(account: id)
+        do {
+            try await sessions.forget(account: id)
+        } catch {
+            // The in-memory session may be gone already, so nothing may sync with it; a new sign-in
+            // or the next launch's restore brings the account back.
+            if records.contains(where: { $0.id == id }) { states[id] = .needsSignIn }
+            throw AccountError.sessionDeletionFailed
+        }
         let remaining = records.filter { $0.id != id }
-        do { try registry.save(remaining) } catch { throw AccountError.registryUnavailable }
+        do { try registry.save(remaining) } catch {
+            // The saved session is gone, so the account, still listed, must not sync until signed in.
+            if records.contains(where: { $0.id == id }) { states[id] = .needsSignIn }
+            throw AccountError.registryUnavailable
+        }
         records = remaining
         states[id] = nil
     }

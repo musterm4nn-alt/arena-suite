@@ -70,6 +70,20 @@ struct AccountsView: View {
             }
         }
         .task { await model.start() }
+        .onAppear(perform: openPendingSheet)
+        .onChange(of: model.pendingSignIn) { openPendingSheet() }
+        .onChange(of: model.pendingAdd) { openPendingSheet() }
+    }
+
+    /// Another view asked for the Add Account form or an account's sign-in form.
+    private func openPendingSheet() {
+        if model.pendingAdd {
+            model.pendingAdd = false
+            sheet = .add
+        } else if let id = model.pendingSignIn {
+            model.pendingSignIn = nil
+            if let account = model.accounts.first(where: { $0.id == id }) { sheet = .signIn(account) }
+        }
     }
 
     @ViewBuilder private func row(_ account: AccountSummary) -> some View {
@@ -146,9 +160,12 @@ struct AccountsView: View {
             + (manifest.detailsFailed > 0 ? ", \(manifest.detailsFailed) failed" : "")
         switch manifest.outcome {
         case .completed: return "Last sync complete (observed pagination): " + counts
-        case .partial: return "Last sync stopped (\(manifest.reason ?? "unknown")); resumable. " + counts
+        case .partial: return "Last sync not complete (\(manifest.reason ?? "unknown")); syncing again continues. " + counts
         case .blocked: return "Last sync blocked by Arena (\(manifest.reason ?? "")). Nothing retried."
-        case .needsSignIn: return "Last sync needs a new sign-in."
+        case .needsSignIn:
+            return manifest.sessionState == .quarantined
+                ? "Last sync stopped: Arena identified a different account, so the session was discarded. Sign in again."
+                : "Last sync stopped: Arena no longer accepts the session. Sign in again."
         case .sessionReplaced: return "Last sync stopped: account signed in again during sync."
         case .cancelled: return "Last sync stopped by you; resumable. " + counts
         case .storageFailed: return "Last sync stopped: the archive could not be written."

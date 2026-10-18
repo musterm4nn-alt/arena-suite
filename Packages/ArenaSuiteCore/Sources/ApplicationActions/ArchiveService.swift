@@ -17,11 +17,15 @@ public actor ArchiveService {
     private let journals: JournalStore
     /// nil in read-only mode: nothing can be projected, rebuilt or replayed.
     private let decoder: (any ArchiveDecoding)?
-    private let accounts: @Sendable () -> [AccountID]
+    /// Accounts to replay besides every journal on disk (registered accounts, for instance).
+    private let accounts: @Sendable () throws -> [AccountID]
 
+    /// A rebuild replays every journal on disk, including those of removed accounts (removal keeps
+    /// the journal), plus `accounts`. If either cannot be read, the rebuild fails before the index
+    /// is reset.
     public init(
         index: ArchiveIndex, journals: JournalStore, decoder: any ArchiveDecoding,
-        accounts: @escaping @Sendable () -> [AccountID]
+        accounts: @escaping @Sendable () throws -> [AccountID]
     ) {
         self.index = index
         self.journals = journals
@@ -61,15 +65,19 @@ public actor ArchiveService {
         _ = try await rebuildAll()
     }
 
-    public func rebuild(accounts: [AccountID]) async throws {
-        _ = try await rebuildAll(accounts: accounts)
+    /// Every journal on disk plus `accounts`, sorted. Throws rather than returning a partial list.
+    private func replayInventory() throws -> [AccountID] {
+        Set(try journals.journalAccounts()).union(try accounts()).sorted { $0.rawValue.uuidString < $1.rawValue.uuidString }
     }
 
-    private func rebuildAll(accounts requested: [AccountID]? = nil) async throws -> [AccountID: Int] {
+    /// Always every journal: a rebuild of some accounts would reset the others and leave them empty.
+    private func rebuildAll() async throws -> [AccountID: Int] {
         _ = try requireDecoder()
+        // Read before the reset: a failure must leave the existing index in place.
+        let inventory = try replayInventory()
         try index.reset()
         var counts: [AccountID: Int] = [:]
-        for account in requested ?? accounts() {
+        for account in inventory {
             counts[account] = try await applyRecords(account: account)
         }
         return counts
@@ -145,7 +153,7 @@ public actor ArchiveService {
     public func checkAgainstJournal(scratch: URL) async throws -> IndexCheck {
         let decoder = try requireDecoder()
         let live = try index.digestAndCheckpoints()
-        let known = Set(accounts()).union(live.checkpoints.keys)
+        let known = Set(try replayInventory()).union(live.checkpoints.keys)
         let replayed = try await Self.replay(
             journals: journals, accounts: known.sorted { $0.rawValue.uuidString < $1.rawValue.uuidString },
             limits: live.checkpoints, decoder: decoder, scratch: scratch)

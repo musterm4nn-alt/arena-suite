@@ -253,12 +253,15 @@ func rejectionsStopTheJobCleanly(_ status: Int, _ outcome: SyncOutcome) async th
 }
 
 @Test(arguments: [
-    (HTTPExchange(status: 401, body: Data()), SyncOutcome.needsSignIn, false),
-    (HTTPExchange(status: 403, body: Data()), SyncOutcome.blocked, true),
-    (HTTPExchange(status: 200, headers: ["Content-Type": "text/html"], body: Data("<html>".utf8)), SyncOutcome.blocked, true),
-    (HTTPExchange(status: 503, body: Data()), SyncOutcome.partial, true),
+    (HTTPExchange(status: 401, body: Data()), SyncOutcome.needsSignIn, false, AccountAuthState?.some(.needsSignIn)),
+    (HTTPExchange(status: 403, body: Data()), SyncOutcome.blocked, true, .blocked),
+    (HTTPExchange(status: 200, headers: ["Content-Type": "text/html"], body: Data("<html>".utf8)), SyncOutcome.blocked, true, .blocked),
+    (HTTPExchange(status: 503, body: Data()), SyncOutcome.partial, true, nil),
+    (me("user-B", "principal-B"), SyncOutcome.needsSignIn, false, .quarantined),
 ])
-func identityOutcomesAtJobStart(_ reply: HTTPExchange, _ outcome: SyncOutcome, _ keepsSavedSession: Bool) async throws {
+func identityOutcomesAtJobStart(
+    _ reply: HTTPExchange, _ outcome: SyncOutcome, _ keepsSavedSession: Bool, _ sessionState: AccountAuthState?
+) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("sync-\(UUID().uuidString)")
     let journal = try JournalWriter.open(at: root, options: JournalOptions(durability: .fsync))
     let vault = MemoryVault()
@@ -273,6 +276,7 @@ func identityOutcomesAtJobStart(_ reply: HTTPExchange, _ outcome: SyncOutcome, _
         account: record.context, principal: principalA, journal: journal, journalRoot: root, options: .testing(),
         progress: { _ in })
     #expect(manifest.outcome == outcome)
+    #expect(manifest.sessionState == sessionState, "the account's state follows (review 2026-10-18, finding 6)")
     #expect(transport.requestCount == 2, "nothing but identity was requested")
     #expect((vault[account] != nil) == keepsSavedSession)
     let kinds = try JournalReader(root: root).readAll().map(\.envelope.kind)
@@ -392,4 +396,82 @@ func identityOutcomesAtJobStart(_ reply: HTTPExchange, _ outcome: SyncOutcome, _
     }
     #expect(SyncJob.isNewestFirst(entries))
     #expect(!SyncJob.isNewestFirst(entries.reversed()))
+}
+
+// MARK: - Review 2026-10-18, finding 5
+
+/// A list page with explicit pagination and completeness fields (nil omits the key).
+private func rawListReply(
+    _ entries: [(String, String, String?)], hasMore: Bool?, cursor: String? = nil, partial: Bool? = false,
+    failedSources: [String] = []
+) -> HTTPExchange {
+    let items = entries.map { id, type, updated in
+        #"{"id":"\#(id)","type":"\#(type)""# + (updated.map { #","updatedAt":"\#($0)""# } ?? "") + "}"
+    }.joined(separator: ",")
+    var pagination = [#""limit":20"#, #""cursor":\#(cursor.map { "\"\($0)\"" } ?? "null")"#]
+    if let hasMore { pagination.append(#""hasMore":\#(hasMore)"#) }
+    var top = [#""entries":[\#(items)]"#, #""pagination":{\#(pagination.joined(separator: ","))}"#]
+    if let partial { top.append(#""partial":\#(partial)"#) }
+    top.append(#""failedSources":[\#(failedSources.map { "\"\($0)\"" }.joined(separator: ","))]"#)
+    return HTTPExchange(status: 200, headers: ["Content-Type": "application/json"], body: Data("{\(top.joined(separator: ","))}".utf8))
+}
+
+@Test(arguments: [
+    ("partial and failed source on an empty page", rawListReply([], hasMore: false, partial: true, failedSources: ["arena"])),
+    ("failed source only", rawListReply([], hasMore: false, failedSources: ["arena"])),
+    ("partial absent", rawListReply([], hasMore: false, partial: nil)),
+    ("hasMore absent", rawListReply([], hasMore: nil)),
+])
+func listingThatIsNotProvenCompleteIsNotCompleted(_ name: String, _ page: HTTPExchange) async throws {
+    let h = try await Harness([page])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .partial, "\(name)")
+    #expect(manifest.reason?.hasPrefix("listing not proven complete") == true, "\(name)")
+    #expect(h.records.last?.envelope.kind == JournalKind.jobFinished)
+}
+
+@Test func aPartialUnchangedPageDoesNotEndTheListingEarly() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: true, cursor: "c1"), listReply(page2, hasMore: false, cursor: nil),
+        detailReply("e1"), detailReply("e2"), detailReply("e3"),
+    ])
+    #expect(await h.run().outcome == .completed)
+    // Same entries, but the server says the page is partial: entries could be missing from it.
+    h.script([
+        rawListReply(page1, hasMore: true, cursor: "c1", partial: true), listReply(page2, hasMore: false, cursor: nil),
+    ])
+    let manifest = await h.run()
+    #expect(manifest.pagesListed == 2, "listing went on past the partial page")
+    #expect(manifest.listingEnd?.hasPrefix("caught up: page 2") == true, "the complete page 2 may end it")
+    #expect(manifest.outcome == .partial && manifest.reason?.contains("page 1: partial=true") == true)
+}
+
+@Test func aResumedJobKeepsItsRecordedPagesIncompleteness() async throws {
+    let h = try await Harness([listReply(page2, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2"), detailReply("e3")])
+    let crashed = UUID()
+    _ = try h.journal.append(
+        JournalDraft(kind: JournalKind.jobStarted, accountID: h.account.rawValue, jobID: crashed, metadata: ["job_kind": .string("history_sync")]))
+    _ = try h.journal.append(
+        JournalDraft(
+            kind: "exchange", payload: rawListReply(page1, hasMore: true, cursor: "c1", partial: true).body,
+            accountID: h.account.rawValue, jobID: crashed,
+            metadata: ["role": .string("list"), "status": .integer(200), "transfer_end": .string("complete")]))
+    let manifest = await h.run()
+    #expect(manifest.resumedJobID == crashed && manifest.detailsFetched == 3)
+    #expect(manifest.outcome == .partial)
+    #expect(manifest.reason?.contains("page 1: partial=true, failedSources=0 (resumed)") == true)
+}
+
+@Test func aResumedJobWhoseLastPageHadNoHasMoreIsNotCompleted() async throws {
+    let h = try await Harness([detailReply("e1"), detailReply("e2")])
+    let crashed = UUID()
+    _ = try h.journal.append(
+        JournalDraft(kind: JournalKind.jobStarted, accountID: h.account.rawValue, jobID: crashed, metadata: ["job_kind": .string("history_sync")]))
+    _ = try h.journal.append(
+        JournalDraft(
+            kind: "exchange", payload: rawListReply(page1, hasMore: nil).body, accountID: h.account.rawValue, jobID: crashed,
+            metadata: ["role": .string("list"), "status": .integer(200), "transfer_end": .string("complete")]))
+    let manifest = await h.run()
+    #expect(manifest.listingEnd == "hasMore absent (resumed)")
+    #expect(manifest.outcome == .partial)
 }

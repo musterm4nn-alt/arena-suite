@@ -44,7 +44,9 @@ struct MainView: View {
             Group {
                 switch destination {
                 case .archive:
-                    ArchivePane(archive: archive, accounts: accounts, siteName: profiles.siteName, showingInspector: $showingInspector)
+                    ArchivePane(
+                        archive: archive, accounts: accounts, siteName: profiles.siteName, showingInspector: $showingInspector,
+                        destination: $destination)
                 case .site(let account):
                     ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite).id(account)
                 case .accounts:

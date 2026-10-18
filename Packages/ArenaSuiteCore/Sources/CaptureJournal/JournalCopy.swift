@@ -65,17 +65,28 @@ public struct CopiedSegment: Sendable, Equatable, Codable {
 
 /// Copies a journal's acknowledged records to another directory without taking the writer's lock
 /// (plan v3 §13, Phase 7 backup). Sealed segments are copied byte for byte and must match their seal
-/// manifest; the final unsealed segment is copied up to its last complete record, so a record being
-/// appended concurrently is never copied half-written. The destination is an ordinary journal: it
-/// opens, verifies and replays like the source. Never modifies the source.
+/// manifest. The final unsealed segment is copied up to its last complete record when, and only when,
+/// what follows is one incomplete record: the only shape an append still running, or one interrupted
+/// by a crash, can leave (the writer appends a record's parts in order). Any other damage (digest,
+/// framing, envelope, sequence, or complete records after an incomplete one) is an error, so a copy
+/// never silently drops acknowledged records. The destination is an ordinary journal: it opens,
+/// verifies and replays like the source. Never modifies the source.
 public enum JournalCopy {
-    public static func copy(from source: URL, to destination: URL) throws -> [CopiedSegment] {
+    public struct Result: Sendable, Equatable {
+        public let segments: [CopiedSegment]
+        /// The incomplete record left out at the end of the final segment, if there was one.
+        public let incompleteTail: JournalLocation?
+    }
+
+    /// `allowingIncompleteTail` false: the source must be intact, without even an incomplete final record.
+    public static func copy(from source: URL, to destination: URL, allowingIncompleteTail: Bool = true) throws -> Result {
         let from = JournalLayout(root: source)
         let to = JournalLayout(root: destination)
         let numbers = try from.segmentNumbers()
         try FileManager.default.createDirectory(
             at: to.segments, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var copied: [CopiedSegment] = []
+        var tail: JournalLocation?
         var expected: UInt64 = 1
         for (index, number) in numbers.enumerated() {
             guard number == index + 1 else { throw JournalError.segmentGap(expected: index + 1, found: number) }
@@ -100,8 +111,17 @@ public enum JournalCopy {
                 guard isLast else {
                     throw JournalError.corruptSealedSegment(segment: number, reason: "non-final segment is not sealed")
                 }
-                if let problem = scan.problem, problem == .unsupportedMagic {
-                    throw JournalError.unsupportedFormat(segment: number, offset: scan.validEnd)
+                if let problem = scan.problem {
+                    if problem == .unsupportedMagic { throw JournalError.unsupportedFormat(segment: number, offset: scan.validEnd) }
+                    guard problem == .truncated, allowingIncompleteTail else {
+                        throw JournalError.damagedRecord(segment: number, offset: scan.validEnd, reason: problem.description)
+                    }
+                    if let later = SegmentScanner.firstCompleteRecord(in: data, after: scan.validEnd) {
+                        throw JournalError.damagedRecord(
+                            segment: number, offset: scan.validEnd,
+                            reason: "incomplete record followed by a complete one at offset \(later)")
+                    }
+                    tail = JournalLocation(segment: number, offset: scan.validEnd, length: data.count - scan.validEnd)
                 }
                 bytes = data.prefix(scan.validEnd)
             }
@@ -117,7 +137,7 @@ public enum JournalCopy {
                     sealed: sealed))
             if let last = scan.records.last { expected = last.envelope.sequence + 1 }
         }
-        return copied
+        return Result(segments: copied, incompleteTail: tail)
     }
 
     /// SHA-256 (lowercase hex) of a file's contents.

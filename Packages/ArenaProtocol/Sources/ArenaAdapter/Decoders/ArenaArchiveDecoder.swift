@@ -11,7 +11,9 @@ import SuiteDomain
 // `metadata` subtrees (anti-abuse telemetry, plan v3 §12) are never projected nor reported.
 
 public struct ArenaArchiveDecoder: ArchiveDecoding {
-    public let version = "arena-decoder/1"
+    /// /2: structured payloads (tool args and results, sources, reasoning, opaque blocks) mask
+    /// `metadata` and drop `providerOptions` at any depth. A version change rebuilds the index.
+    public let version = "arena-decoder/2"
 
     public init() {}
 
@@ -284,10 +286,9 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
                         kind: .toolResult, toolName: f.string(part, "toolName", path), toolCallID: f.string(part, "toolCallId", path),
                         payload: canonicalJSON(part["result"]), pointer: pointer))
             default:
-                // `providerOptions` (encrypted reasoning) is never projected, even inside opaque blocks.
-                var visible = part
-                visible["providerOptions"] = nil
-                blocks.append(ArchivedBlock(kind: .opaque, payload: canonicalJSON(visible), pointer: pointer))
+                // `providerOptions` (encrypted reasoning) is never projected, even inside opaque
+                // blocks: `canonicalJSON` drops it at any depth.
+                blocks.append(ArchivedBlock(kind: .opaque, payload: canonicalJSON(part), pointer: pointer))
             }
         }
         return blocks
@@ -374,13 +375,34 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
 
     // MARK: Canonical JSON
 
+    /// Serializes a structured value for the index. At any depth, the value of every key spelled
+    /// `metadata` (any letter case) becomes `[omitted: telemetry]`, as in the masked raw export, and
+    /// every `providerOptions` (encrypted reasoning) is dropped: projected payloads reach normalized
+    /// exports, search and MCP, so they must never carry what the top-level message filter excludes.
+    /// The journal keeps the exact bytes.
     private static func canonicalJSON(_ value: Any?) -> String? {
         guard let value else { return nil }
         guard
             let data = try? JSONSerialization.data(
-                withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed])
+                withJSONObject: withoutExcludedSubtrees(value), options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed])
         else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func withoutExcludedSubtrees(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            var out: [String: Any] = [:]
+            for (key, child) in object {
+                switch key.lowercased() {
+                case "metadata": out[key] = child is NSNull ? child : "[omitted: telemetry]"
+                case "provideroptions": continue
+                default: out[key] = withoutExcludedSubtrees(child)
+                }
+            }
+            return out
+        }
+        if let array = value as? [Any] { return array.map(withoutExcludedSubtrees) }
+        return value
     }
 }
 

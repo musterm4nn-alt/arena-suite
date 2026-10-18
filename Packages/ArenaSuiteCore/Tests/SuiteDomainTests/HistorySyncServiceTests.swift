@@ -12,12 +12,17 @@ private actor SlowEngine: HistorySyncing {
     func release() { gate?.resume(); gate = nil }
     var isWaiting: Bool { waiting }
 
+    private var result: (SyncOutcome, AccountAuthState?) = (.completed, nil)
+    func setResult(_ outcome: SyncOutcome, _ state: AccountAuthState?) { result = (outcome, state) }
+
     nonisolated func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
         options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
     ) async -> SyncManifest {
         await record(account.accountID, principal)
-        return SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: .completed)
+        var manifest = SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: await result.0)
+        manifest.sessionState = await result.1
+        return manifest
     }
 
     private func record(_ id: AccountID, _ principal: PrincipalIdentity) async {
@@ -91,4 +96,36 @@ private func waitUntilWaiting(_ engine: SlowEngine) async {
     _ = try await job.value
     try await service.beginMaintenance()
     await service.endMaintenance()
+}
+
+// Review 2026-10-18, finding 6.
+
+@Test(arguments: [
+    (SyncOutcome.needsSignIn, AccountAuthState.needsSignIn), (.needsSignIn, .quarantined), (.blocked, .blocked),
+])
+func aRejectedSyncUpdatesTheAccountsState(_ outcome: SyncOutcome, _ state: AccountAuthState) async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    let b = try await accounts.addAccount(email: "b", password: "p", displayName: nil)
+    await engine.setResult(outcome, state)
+    let job = Task { try await service.sync(a.id) }
+    await waitUntilWaiting(engine)
+    await engine.release()
+    #expect(try await job.value.outcome == outcome)
+    let states = Dictionary(uniqueKeysWithValues: await accounts.accounts().map { ($0.id, $0.state) })
+    #expect(states == [a.id: state, b.id: .signedIn], "only the synced account changed")
+    await #expect(throws: AccountError.notSignedIn(state)) { _ = try await service.sync(a.id) }
+}
+
+@Test func anOlderJobsRejectionNeverDowngradesANewerSignIn() async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    await engine.setResult(.needsSignIn, .needsSignIn)
+    let job = Task { try await service.sync(a.id) }
+    await waitUntilWaiting(engine)
+    // Signed in again while the job (started with generation 1) still runs.
+    #expect(try await accounts.signInAgain(a.id, email: "a", password: "p").credentialGeneration == 2)
+    await engine.release()
+    #expect(try await job.value.outcome == .needsSignIn)
+    #expect(await accounts.accounts().first?.state == .signedIn)
 }

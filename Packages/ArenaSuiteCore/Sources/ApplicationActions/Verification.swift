@@ -17,7 +17,12 @@ public struct VerificationReport: Sendable, Equatable {
     /// nil if the index is unavailable or the replay failed (`indexProblem` says why).
     public let index: IndexCheck?
     public let indexProblem: String?
-    public var isClean: Bool { journals.allSatisfy(\.isClean) && index?.matches == true && indexProblem == nil }
+    /// Set when the list of accounts could not be read: then only the journals found on disk were
+    /// checked, and the report is not clean.
+    public var inventoryProblem: String? = nil
+    public var isClean: Bool {
+        inventoryProblem == nil && journals.allSatisfy(\.isClean) && index?.matches == true && indexProblem == nil
+    }
 }
 
 /// The verify job (plan v3 §13, Phase 7). Read-only: checks every account's journal (record
@@ -27,11 +32,12 @@ public struct VerificationReport: Sendable, Equatable {
 public struct VerificationService: Sendable {
     private let archive: ArchiveService?
     private let journals: JournalStore
-    private let accounts: @Sendable () -> [AccountID]
+    private let accounts: @Sendable () throws -> [AccountID]
     private let scratch: URL
 
     public init(
-        archive: ArchiveService?, journals: JournalStore, accounts: @escaping @Sendable () -> [AccountID], scratch: URL
+        archive: ArchiveService?, journals: JournalStore, accounts: @escaping @Sendable () throws -> [AccountID],
+        scratch: URL
     ) {
         self.archive = archive
         self.journals = journals
@@ -41,21 +47,33 @@ public struct VerificationService: Sendable {
 
     public func run() async -> VerificationReport {
         var checks: [JournalCheck] = []
-        for account in accounts() {
+        let inventory: [AccountID]
+        var inventoryProblem: String?
+        do {
+            inventory = try accounts()
+        } catch {
+            // Never a silently shorter list: check what is on disk and say the list was incomplete.
+            inventoryProblem = "The list of accounts could not be read (\(Self.describe(error)))."
+            inventory = journals.accountsOnDisk()
+        }
+        for account in inventory {
             checks.append(Self.checkJournal(account: account, root: journals.root(for: account)))
         }
         guard let archive else {
-            return VerificationReport(journals: checks, index: nil, indexProblem: "The archive index is unavailable.")
+            return VerificationReport(
+                journals: checks, index: nil, indexProblem: "The archive index is unavailable.",
+                inventoryProblem: inventoryProblem)
         }
         do {
             // A fresh folder per run, so concurrent runs never share a scratch index.
             let run = scratch.appendingPathComponent(UUID().uuidString, isDirectory: true)
             defer { rmdir(scratch.path) }  // only if empty; other runs may still be using it
             let check = try await archive.checkAgainstJournal(scratch: run)
-            return VerificationReport(journals: checks, index: check, indexProblem: nil)
+            return VerificationReport(journals: checks, index: check, indexProblem: nil, inventoryProblem: inventoryProblem)
         } catch {
             return VerificationReport(
-                journals: checks, index: nil, indexProblem: "The journal could not be replayed (\(Self.describe(error))).")
+                journals: checks, index: nil, indexProblem: "The journal could not be replayed (\(Self.describe(error))).",
+                inventoryProblem: inventoryProblem)
         }
     }
 

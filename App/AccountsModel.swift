@@ -14,6 +14,15 @@ final class AccountsModel {
     /// Why each account's last sync failed, kept per account: with several syncs running, one
     /// account's success must not erase another's failure.
     private(set) var syncErrors: [AccountID: String] = [:]
+    /// Accounts whose shown sync error was about the session: a sign-in or Verify that succeeds
+    /// resolves it.
+    private var sessionErrors: Set<AccountID> = []
+    /// When each account's last sync ended (this session).
+    private(set) var lastSyncAt: [AccountID: Date] = [:]
+    /// An account whose sign-in form the Accounts page should open (the sidebar's "Sign In…").
+    var pendingSignIn: AccountID?
+    /// The Accounts page should open the Add Account form (the home screen's "Add Account…").
+    var pendingAdd = false
     var message: String?
 
     private let service: AccountService
@@ -39,9 +48,14 @@ final class AccountsModel {
         do {
             let manifest = try await sync.sync(id)
             lastSync[id] = manifest
-            syncErrors[id] = nil
+            lastSyncAt[id] = Date()
+            // Failed outcomes are returned manifests, not thrown errors: keep them shown until this
+            // account syncs completely or the user dismisses them.
+            syncErrors[id] = Self.problem(manifest)
+            if manifest.sessionState != nil { sessionErrors.insert(id) } else { sessionErrors.remove(id) }
         } catch {
             syncErrors[id] = Self.describe(error)
+            if case .notSignedIn = error as? AccountError { sessionErrors.insert(id) } else { sessionErrors.remove(id) }
         }
         poll.cancel()
         syncing[id] = nil
@@ -55,6 +69,7 @@ final class AccountsModel {
     func dismissErrors() {
         message = nil
         syncErrors = [:]
+        sessionErrors = []
     }
 
     var isSyncing: Bool { !syncing.isEmpty }
@@ -109,14 +124,35 @@ final class AccountsModel {
     }
 
     func signInAgain(_ id: AccountID, email: String, password: String) async -> Bool {
-        await run(id) { try await $0.signInAgain(id, email: email, password: password) }
+        let done = await run(id) { try await $0.signInAgain(id, email: email, password: password) }
+        resolveSessionProblem(id)
+        return done
     }
 
-    func verify(_ id: AccountID) async { _ = await run(id) { try await $0.verify(id) } }
+    func verify(_ id: AccountID) async {
+        _ = await run(id) { try await $0.verify(id) }
+        resolveSessionProblem(id)
+    }
+
+    /// A sync that failed on the session is resolved once the account is signed in again.
+    private func resolveSessionProblem(_ id: AccountID) {
+        guard sessionErrors.contains(id), accounts.first(where: { $0.id == id })?.state == .signedIn else { return }
+        syncErrors[id] = nil
+        sessionErrors.remove(id)
+    }
+
+    /// What to keep showing about a finished sync, or nil when there is nothing to act on.
+    static func problem(_ manifest: SyncManifest) -> String? {
+        switch manifest.outcome {
+        case .completed, .cancelled: nil
+        case .partial, .blocked, .needsSignIn, .sessionReplaced, .storageFailed: AccountsView.describe(manifest)
+        }
+    }
 
     func remove(_ id: AccountID) async {
         if await run(id, { try await $0.remove(id) }) {
             syncErrors[id] = nil
+            sessionErrors.remove(id)
             await onAccountRemoved?(id)
         }
     }
@@ -182,8 +218,11 @@ final class AccountsModel {
         case .signIn(.unreachable): "Arena could not be reached. Nothing was saved."
         case .signIn(.sessionStorageFailed): "The session could not be saved to the Keychain. Nothing was added."
         case .registryUnavailable: "The account list could not be saved."
+        case .sessionDeletionFailed:
+            "The saved session could not be deleted from the Keychain, so the account was kept. Try removing it again."
         case .busy: "This account is busy. Try again in a moment."
-        case .notSignedIn, .unknownAccount, .none: "The action could not be completed."
+        case .notSignedIn: "This account is not signed in. Sign in or Verify it, then sync again."
+        case .unknownAccount, .none: "The action could not be completed."
         }
     }
 }

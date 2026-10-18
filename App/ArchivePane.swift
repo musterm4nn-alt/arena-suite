@@ -11,6 +11,7 @@ struct ArchivePane: View {
     let accounts: AccountsModel
     let siteName: String
     @Binding var showingInspector: Bool
+    @Binding var destination: MainDestination
     @State private var confirmExactRaw = false
 
     var body: some View {
@@ -137,13 +138,56 @@ struct ArchivePane: View {
         } else {
             VStack(spacing: 10) {
                 Text("Arena Suite").font(Theme.heading)
-                Text("\(archive.conversations.count) conversations archived").foregroundStyle(.secondary)
-                Text("Choose one in the sidebar, search with ⌘F, or open \(siteName) there.")
-                    .font(Theme.caption)
-                    .foregroundStyle(.tertiary)
+                firstStep
             }
             .multilineTextAlignment(.center)
             .padding(40)
+        }
+    }
+
+    /// The home screen's next step: add an account, sign it in, archive it, then browse.
+    @ViewBuilder private var firstStep: some View {
+        let needsSignIn = accounts.accounts.first { $0.state == .needsSignIn || $0.state == .quarantined }
+        let needsCheck = accounts.accounts.first { $0.state == .blocked || $0.state == .unreachable }
+        let scope = SidebarScope(accounts: accounts, archive: archive)
+        if accounts.loading && accounts.accounts.isEmpty {
+            Text("Checking saved sessions…").foregroundStyle(.secondary)
+        } else if accounts.accounts.isEmpty {
+            Text("Add your Arena account to archive its history on this Mac.").foregroundStyle(.secondary)
+            Button("Add Account…") {
+                accounts.pendingAdd = true
+                destination = .accounts
+            }
+            .buttonStyle(.arenaPill)
+        } else if archive.conversations.isEmpty, !scope.syncable.isEmpty {
+            Text("Nothing archived yet. Sync History copies your Arena history into the local archive.")
+                .foregroundStyle(.secondary)
+            Button(scope.syncing.isEmpty ? "Sync History" : "Syncing…") { scope.startSync() }
+                .buttonStyle(.arenaPill)
+                .disabled(!scope.syncing.isEmpty)
+        } else if archive.conversations.isEmpty, let account = needsSignIn {
+            Text("“\(account.displayName)” needs to sign in again before its history can be archived.")
+                .foregroundStyle(.secondary)
+            Button("Sign In…") {
+                accounts.pendingSignIn = account.id
+                destination = .accounts
+            }
+            .buttonStyle(.arenaPill)
+        } else if archive.conversations.isEmpty, let account = needsCheck {
+            Text(account.state == .blocked
+                ? "Arena refused “\(account.displayName)”. Verify checks the session again; nothing is retried until then."
+                : "Arena could not be reached for “\(account.displayName)”. Verify checks the session again.")
+                .foregroundStyle(.secondary)
+            Button(accounts.working.contains(account.id) ? "Verifying…" : "Verify") {
+                Task { await accounts.verify(account.id) }
+            }
+            .buttonStyle(.arenaPill)
+            .disabled(accounts.working.contains(account.id))
+        } else {
+            Text("\(archive.conversations.count) conversations archived").foregroundStyle(.secondary)
+            Text("Choose one in the sidebar, search with ⌘F, or open \(siteName) there.")
+                .font(Theme.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -241,7 +285,8 @@ private struct TranscriptView: View {
                         HStack(spacing: 8) {
                             if let lane = claim.role { LaneBadge(lane: lane) }
                             Text(claim.displayName ?? claim.modelID)
-                            Text(claim.source).foregroundStyle(.secondary)
+                            Text([claim.source, claim.recordSequence.map { "record \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

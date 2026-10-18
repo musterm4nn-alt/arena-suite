@@ -48,7 +48,10 @@ struct SidebarScope {
     var syncHelp: String {
         let target = chosen == nil ? "every signed-in account" : "this account"
         let last = members.compactMap { account in
-            accounts.lastSync[account.id].map { "\(account.displayName): \(AccountsView.describe($0))" }
+            accounts.lastSync[account.id].map { manifest in
+                let time = accounts.lastSyncAt[account.id].map { " (\($0.formatted(date: .omitted, time: .shortened)))" } ?? ""
+                return "\(account.displayName)\(time): \(AccountsView.describe(manifest))"
+            }
         }
         return (["Archive the Arena history of \(target) into the local archive."] + last).joined(separator: "\n")
     }
@@ -132,7 +135,7 @@ struct SidebarView: View {
             } else {
                 HistoryList(archive: archive, destination: $destination)
             }
-            SidebarStatus(accounts: accounts, archive: archive)
+            SidebarStatus(accounts: accounts, archive: archive, destination: $destination)
             Theme.border.frame(height: 1)
             AccountSwitcher(accounts: accounts, archive: archive, destination: $destination, compact: false)
             .padding(8)
@@ -386,6 +389,7 @@ private struct AccountSwitcher: View {
 private struct SidebarStatus: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
+    @Binding var destination: MainDestination
 
     var body: some View {
         let scope = SidebarScope(accounts: accounts, archive: archive)
@@ -408,10 +412,12 @@ private struct SidebarStatus: View {
                 if message != nil || !errors.isEmpty {
                     HStack(alignment: .top, spacing: 4) {
                         VStack(alignment: .leading, spacing: 4) {
-                            if let message { Text(message) }
-                            ForEach(errors) { Text("\($0.name): \($0.text)") }
+                            if let message { Text(message).foregroundStyle(.red) }
+                            ForEach(errors) { line in
+                                Text("\(line.name): \(line.text)").foregroundStyle(.red)
+                                recovery(line.id)
+                            }
                         }
-                        .foregroundStyle(.red)
                         .textSelection(.enabled)
                         Spacer(minLength: 0)
                         Button {
@@ -429,6 +435,29 @@ private struct SidebarStatus: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The next step for an account whose last sync failed: sign in when the session is gone,
+    /// check it again when Arena refused or could not be reached, otherwise sync again.
+    @ViewBuilder private func recovery(_ id: AccountID) -> some View {
+        if let account = accounts.accounts.first(where: { $0.id == id }), accounts.syncing[id] == nil,
+            !accounts.working.contains(id)
+        {
+            switch account.state {
+            case .needsSignIn, .quarantined:
+                Button("Sign In…") {
+                    accounts.pendingSignIn = id
+                    destination = .accounts
+                }
+                .buttonStyle(.arenaPill)
+            case .blocked, .unreachable:
+                Button("Verify") { Task { await accounts.verify(id) } }.buttonStyle(.arenaPill)
+            case .signedIn:
+                Button("Sync Again") { Task { await accounts.syncHistory(id) } }.buttonStyle(.arenaPill)
+            case .unverified:
+                EmptyView()
+            }
         }
     }
 }
@@ -478,7 +507,8 @@ private struct HistoryList: View {
             if archive.conversations.isEmpty {
                 VStack(spacing: 6) {
                     Text("No archived conversations")
-                    Text("Sign in under Manage Accounts, then Sync History.").font(Theme.caption).foregroundStyle(.secondary)
+                    Text("Add an account from the account menu below, then Sync History.")
+                        .font(Theme.caption).foregroundStyle(.secondary)
                 }
                 .multilineTextAlignment(.center)
                 .padding(20)

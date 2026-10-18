@@ -426,3 +426,42 @@ private func fingerprint(_ root: URL) throws -> [String: String] {
         #expect(!broken.text.contains(word), "\(word)")
     }
 }
+
+// MARK: Review follow-ups (2026-10-18 full review, finding 7)
+
+/// The server binary answers out-of-range snapshot sequences with tool errors and keeps running;
+/// before, UInt64.max trapped in the index's Int64 conversion (signal 5).
+@Test func outOfRangeSnapshotsAreToolErrorsNotCrashes() async throws {
+    let fixture = try await Fixture()
+    let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let binary = package.appendingPathComponent(".build/debug/arena-suite-mcp")
+    try #require(FileManager.default.isExecutableFile(atPath: binary.path), "build the arena-suite-mcp product first")
+    let process = Process()
+    process.executableURL = binary
+    process.arguments = ["--archive-root", fixture.root.path]
+    let input = Pipe(), output = Pipe(), errors = Pipe()
+    process.standardInput = input
+    process.standardOutput = output
+    process.standardError = errors
+    try process.run()
+    let account = fixture.account.rawValue.uuidString
+    let snapshots = [#""0""#, "\"\(Int64.max)\"", "\"\(UInt64(Int64.max) + 1)\"", "\"\(UInt64.max)\"", "\(Int64.max)", #""1""#]
+    var requests = [
+        #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    ]
+    for (n, snapshot) in snapshots.enumerated() {
+        requests.append(
+            #"{"jsonrpc":"2.0","id":\#(n + 2),"method":"tools/call","params":{"name":"get_conversation","arguments":{"account_id":"\#(account)","conversation_id":"c1","snapshot":\#(snapshot)}}}"#)
+    }
+    input.fileHandleForWriting.write(Data((requests.joined(separator: "\n") + "\n").utf8))
+    try input.fileHandleForWriting.close()
+    process.waitUntilExit()
+    #expect(process.terminationReason == .exit && process.terminationStatus == 0, "the process stays alive until EOF")
+    let lines = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .split(separator: "\n").map(String.init)
+    #expect(lines.count == 1 + snapshots.count)
+    let outcomes = try lines.dropFirst().map { try parse($0)["result"]?["isError"]?.boolValue ?? false }
+    #expect(outcomes == [true, true, true, true, true, false], "only snapshot 1 exists")
+    #expect(errors.fileHandleForReading.readDataToEndOfFile().isEmpty)
+}

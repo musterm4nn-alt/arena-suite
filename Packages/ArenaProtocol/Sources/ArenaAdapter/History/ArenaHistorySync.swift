@@ -46,6 +46,8 @@ struct ArchivedState {
         var pages = 0
         var lastCursor: String?
         var lastHasMore: Bool?
+        /// Pages that did not prove themselves complete (`ListPage.incompleteness`).
+        var incompletePages: [String] = []
     }
 
     static func scan(_ root: URL) throws -> ArchivedState {
@@ -77,6 +79,7 @@ struct ArchivedState {
                     interrupted.pages += 1
                     interrupted.lastCursor = page.cursor
                     interrupted.lastHasMore = page.hasMore
+                    if let gap = page.incompleteness { interrupted.incompletePages.append("page \(interrupted.pages): \(gap)") }
                     open[job] = interrupted
                 }
             case "exchange" where role == "detail" && envelope.metadata["status"] == .integer(404):
@@ -135,6 +138,9 @@ final class SyncJob {
     private var manifest: SyncManifest
     private var session: ArenaAccountSession?
     private var requestsSent = 0
+    /// Why the listing is not proven complete (partial pages, failed sources, no `hasMore`). Any
+    /// entry keeps the outcome from being `completed`, even if every detail was fetched.
+    private var listingGaps: [String] = []
     private lazy var recorder = ExchangeRecorder(journal: journal, account: account, jobID: jobID)
 
     init(
@@ -184,15 +190,21 @@ final class SyncJob {
             try await verifyIdentity()
             let entries = try await list(state: state)
             try await fetchDetails(entries, state: state)
-            if manifest.detailsFailed > 0 {
-                manifest.outcome = .partial
-                manifest.reason = "\(manifest.detailsFailed) detail request(s) failed; resumable"
-            } else {
-                manifest.outcome = .completed
-            }
+            var reasons: [String] = []
+            if manifest.detailsFailed > 0 { reasons.append("\(manifest.detailsFailed) detail request(s) failed; resumable") }
+            if !listingGaps.isEmpty { reasons.append("listing not proven complete (\(listingGaps.joined(separator: "; ")))") }
+            manifest.outcome = reasons.isEmpty ? .completed : .partial
+            manifest.reason = reasons.isEmpty ? nil : reasons.joined(separator: "; ")
         } catch Stop.outcome(let outcome, let reason) {
             manifest.outcome = outcome
             manifest.reason = reason
+            // The account's state follows: a rejected session needs a new sign-in, a refusal stops
+            // further jobs until the user checks again (plan v3 §2: stop on 403/challenge).
+            switch outcome {
+            case .needsSignIn: manifest.sessionState = manifest.sessionState ?? .needsSignIn
+            case .blocked: manifest.sessionState = manifest.sessionState ?? .blocked
+            default: break
+            }
         } catch {
             manifest.outcome = .storageFailed
             manifest.reason = "journal could not be written"
@@ -220,7 +232,9 @@ final class SyncJob {
         case .verified: break
         case .rejected(let status): throw Stop.outcome(.needsSignIn, "identity HTTP \(status.map(String.init) ?? "rejected")")
         case .noSavedSession: throw Stop.outcome(.needsSignIn, "no verified session")
-        case .mismatch: throw Stop.outcome(.needsSignIn, "identity mismatch; session discarded")
+        case .mismatch:
+            manifest.sessionState = .quarantined
+            throw Stop.outcome(.needsSignIn, "identity mismatch; session discarded")
         case .blocked(let status): throw Stop.outcome(.blocked, "identity HTTP \(status.map(String.init) ?? "blocked")")
         case .unreachable: throw Stop.outcome(.partial, "identity check unreachable")
         }
@@ -244,9 +258,15 @@ final class SyncJob {
         if let interrupted = state.interrupted {
             add(interrupted.entries)
             manifest.pagesListed = interrupted.pages
+            listingGaps += interrupted.incompletePages.map { "\($0) (resumed)" }
             if interrupted.pages > 0 {
                 guard interrupted.lastHasMore == true else {
-                    manifest.listingEnd = "hasMore=false (resumed)"
+                    if interrupted.lastHasMore == nil {
+                        manifest.listingEnd = "hasMore absent (resumed)"
+                        listingGaps.append("pagination.hasMore absent (resumed)")
+                    } else {
+                        manifest.listingEnd = "hasMore=false (resumed)"
+                    }
                     tally(entries)
                     return entries
                 }
@@ -271,13 +291,16 @@ final class SyncJob {
             if page.skippedEntries > 0 {
                 manifest.warnings.append("page \(manifest.pagesListed): \(page.skippedEntries) entry(ies) without a usable id skipped (raw bytes kept)")
             }
-            if page.partial == true || page.failedSources > 0 {
-                manifest.warnings.append("page \(manifest.pagesListed): partial=\(page.partial ?? false), failedSources=\(page.failedSources)")
+            if let gap = page.incompleteness {
+                manifest.warnings.append("page \(manifest.pagesListed): \(gap)")
+                listingGaps.append("page \(manifest.pagesListed): \(gap)")
             }
             guard bodies.insert(exchange.body).inserted else { throw Stop.outcome(.partial, "repeated page") }
+            // Catching up early needs a page that proves itself complete: entries missing from a
+            // partial page could be the changed ones.
             let unchangedPage =
-                !options.fullPass && !page.entries.isEmpty && page.entries.allSatisfy(state.isUnchanged)
-                && Self.isNewestFirst(page.entries)
+                !options.fullPass && page.incompleteness == nil && !page.entries.isEmpty
+                && page.entries.allSatisfy(state.isUnchanged) && Self.isNewestFirst(page.entries)
             add(page.entries)
             report(SyncProgress(stage: .listing, pages: manifest.pagesListed, entries: entries.count, detailsDone: 0, detailsNeeded: 0))
             if unchangedPage {
@@ -286,7 +309,11 @@ final class SyncJob {
             }
             guard page.hasMore == true else {
                 manifest.listingEnd = page.hasMore == false ? "hasMore=false" : "hasMore absent"
-                if page.hasMore == nil { manifest.warnings.append("pagination.hasMore absent") }
+                if page.hasMore == nil {
+                    // Not an observed end of the history: later pages may exist.
+                    manifest.warnings.append("pagination.hasMore absent")
+                    listingGaps.append("pagination.hasMore absent on page \(manifest.pagesListed)")
+                }
                 break
             }
             guard let next = page.cursor else { throw Stop.outcome(.partial, "hasMore=true without cursor") }

@@ -72,8 +72,10 @@ final class ArchiveModel {
 
     // MARK: List and search
 
+    /// Re-reads the list, the search and the open conversation (after a sync, rebuild or restore).
     func reload() {
         guard let archive else { return }
+        refreshDetail()
         listGeneration += 1
         let generation = listGeneration
         let filter = accountFilter
@@ -166,6 +168,32 @@ final class ArchiveModel {
         }
     }
 
+    /// Reloads the open conversation in place, so Latest shows the newest snapshot; an explicitly
+    /// chosen snapshot stays the same. The evidence panel and highlight are kept unless the displayed
+    /// snapshot changed.
+    private func refreshDetail() {
+        guard let archive, let key = selection else { return }
+        detailGeneration += 1
+        let generation = detailGeneration
+        let snapshot = snapshotSequence
+        Task {
+            let loaded = await Task.detached {
+                try? archive.conversation(account: key.account, remoteID: key.remoteID, snapshot: snapshot)
+            }.value
+            guard generation == detailGeneration else { return }
+            if loaded?.snapshotSequence != detail?.snapshotSequence {
+                inspected = nil
+                evidence = nil
+                evidenceUnavailable = false
+                highlightedMessage = nil
+            }
+            detail = loaded
+            layout = loaded.map(TranscriptLayout.init)
+            // An evidence read still running was for the previous detail generation and is dropped.
+            if let inspected, evidence == nil, !evidenceUnavailable { inspect(inspected) }
+        }
+    }
+
     // MARK: Evidence
 
     func inspect(_ message: DetailMessage) {
@@ -180,7 +208,7 @@ final class ArchiveModel {
         inspected = target
         evidence = nil
         evidenceUnavailable = false
-        guard let archive, let key = selection, let sequence = snapshotSequence ?? detail?.summary.latestSnapshotSequence else {
+        guard let archive, let key = selection, let sequence = detail?.snapshotSequence else {
             evidenceUnavailable = true
             return
         }
@@ -202,15 +230,18 @@ final class ArchiveModel {
 
     // MARK: Export
 
-    /// Exports the displayed snapshot. `directory` nil = Downloads.
+    /// Exports the displayed snapshot (never whatever is latest by the time the export runs).
+    /// `directory` nil = Downloads.
     func export(_ format: ExportFormat, exactRawBodies: Bool, to directory: URL?) async {
-        guard let archive, let key = selection else { return }
+        guard let archive, let key = selection, let detail, detail.summary.account == key.account,
+            detail.summary.remoteID == key.remoteID, let displayed = detail.snapshotSequence
+        else { return }
         let destination = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         exporting = true
         defer { exporting = false }
         do {
             lastExport = try await ExportService(archive: archive).export(
-                account: key.account, remoteID: key.remoteID, snapshot: snapshotSequence,
+                account: key.account, remoteID: key.remoteID, snapshot: displayed,
                 options: ExportOptions(format: format, includeExactRawBodies: exactRawBodies), to: destination)
             message = nil
         } catch {
@@ -222,11 +253,12 @@ final class ArchiveModel {
     /// Hides the notice for the last export (the file stays where it was written).
     func dismissExport() { lastExport = nil }
 
-    /// Display names from `revealedModels`, keyed by model ID (claims keep their source).
+    /// Display names from `revealedModels`, keyed by model ID (claims keep their source). Claims
+    /// come in record order, so the latest name observed wins.
     var revealedNames: [String: String] {
         Dictionary(
             (detail?.claims ?? []).filter { $0.source == "detail_revealed" }.compactMap { claim in
                 claim.displayName.map { (claim.modelID, $0) }
-            }, uniquingKeysWith: { first, _ in first })
+            }, uniquingKeysWith: { _, latest in latest })
     }
 }

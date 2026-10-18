@@ -39,6 +39,17 @@ Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushe
   - Accounts and Maintenance are pages (`MainDestination.accounts` / `.maintenance`), not sheets.
   - Docs: `Docs/arena-window-2026-10-18.md`; reviews `Docs/reviews/2026-10-18-arena-window.md`,
     `Docs/reviews/2026-10-18-single-window.md` and `Docs/reviews/2026-10-18-sidebar-rail.md`.
+- **Full-review fixes** (`Docs/review-fixes-2026-10-18.md`): the 11 defects of the user-supplied
+  review of `c731c85` are fixed with regression tests, plus its two UI priorities. A second model
+  reviewed it ("ready", `Docs/reviews/2026-10-18-full-review-fixes.md`) and its findings are fixed.
+  **Committed locally, not pushed; awaiting the user.**
+  - `ArchiveService.rebuild(accounts:)` is gone: a rebuild always replays every journal.
+  - `VerificationService`'s account closure throws; a failure sets `inventoryProblem`.
+  - The decoder is `arena-decoder/2`: the first launch of the new build rebuilds the index once.
+  - An explicit snapshot is a frozen view (`ConversationDetail.isFrozen`); `snapshot: nil` is live.
+    Exports always render the frozen view of one sequence.
+  - Sync failures set the account's state through `SyncManifest.sessionState` (guarded by the
+    credential generation).
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -71,7 +82,16 @@ Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushe
 
 3. **Known test gaps** (from the Phase 7 review; they are covered by reading only, not by tests):
    - a fault-injection test that changes accounts in the middle of a backup;
-   - cancelling a backup mid-copy.
+   - cancelling a backup mid-copy;
+   - `ArchiveModel`'s refresh after projection (there is no app test target).
+4. **Journal recovery and mid-segment damage.** On open, recovery quarantines everything after
+   any damage in the final segment, including complete, acknowledged records, and reuses their
+   sequence numbers. It should refuse that case, as backups now do. Offered to the user as a
+   separate task (2026-10-18). The second-model review rated it High: fix it before claiming
+   "replay gives identical hashes" for a journal that went through recovery. Its proposed fix and
+   test are in `Docs/reviews/2026-10-18-full-review-fixes.md`.
+5. **From the full review, not done:** a CI workflow (needs a macOS runner with this toolchain),
+   the Maintenance action hierarchy, and showing the dataset audit's LSH limit more prominently.
 
 ## User decisions that stay settled
 
@@ -199,5 +219,9 @@ To test a clean install with the Release binary, point it at an empty home folde
 - The legacy login Keychain ignores `kSecAttrAccessible`.
 - `FileManager.removeItem` is recursive. Never remove a parent folder that is "probably empty";
   use `rmdir`.
+- Never keep an array index across an `await` in an actor: other calls run during the suspension
+  (`AccountService.signInAgain` updated the wrong account until 2026-10-18).
+- A returned `SyncManifest` can be a failure (`needsSignIn`, `blocked`, `partial`, …); only thrown
+  errors used to reach the UI.
 - `JournalStore.root(for:)` is nonisolated. Projection has no suspension points inside the actor,
   so a rebuild cannot interleave with it.

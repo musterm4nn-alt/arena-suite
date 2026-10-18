@@ -76,6 +76,7 @@ public struct DiagnosticsService: Sendable {
             }
             if let index = verification.index { verify["index_matches_journal"] = index.matches }
             if let problem = verification.indexProblem { verify["index_problem"] = problem }
+            if let problem = verification.inventoryProblem { verify["inventory_problem"] = problem }
             root["verification"] = verify
         }
         return (try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])) ?? Data()

@@ -57,6 +57,13 @@ struct ListPage: Equatable, Sendable {
     /// Entries without a usable `id`: skipped here, still present in the journal's raw bytes.
     let skippedEntries: Int
 
+    /// Why this page does not prove its slice of the history complete, or nil: the server said
+    /// `partial` (or did not say `partial: false`), or reported failed sources.
+    var incompleteness: String? {
+        guard partial != false || failedSources > 0 else { return nil }
+        return "partial=\(partial.map(String.init) ?? "absent"), failedSources=\(failedSources)"
+    }
+
     /// Lenient structural decode. Unknown fields stay only in the journal's raw bytes. A page is
     /// unrecognized only if it has no `entries` array, or has entries of which none is usable.
     static func decode(_ data: Data) -> ListPage? {

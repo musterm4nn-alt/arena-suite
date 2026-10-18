@@ -24,22 +24,15 @@ private let detailBody = Data(#"""
 private struct ExportHarness {
     let archiveRoot: URL
     let account = AccountID()
+    let journals: JournalStore
     let service: ArchiveService
     let exports: ExportService
     let output: URL
 
     init() async throws {
         archiveRoot = FileManager.default.temporaryDirectory.appendingPathComponent("export-\(UUID().uuidString)")
-        let journals = JournalStore(archiveRoot: archiveRoot)
-        let writer = try await journals.writer(for: account)
-        _ = try writer.append(
-            JournalDraft(
-                kind: "exchange", payload: detailBody, accountID: account.rawValue,
-                metadata: [
-                    "role": .string("detail"), "status": .integer(200), "transfer_end": .string("complete"),
-                    "entry_id": .string("c1"), "entry_type": .string("evaluation"),
-                ]))
-        try writer.synchronize()
+        journals = JournalStore(archiveRoot: archiveRoot)
+        try await Self.append(detailBody, entry: "c1", account: account, journals: journals)
         let index = try ArchiveIndex(url: archiveRoot.appendingPathComponent("index/archive.sqlite"))
         let account = self.account
         service = ArchiveService(index: index, journals: journals, decoder: ArenaArchiveDecoder(), accounts: { [account] })
@@ -48,10 +41,28 @@ private struct ExportHarness {
         output = archiveRoot.appendingPathComponent("out")
     }
 
-    func export(_ format: ExportFormat, exact: Bool = false) async throws -> ExportResult {
+    func export(_ format: ExportFormat, exact: Bool = false, snapshot: UInt64? = nil) async throws -> ExportResult {
         try await exports.export(
-            account: account, remoteID: "c1", snapshot: nil, options: ExportOptions(format: format, includeExactRawBodies: exact),
-            to: output)
+            account: account, remoteID: "c1", snapshot: snapshot,
+            options: ExportOptions(format: format, includeExactRawBodies: exact), to: output)
+    }
+
+    /// Appends one detail response and projects it.
+    func appendDetail(_ body: Data, entry: String) async throws {
+        try await Self.append(body, entry: entry, account: account, journals: journals)
+        _ = try await service.project(account)
+    }
+
+    static func append(_ body: Data, entry: String, account: AccountID, journals: JournalStore) async throws {
+        let writer = try await journals.writer(for: account)
+        _ = try writer.append(
+            JournalDraft(
+                kind: "exchange", payload: body, accountID: account.rawValue,
+                metadata: [
+                    "role": .string("detail"), "status": .integer(200), "transfer_end": .string("complete"),
+                    "entry_id": .string(entry), "entry_type": .string("evaluation"),
+                ]))
+        try writer.synchronize()
     }
 }
 
@@ -192,4 +203,78 @@ func exportsAreDeterministicAndNeverOverwrite(_ format: ExportFormat) async thro
         snapshotSequences: [1], messages: [], claims: [], feedback: [])
     let raw = String(decoding: try ExportService.rawJSON(detail: detail, evidence: evidence, exact: false), as: UTF8.self)
     #expect(raw.contains(h) && raw.contains("\"transformed\""))
+}
+
+// Review 2026-10-18, findings 2 and 11.
+
+@Test(arguments: ExportFormat.allCases)
+func aHistoricalExportStaysFrozenAfterLaterSyncs(_ format: ExportFormat) async throws {
+    let h = try await ExportHarness()
+    let first = try Data(contentsOf: try await h.export(format, snapshot: 1).url)
+    // A later observation renames the conversation and reveals another model name.
+    let renamed = String(decoding: detailBody, as: UTF8.self)
+        .replacingOccurrences(of: #"Export \"test\"/1"#, with: "Renamed later")
+        .replacingOccurrences(of: #""displayName":"Model A""#, with: #""displayName":"Model A, revealed later""#)
+    try await h.appendDetail(Data(renamed.utf8), entry: "c1")
+    let again = try Data(contentsOf: try await h.export(format, snapshot: 1).url)
+    #expect(again == first, "the same snapshot exports the same bytes")
+    let latest = try Data(contentsOf: try await h.export(format).url)
+    #expect(latest != first, "latest is the newer snapshot")
+    if format == .markdown { #expect(String(decoding: latest, as: UTF8.self).contains("Model A, revealed later")) }
+    if format == .normalizedJSON {
+        let root = try #require(JSONSerialization.jsonObject(with: first) as? [String: Any])
+        let claims = try #require(root["model_claims"] as? [[String: Any]])
+        #expect(!claims.isEmpty && claims.allSatisfy { $0["record_sequence"] as? String == "1" })
+    }
+}
+
+@Test func anExportOfAnotherConversationsSnapshotIsRefused() async throws {
+    let h = try await ExportHarness()
+    let other = String(decoding: detailBody, as: UTF8.self).replacingOccurrences(of: #"{"id":"c1""#, with: #"{"id":"c2""#)
+    try await h.appendDetail(Data(other.utf8), entry: "c2")
+    #expect(try h.service.conversation(account: h.account, remoteID: "c2")?.snapshotSequence == 2)
+    for format in ExportFormat.allCases {
+        await #expect(throws: ExportError.snapshotNotInConversation(2)) { _ = try await h.export(format, snapshot: 2) }
+    }
+    let written = (try? FileManager.default.contentsOfDirectory(atPath: h.output.path)) ?? []
+    #expect(written.isEmpty, "nothing written")
+}
+
+// Review 2026-10-18, finding 9.
+
+/// Telemetry nested inside structured payloads (tool args and results, sources, structured
+/// reasoning, unknown blocks) never reaches the index, so neither normalized exports, Markdown,
+/// search nor MCP can return it. The exact raw export, an explicit opt-in, still has it.
+@Test func nestedMetadataNeverReachesTheProjection() async throws {
+    let body = Data(#"""
+    {"id":"c1","title":"Nested","mode":"direct","updatedAt":"2026-09-24 10:00:00.000000+00",
+     "messages":[
+      {"id":"u1","role":"user","status":"success","content":"Find lighthouses","parentMessageIds":[]},
+      {"id":"a1","role":"assistant","status":"success","modelId":"m-a","parentMessageIds":["u1"],
+       "content":[
+        {"type":"tool-call","toolName":"search","toolCallId":"t1","args":{"q":"lighthouse","metadata":{"hashedClientIp":"ip-in-args"}}},
+        {"type":"tool-result","toolName":"search","toolCallId":"t1","result":{"hits":[{"title":"Beacon","Metadata":{"botScore":"score-in-result"}}]}},
+        {"type":"future-block","payload":{"deep":{"metadata":{"recaptchaV3Score":"score-in-opaque"}},"providerOptions":{"enc":"cipher-deep"}}}],
+       "reasoning":{"steps":[{"metadata":{"hashedClientIp":"ip-in-reasoning"}}]},
+       "sources":[{"url":"https://example.invalid","metadata":{"hashedClientIp":"ip-in-sources"}}]}
+     ]}
+    """#.utf8)
+    let h = try await ExportHarness()
+    try await h.appendDetail(body, entry: "c1")
+    let secrets = ["ip-in-args", "score-in-result", "score-in-opaque", "cipher-deep", "ip-in-reasoning", "ip-in-sources"]
+    for format in [ExportFormat.normalizedJSON, .markdown, .rawJSON] {
+        let text = String(decoding: try Data(contentsOf: try await h.export(format).url), as: UTF8.self)
+        for secret in secrets { #expect(!text.contains(secret), "\(format) \(secret)") }
+    }
+    let normalized = String(decoding: try Data(contentsOf: try await h.export(.normalizedJSON).url), as: UTF8.self)
+    #expect(normalized.contains("lighthouse") && normalized.contains("Beacon") && normalized.contains("[omitted: telemetry]"))
+    for secret in secrets {
+        #expect(try h.service.search(secret, account: nil, includeReasoningAndTools: true, limit: 10).isEmpty, "\(secret)")
+    }
+    #expect(try !h.service.search("Beacon", account: nil, includeReasoningAndTools: true, limit: 10).isEmpty)
+    // The opt-in exact raw export keeps the recorded bytes.
+    let exact = try #require(
+        JSONSerialization.jsonObject(with: try Data(contentsOf: try await h.export(.rawJSON, exact: true).url)) as? [String: Any])
+    let record = try #require((exact["records"] as? [[String: Any]])?.first)
+    #expect(Data(base64Encoded: try #require(record["payload_base64"] as? String)) == body)
 }

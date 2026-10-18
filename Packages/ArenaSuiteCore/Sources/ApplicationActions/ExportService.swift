@@ -40,6 +40,8 @@ public struct ExportResult: Sendable, Equatable {
 
 public enum ExportError: Error, Equatable, Sendable {
     case conversationNotFound
+    /// The sequence is not one of this conversation's snapshots.
+    case snapshotNotInConversation(UInt64)
     case noSnapshot
     case rawRecordUnavailable
     case cancelled
@@ -67,13 +69,31 @@ public struct ExportService: Sendable {
         return ExportResult(url: url, byteCount: rendered.data.count, sha256: Self.hex(SHA256.hash(data: rendered.data)))
     }
 
+    /// `snapshot` nil exports the latest snapshot. Either way the export is the frozen view of one
+    /// record (`ArchiveIndex.conversation`): the same sequence always yields the same bytes, however
+    /// much was synced since.
     public func render(
         account: AccountID, remoteID: String, snapshot: UInt64?, options: ExportOptions
     ) async throws -> (data: Data, baseName: String) {
-        guard let detail = try archive.conversation(account: account, remoteID: remoteID, snapshot: snapshot) else {
-            throw ExportError.conversationNotFound
+        let sequence: UInt64
+        if let snapshot {
+            sequence = snapshot
+        } else {
+            guard let live = try archive.conversation(account: account, remoteID: remoteID, snapshot: nil) else {
+                throw ExportError.conversationNotFound
+            }
+            guard let latest = live.summary.latestSnapshotSequence else { throw ExportError.noSnapshot }
+            sequence = latest
         }
-        guard let sequence = snapshot ?? detail.summary.latestSnapshotSequence else { throw ExportError.noSnapshot }
+        let detail: ConversationDetail
+        do {
+            guard let frozen = try archive.conversation(account: account, remoteID: remoteID, snapshot: sequence) else {
+                throw ExportError.conversationNotFound
+            }
+            detail = frozen
+        } catch ArchiveIndex.QueryError.snapshotNotInConversation(let foreign) {
+            throw ExportError.snapshotNotInConversation(foreign)
+        }
         guard let evidence = try await archive.rawEvidence(account: account, snapshotSequence: sequence) else {
             throw ExportError.rawRecordUnavailable
         }
@@ -178,12 +198,16 @@ public struct ExportService: Sendable {
                     "subject": $0.subject.rawValue, "subject_id": $0.subjectID, "role": value($0.role), "model_id": $0.modelID,
                     "display_name": value($0.displayName), "organization": value($0.organization), "provider": value($0.provider),
                     "source": $0.source, "verified_identity": false,
+                    "record_sequence": $0.recordSequence.map { String($0) } ?? NSNull(),
                 ] as [String: Any]
             }.sorted { canonicalString($0) < canonicalString($1) },
             "feedback": detail.feedback.map {
                 ["id": $0.remoteID, "value": value($0.value), "message_a": value($0.messageA), "message_b": value($0.messageB)] as [String: Any]
             }.sorted { canonicalString($0) < canonicalString($1) },
-            "excluded": ["per-message metadata telemetry", "encrypted reasoning (providerOptions)", "attachment URLs", "raw bytes (see raw export)"],
+            "excluded": [
+                "metadata telemetry at any depth (masked as [omitted: telemetry])", "encrypted reasoning (providerOptions, any depth)",
+                "attachment URLs", "raw bytes (see raw export)",
+            ],
         ]
         return try canonical(root)
     }
@@ -192,9 +216,10 @@ public struct ExportService: Sendable {
 
     static func markdown(detail: ConversationDetail, evidence: RawEvidence) -> String {
         let layout = TranscriptLayout(detail)
+        // Claims come in record order: the latest name observed (up to this snapshot) wins.
         let names = Dictionary(
             detail.claims.filter { $0.source == "detail_revealed" }.compactMap { claim in claim.displayName.map { (claim.modelID, $0) } },
-            uniquingKeysWith: { first, _ in first })
+            uniquingKeysWith: { _, latest in latest })
         var out = "# \(inline(detail.summary.title ?? "Untitled"))\n\n"
         out += "_\(inline([detail.summary.kind, detail.summary.mode, detail.summary.modality].compactMap { $0 }.joined(separator: " · ")))_\n\n"
         for (index, turn) in layout.turns.enumerated() {
@@ -283,6 +308,7 @@ public struct ExportService: Sendable {
             "account_id": detail.summary.account.rawValue.uuidString, "conversation_remote_id": detail.summary.remoteID,
             "snapshot_sequence": String(evidence.location.sequence), "record_digest": evidence.digest,
             "decoder": evidence.decoderVersion, "observation_layer": "foundation_decoded_entity",
+            "facts_scope": "observed in journal records up to and including snapshot_sequence",
             "credential_handling": "credentials never recorded; Set-Cookie values omitted at capture",
         ]
     }

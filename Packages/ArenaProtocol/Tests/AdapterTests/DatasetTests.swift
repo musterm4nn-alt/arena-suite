@@ -364,7 +364,7 @@ private func warnings(_ line: [String: Any]?) -> [String] { (line?["eligibility"
     let manifest = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: first.url.appendingPathComponent("manifest.json"))) as? [String: Any])
     #expect(manifest["recipe_sha256"] as? String == (try recipe.sha256()))
     let source = try #require(manifest["source"] as? [String: Any])
-    #expect(source["decoder"] as? String == "arena-decoder/1")
+    #expect(source["decoder"] as? String == "arena-decoder/2")
     #expect(source["projection_digest"] as? String == (try h.archive.contentDigest()))
     #expect((source["checkpoints"] as? [String: String])?[accountA.rawValue.uuidString] == String(try h.archive.checkpoint(for: accountA)))
     let snapshots = try #require(source["snapshots"] as? [[String: Any]])

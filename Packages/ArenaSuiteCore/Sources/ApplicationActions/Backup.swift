@@ -8,6 +8,21 @@ public struct BackupManifest: Codable, Sendable, Equatable {
     public struct Journal: Codable, Sendable, Equatable {
         public let account: String
         public let segments: [CopiedSegment]
+        /// An incomplete record at the end of the source's final segment, left out of the backup. It
+        /// was never acknowledged (an append still running, or one a crash interrupted). Absent when
+        /// the source ended in a complete record.
+        public let incompleteTail: JournalLocation?
+
+        public init(account: String, segments: [CopiedSegment], incompleteTail: JournalLocation? = nil) {
+            self.account = account
+            self.segments = segments
+            self.incompleteTail = incompleteTail
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case account, segments
+            case incompleteTail = "incomplete_tail"
+        }
     }
 
     public static let currentFormat = "arena-suite-backup/1"
@@ -56,11 +71,13 @@ public struct BackupCheck: Sendable, Equatable {
 
 /// Backups (plan v3 §13, Phase 7): a folder holding a copy of every account journal (sealed segments
 /// byte for byte with their seal manifests, the active segment up to its last complete record), the
-/// account registry, and a manifest. No Keychain items, no index, no diagnostics: after restoring on
+/// account registry, and a manifest. A damaged journal is refused, never copied in part; only an
+/// incomplete final record is left out, and the manifest names it (`incomplete_tail`). No Keychain items, no index, no diagnostics: after restoring on
 /// another Mac each account signs in again, and the index is rebuilt from the journals.
 ///
-/// "Equal archive" means: identical journal bytes (per-segment SHA-256) and an index replayed from
-/// the restored journals with the same content digest as one replayed at backup time.
+/// "Equal archive" means: identical journal bytes through the last complete record (per-segment
+/// SHA-256) and an index replayed from the restored journals with the same content digest as one
+/// replayed at backup time.
 public struct BackupService: Sendable {
     private let archiveRoot: URL
     private let decoder: any ArchiveDecoding
@@ -107,8 +124,9 @@ public struct BackupService: Sendable {
             let target = staging.appendingPathComponent("accounts/\(account.rawValue.uuidString)/journal", isDirectory: true)
             try PrivateFile.prepareDirectory(target)
             do {
-                let segments = try JournalCopy.copy(from: source.root(for: account), to: target)
-                journals.append(.init(account: account.rawValue.uuidString, segments: segments))
+                let copy = try JournalCopy.copy(from: source.root(for: account), to: target)
+                journals.append(
+                    .init(account: account.rawValue.uuidString, segments: copy.segments, incompleteTail: copy.incompleteTail))
             } catch {
                 throw BackupError.journalDamaged(
                     account: account.rawValue.uuidString, issue: VerificationService.describe(error))
@@ -216,7 +234,8 @@ public struct BackupService: Sendable {
             let to = stagedAccounts.appendingPathComponent("\(journal.account)/journal", isDirectory: true)
             try PrivateFile.prepareDirectory(to)
             let copied: [CopiedSegment]
-            do { copied = try JournalCopy.copy(from: from, to: to) } catch {
+            // A checked backup holds complete records only; anything else means it changed since.
+            do { copied = try JournalCopy.copy(from: from, to: to, allowingIncompleteTail: false).segments } catch {
                 throw BackupError.journalDamaged(account: journal.account, issue: VerificationService.describe(error))
             }
             guard copied == journal.segments else { throw BackupError.fileMismatch("restored journal \(journal.account)") }

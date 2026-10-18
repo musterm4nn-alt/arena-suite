@@ -10,6 +10,9 @@ public enum JournalError: Error, Equatable, Sendable {
     case payloadTooLarge(Int)
     case io(operation: String, errno: Int32)
     case corruptSealedSegment(segment: Int, reason: String)
+    /// Damage in an unsealed segment that is not an incomplete final record (bad digest, framing,
+    /// envelope or sequence, or complete records after the damaged one).
+    case damagedRecord(segment: Int, offset: Int, reason: String)
     case segmentGap(expected: Int, found: Int)
     case unsupportedFormat(segment: Int, offset: Int)
     case invalidManifest(segment: Int)
@@ -172,5 +175,18 @@ enum SegmentScanner {
             offset += total
         }
         return SegmentScan(records: records, validEnd: offset, problem: nil)
+    }
+
+    /// Offset of the first complete, digest-valid record starting after `offset`, or nil. A torn or
+    /// in-flight append never has one after it, so finding one means the bytes at `offset` are damage.
+    static func firstCompleteRecord(in data: Data, after offset: Int) -> Int? {
+        let magic = Data(RecordCodec.magic)
+        var from = data.startIndex + offset + 1
+        while from < data.endIndex, let found = data.range(of: magic, in: from..<data.endIndex) {
+            let candidate = data.subdata(in: found.lowerBound..<data.endIndex)
+            if !scan(candidate, expectedFirstSequence: nil).records.isEmpty { return found.lowerBound - data.startIndex }
+            from = found.lowerBound + 1
+        }
+        return nil
     }
 }

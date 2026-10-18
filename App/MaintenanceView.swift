@@ -49,6 +49,7 @@ final class MaintenanceModel {
                     : "Index: differs from a fresh replay of the journals. Use “Rebuild Index” to fix it.")
             }
             if let problem = report.indexProblem { out.append("Index: \(problem)") }
+            if let problem = report.inventoryProblem { out.append("Accounts: \(problem)") }
             if report.journals.contains(where: { !$0.isClean }) {
                 out.append("A damaged journal can be replaced from a backup (see the release notes).")
             }
@@ -71,11 +72,14 @@ final class MaintenanceModel {
             let url = try await services.backups.create(in: folder)
             let check = try await services.backups.check(url)
             revealURL = url
+            let tails = check.manifest.journals.compactMap(\.incompleteTail)
             return ([
                 "Backup written and checked: \(check.accounts) journal(s), \(check.records) record(s).",
                 url.lastPathComponent,
                 "It holds your journals and account list, not passwords or sessions.",
-            ], false)
+            ] + tails.map {
+                "One journal ended in an incomplete record (\($0.length) bytes, never acknowledged). It was left out; the journal itself was not changed."
+            }, false)
         }
     }
 

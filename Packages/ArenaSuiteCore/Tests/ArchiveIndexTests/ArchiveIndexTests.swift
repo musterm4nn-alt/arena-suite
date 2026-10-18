@@ -307,7 +307,9 @@ private func mode(_ path: String) throws -> Int {
     let account = AccountID()
     let future = ModelClaim(subject: .init(rawValue: "reaction"), subjectID: "r1", role: nil, modelID: "model-x", source: "future")
     try apply(index, account: account, 1, [snapshot("c1", claims: [future])])
-    #expect(try index.conversation(account: account, remoteID: "c1")?.claims.contains(future) == true)
+    var stored = future
+    stored.recordSequence = 1
+    #expect(try index.conversation(account: account, remoteID: "c1")?.claims.contains(stored) == true)
 }
 
 @Test func searchLimitIsClampedAndOrderIncludesAccount() throws {
@@ -341,4 +343,48 @@ private func mode(_ path: String) throws -> Int {
     try split.apply(account: account, records: [(recordRef(account, 10), DecodedRecord(events: events[9]))], through: 10, decoderVersion: "test/1")
     #expect(try single.contentDigest() == split.contentDigest())
     #expect(try split.checkpoint(for: account) == 250)
+}
+
+// Review 2026-10-18, findings 2, 7 and 11.
+
+@Test func aSnapshotOfAnotherConversationIsRejectedNotRelabeled() throws {
+    let index = try ArchiveIndex(url: tempIndexURL())
+    let account = AccountID()
+    try apply(index, account: account, 1, [snapshot("one", title: "One", messages: [message("m1")])])
+    try apply(index, account: account, 2, [snapshot("two", title: "Two", messages: [message("m2")])])
+    try apply(index, account: account, 3, [.listed(facts("listed"), claims: [])])
+    #expect(try index.conversation(account: account, remoteID: "one", snapshot: 1)?.messages.map(\.remoteID) == ["m1"])
+    // Another conversation's snapshot, a missing one, a list-only conversation, and sequences
+    // beyond SQLite's range: all refused before anything is loaded, none traps.
+    for (conversation, sequence) in [("one", 2), ("one", 99), ("listed", 1), ("one", UInt64(Int64.max)), ("one", UInt64(Int64.max) + 1), ("one", .max)] as [(String, UInt64)] {
+        #expect(throws: ArchiveIndex.QueryError.snapshotNotInConversation(sequence)) {
+            _ = try index.conversation(account: account, remoteID: conversation, snapshot: sequence)
+        }
+    }
+    #expect(try index.snapshotLocation(account: account, sequence: .max) == nil)
+}
+
+@Test func anExplicitSnapshotIsFrozenAgainstLaterObservations() throws {
+    let index = try ArchiveIndex(url: tempIndexURL())
+    let account = AccountID()
+    let early = ModelClaim(subject: .conversation, subjectID: "c1", role: "a", modelID: "early", source: "history_list")
+    let later = ModelClaim(subject: .conversation, subjectID: "c1", role: "a", modelID: "later", source: "history_list")
+    let revealed = ModelClaim(subject: .conversation, subjectID: "c1", role: "a", modelID: "revealed", source: "detail_revealed")
+    try apply(index, account: account, 1, [.listed(facts("c1", title: "Listed"), claims: [early])])
+    try apply(index, account: account, 2, [snapshot("c1", title: "First", messages: [message("m1")])])
+    let before = try #require(try index.conversation(account: account, remoteID: "c1", snapshot: 2))
+    try apply(index, account: account, 3, [.listed(facts("c1", title: "Renamed"), claims: [later])])
+    try apply(index, account: account, 4, [snapshot("c1", title: "Second", messages: [message("m1"), message("m2")], claims: [revealed])])
+
+    let frozen = try #require(try index.conversation(account: account, remoteID: "c1", snapshot: 2))
+    #expect(frozen.isFrozen && frozen.snapshotSequence == 2)
+    #expect(frozen.summary.title == "First" && frozen.summary.messageCount == 1)
+    #expect(frozen.claims.map(\.modelID) == ["early"] && frozen.claims.first?.recordSequence == 1)
+    #expect(frozen.messages == before.messages && frozen.claims == before.claims && frozen.summary.title == before.summary.title)
+    #expect(frozen.snapshotSequences == [2, 4], "the snapshot list itself stays the conversation's")
+
+    let live = try #require(try index.conversation(account: account, remoteID: "c1"))
+    #expect(!live.isFrozen && live.snapshotSequence == 4 && live.summary.title == "Second")
+    #expect(live.claims.map(\.modelID) == ["early", "later", "revealed"])
+    #expect(live.claims.map(\.recordSequence) == [1, 3, 4], "every claim names the record it was observed in")
 }

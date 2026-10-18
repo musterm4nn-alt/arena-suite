@@ -39,10 +39,13 @@ public struct SyncOptions: Sendable, Equatable {
 }
 
 public enum SyncOutcome: String, Codable, Sendable {
-    /// Listing reached `hasMore == false` (or caught up) and every needed detail was fetched or
-    /// observed absent (404). Any other detail failure makes the job `partial`.
+    /// Listing reached `hasMore == false` (or caught up on a page that was itself complete), no page
+    /// reported `partial` or failed sources, and every needed detail was fetched or observed absent
+    /// (404). Scope: the pagination observed in this job.
     case completed
-    /// Stopped early for a recorded reason (rate limit, pagination anomaly, transport); resumable.
+    /// Not proven complete: stopped early for a recorded reason (rate limit, pagination anomaly,
+    /// transport), a detail failed, or the listing was partial, had failed sources or no `hasMore`.
+    /// `reason` says which; a later sync tries again.
     case partial
     /// A 403, challenge or non-JSON page. Nothing retried.
     case blocked
@@ -74,6 +77,9 @@ public struct SyncManifest: Sendable, Codable, Equatable {
     /// "Complete" always names its scope: listing ended on `hasMore == false`, or caught up early.
     public var listingEnd: String?
     public var warnings: [String] = []
+    /// What the job learned about the account's session when it can no longer be used: rejected
+    /// (`needsSignIn`), another principal (`quarantined`) or refused (`blocked`). nil otherwise.
+    public var sessionState: AccountAuthState?
 
     public init(jobID: UUID, accountID: AccountID, outcome: SyncOutcome) {
         self.jobID = jobID
@@ -121,6 +127,17 @@ public actor JournalStore {
     }
 
     /// Accounts with a journal directory on disk, including removed accounts whose evidence is kept.
+    /// Every account with a journal directory, for replay. Unlike `accountsOnDisk`, a folder that
+    /// exists but cannot be listed is an error, never an empty inventory.
+    public nonisolated func journalAccounts() throws -> [AccountID] {
+        guard FileManager.default.fileExists(atPath: accountsRoot.path) else { return [] }
+        let names = try FileManager.default.contentsOfDirectory(atPath: accountsRoot.path)
+        return names.compactMap { UUID(uuidString: $0) }
+            .filter { FileManager.default.fileExists(atPath: root(for: AccountID(rawValue: $0)).path) }
+            .sorted { $0.uuidString < $1.uuidString }
+            .map { AccountID(rawValue: $0) }
+    }
+
     public nonisolated func accountsOnDisk() -> [AccountID] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: accountsRoot.path)) ?? []
         return names.compactMap { UUID(uuidString: $0) }
@@ -183,6 +200,10 @@ public actor HistorySyncService {
         running[account] = nil
         progress[account] = nil
         lastManifest[account] = manifest
+        if let state = manifest.sessionState {
+            // Guarded by the job's credential generation: a newer sign-in is never downgraded.
+            await accounts.noteSessionState(account, generation: context.credentialGeneration, state: state)
+        }
         return manifest
     }
 

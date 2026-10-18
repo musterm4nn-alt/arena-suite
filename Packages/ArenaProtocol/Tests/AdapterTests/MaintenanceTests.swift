@@ -137,7 +137,60 @@ private func JournalVerifierIsClean(_ root: URL) -> Bool {
     let copied = backup.appendingPathComponent("accounts/\(source.accounts[1].rawValue.uuidString)/journal/segments/000001.asj")
     #expect(try Data(contentsOf: copied) == before)
     #expect(try Data(contentsOf: active).count == before.count + 40, "source untouched")
-    _ = try await source.backups.check(backup)
+    let check = try await source.backups.check(backup)
+    let journal = try #require(check.manifest.journals.first { $0.account == source.accounts[1].rawValue.uuidString })
+    #expect(journal.incompleteTail == JournalLocation(segment: 1, offset: before.count, length: 40), "the manifest names what was left out")
+    #expect(check.manifest.journals.first { $0.account == source.accounts[0].rawValue.uuidString }?.incompleteTail == nil)
+}
+
+/// Damage inside acknowledged records of the active segment is refused, never treated as an
+/// incomplete final record (review 2026-10-18, finding 1).
+@Test(arguments: ["first record's payload", "middle record's digest", "middle record's length"])
+func backupRefusesDamagedRecordsRatherThanDroppingThem(_ damage: String) async throws {
+    let source = try await Archive(conversations: 3)
+    let account = source.accounts[1]
+    let root = source.journals.root(for: account)
+    let records = try JournalReader(root: root).readAll()
+    #expect(records.count == 3 && records.allSatisfy { $0.location.segment == 1 })
+    let url = root.appendingPathComponent("segments/000001.asj")
+    var bytes = try Data(contentsOf: url)
+    switch damage {
+    case "first record's payload":
+        bytes[records[0].location.offset + records[0].location.length - 40] ^= 0xFF
+    case "middle record's digest":
+        bytes[records[1].location.offset + records[1].location.length - 1] ^= 0xFF
+    default:
+        // A payload length longer than the rest of the file: it looks like an incomplete record,
+        // but a complete one follows it.
+        let length = UInt64(bytes.count - records[1].location.offset + 1000).littleEndian
+        withUnsafeBytes(of: length) { bytes.replaceSubrange(records[1].location.offset + 8..<records[1].location.offset + 16, with: $0) }
+    }
+    try bytes.write(to: url)
+
+    #expect(throws: JournalError.self) { _ = try JournalCopy.copy(from: root, to: scratch()) }
+    let out = scratch()
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    await #expect {
+        _ = try await source.backups.create(in: out)
+    } throws: { error in
+        if case BackupError.journalDamaged(let damaged, _) = error { return damaged == account.rawValue.uuidString }
+        return false
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: out.path).isEmpty, "nothing left behind")
+    #expect(try Data(contentsOf: url) == bytes, "source untouched")
+}
+
+@Test func strictCopyRefusesAnIncompleteRecord() async throws {
+    let source = try await Archive(conversations: 2)
+    let out = scratch()
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let backup = try await source.backups.create(in: out)
+    let copied = backup.appendingPathComponent("accounts/\(source.accounts[1].rawValue.uuidString)/journal/segments/000001.asj")
+    let intact = try Data(contentsOf: copied)
+    #expect(throws: JournalError.self) {
+        try (intact + intact.prefix(40)).write(to: copied)
+        _ = try JournalCopy.copy(from: copied.deletingLastPathComponent().deletingLastPathComponent(), to: scratch(), allowingIncompleteTail: false)
+    }
 }
 
 @Test func backupCheckRejectsChangedMissingAndExtraFiles() async throws {
@@ -210,6 +263,19 @@ private func JournalVerifierIsClean(_ root: URL) -> Bool {
     #expect(!damaged.isClean)
     #expect(damaged.journals[0].issues.contains { $0.contains("segment 1") })
     #expect(try Data(contentsOf: sealed) == bytes, "verify never repairs")
+}
+
+@Test func verifyJobIsNotCleanWhenTheAccountListCannotBeRead() async throws {
+    struct Unreadable: Error {}
+    let source = try await Archive(conversations: 2)
+    let verifier = VerificationService(
+        archive: source.service, journals: source.journals, accounts: { throw Unreadable() }, scratch: scratch())
+    let report = await verifier.run()
+    #expect(!report.isClean, "a shorter list must never pass as a clean archive")
+    #expect(report.inventoryProblem != nil)
+    // The journals on disk are still checked.
+    #expect(report.journals.map(\.account) == source.journals.accountsOnDisk())
+    #expect(report.journals.allSatisfy { $0.isClean })
 }
 
 @Test func verifyJobDetectsAnIndexThatDiffersFromTheJournal() async throws {
@@ -327,4 +393,28 @@ private func JournalVerifierIsClean(_ root: URL) -> Bool {
     let contents = try Set(urls.map { String(decoding: try Data(contentsOf: $0), as: UTF8.self) })
     #expect(contents.count == 8, "no file was replaced")
     #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).allSatisfy { $0.hasSuffix(".json") }, "no temp files left")
+}
+
+// Review 2026-10-18, finding 4.
+
+private struct InventoryUnreadable: Error {}
+
+/// Removing an account keeps its journal; a rebuild must still replay it, and an inventory that
+/// cannot be read must fail the rebuild before the index is reset.
+@Test func rebuildReplaysJournalsOfRemovedAccountsAndFailsBeforeResetting() async throws {
+    let source = try await Archive(conversations: 3)
+    let removed = source.accounts[1]
+    let digest = try source.service.contentDigest()
+    let registered = [source.accounts[0]]
+    let index = try ArchiveIndex(url: source.root.appendingPathComponent("index/archive.sqlite"))
+    let service = ArchiveService(index: index, journals: source.journals, decoder: ArenaArchiveDecoder(), accounts: { registered })
+    try await service.rebuild()
+    #expect(try service.conversations(account: removed).count == 3, "the kept journal is replayed")
+    #expect(try service.contentDigest() == digest)
+    #expect(try await service.checkAgainstJournal(scratch: scratch()).matches)
+
+    let failing = ArchiveService(
+        index: index, journals: source.journals, decoder: ArenaArchiveDecoder(), accounts: { throw InventoryUnreadable() })
+    await #expect(throws: InventoryUnreadable.self) { try await failing.rebuild() }
+    #expect(try service.contentDigest() == digest, "nothing was reset")
 }
