@@ -71,6 +71,10 @@ struct MainView: View {
                 showingMaintenance = true
                 await maintenance.verify()
             }
+            if arguments.contains("--validate-dataset") {
+                showingMaintenance = true
+                await maintenance.validateDataset()
+            }
             #endif
         }
     }

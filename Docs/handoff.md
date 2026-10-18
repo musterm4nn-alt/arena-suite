@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-09-25, after the read-only MCP commit.
+Updated 2026-10-18, after the §14 datasets work.
 
 ## Where things stand
 
@@ -18,17 +18,20 @@ Updated 2026-09-25, after the read-only MCP commit.
   - 3 accounts, all signed in; 57 conversations; journals of 30 / 31 / 49 records.
   - Verify is clean, and the live index equals a fresh replay.
 - §14 read-only MCP is done and reviewed: `Packages/ArenaSuiteMCP`, `Docs/mcp-readonly-2026-09-25.md`.
+- §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
+  grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
+  `Docs/reviews/2026-10-18-datasets.md`.
 - Git remote: `origin` = private GitHub repo `musterm4nn-alt/arena-suite`. Push only when asked.
 
 ## Open items
 
-1. **A4, the 24-hour session check.** It is due now (the last run was 2026-09-24). Ask the user to
+1. **A4, the 24-hour session check.** It is overdue (the last run was 2026-09-24). Ask the user to
    run:
    `open -n ~/Documents/arena-suite-opus/DerivedData/NativeAuthProof.app --args --phase0a`
    Then record in the Phase 0-A docs, `Docs/status.md` and the protocol ledger whether the saved
    session still verifies and whether cookies were re-issued.
 2. **Plan §14 items.** The user gave the go decision on 2026-09-25 ("get started on the §14 items").
-   Order: MCP (done), datasets (next), maintenance. Track B stays blocked (§1 condition 1).
+   Order: MCP (done), datasets (done), maintenance (next). Track B stays blocked (§1 condition 1).
    - read-only MCP (search, get conversation, export through ApplicationActions; no network
      actions, voting or reveal);
    - training/attribution datasets;
@@ -78,7 +81,9 @@ Updated 2026-09-25, after the read-only MCP commit.
   opencode run --standalone --model 'opencode/muse-spark-1.3-contributor-free#xhigh' --agent reviewer "<scope + focus>" > $TMPDIR/review.txt 2>&1
   ```
   - Always pass `--standalone`: without it, `opencode run` hung once.
-  - The alternative reviewer model is deepseek v4.1 flash.
+  - The alternative reviewer model is deepseek v4.1 flash. On 2026-10-18 opencode reported
+    `muse-spark-1.3-contributor-free` unavailable, and the datasets review used
+    `opencode/deepseek-v4.1-flash-free#high` (that variant has no `xhigh`).
   - The agent definition is `.opencode/agents/reviewer.md`.
 - After a review, fix every finding that holds up, write `Docs/reviews/<date>-<phase>.md`, and
   commit "Address independent review of …".
@@ -95,6 +100,8 @@ bash Scripts/package.sh             # signed Release → ~/Applications/Arena Su
 # Opt-in:
 ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
   swift test --package-path Packages/ArenaProtocol --filter realArchive    # rebuild, exports, verify+backup on real data
+ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
+  swift test --package-path Packages/ArenaProtocol --filter realArchiveDataset   # dataset counts only
 ARENA_SUITE_SCALE_TEST=1 swift test --package-path Packages/ArenaProtocol --filter scale   # 10× synthetic history
 ARENA_SUITE_KEYCHAIN_TESTS=1 swift test --package-path Packages/ArenaProtocol --filter Session       # real Keychain test
 python3 Tools/FixtureHarness/audit_archive_journals.py                     # live journal audit (counts only)
@@ -106,6 +113,7 @@ Debug-only app flags:
 - `--preview-conversation "<title prefix>"`, optionally with `--preview-export`
 - `--preview-search <text>`
 - `--preview-maintenance`
+- `--validate-dataset` (opens Maintenance and runs Validate Dataset)
 
 To test a clean install with the Release binary, point it at an empty home folder with
 `CFFIXED_USER_HOME=<empty dir>`. Setting `HOME` does not redirect Application Support.
@@ -115,11 +123,13 @@ To test a clean install with the Release binary, point it at an empty home folde
 - **`Packages/ArenaSuiteCore`:**
   - `SuiteDomain`: IDs, accounts, the archive vocabulary.
   - `CaptureJournal`: the ASJ1 journal (writer, reader, verifier, recovery, `JournalCopy`).
-  - `ArchiveIndex`: GRDB/FTS5, `contentDigest`, `digestAndCheckpoints`.
+  - `ArchiveIndex`: GRDB/FTS5, `contentDigest`, `digestAndCheckpoints`, `datasetSource` (one frozen
+    read for dataset builds).
   - `ApplicationActions`: `AccountService`, `HistorySyncService` (holds the maintenance
     exclusion), `JournalStore`, `ArchiveService` (projection, replay, `checkAgainstJournal`),
     `ExportService`, `TranscriptLayout`, `VerificationService`, `BackupService`,
-    `DiagnosticsService`, `PrivateFile`.
+    `DiagnosticsService`, `PrivateFile`, `DatasetRecipe`, `DatasetGrouping` (normalization,
+    MinHash/LSH, union-find, label terms), `DatasetService`.
 - **`Packages/ArenaProtocol`:**
   - `FoundationTransport`: per-account `URLSession`.
   - `ArenaAdapter`: sessions/Keychain, history routes and sync, `ArenaArchiveDecoder`. This is the

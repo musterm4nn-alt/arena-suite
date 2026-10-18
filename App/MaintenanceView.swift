@@ -117,6 +117,76 @@ final class MaintenanceModel {
         }
     }
 
+    // MARK: Datasets (plan v3 §14)
+
+    /// Reads a frozen view of the index; nothing is written.
+    func validateDataset() async {
+        guard let datasets = services.datasets else { return note("The archive index is unavailable.") }
+        await run("Checking the default dataset recipe…") {
+            let recipe = DatasetRecipe()
+            let audit = try await datasets.validate(recipe: recipe)
+            return (Self.datasetSummary(audit, recipe: recipe), !audit.isClean)
+        }
+    }
+
+    /// The first candidates and what the default recipe decides for each; shows no text.
+    func previewDataset() async {
+        guard let datasets = services.datasets else { return note("The archive index is unavailable.") }
+        await run("Previewing the default dataset recipe…") {
+            let preview = try await datasets.preview(recipe: DatasetRecipe(), limit: 12)
+            var out = ["First \(preview.entries.count) of \(preview.audit.candidates) candidate responses:"]
+            for entry in preview.entries {
+                out.append("\(entry.sampleID.prefix(10))  " + (entry.included
+                    ? "included · \(entry.tier ?? "") · \(entry.split ?? "")"
+                    : "excluded · " + entry.reasons.joined(separator: ", ")))
+            }
+            return (out, false)
+        }
+    }
+
+    /// `fromRecipe`: ask for a recipe file (e.g. an earlier dataset's `recipe.json`) first.
+    func buildDataset(fromRecipe: Bool) async {
+        guard let datasets = services.datasets else { return note("The archive index is unavailable.") }
+        var recipe = DatasetRecipe()
+        if fromRecipe {
+            guard let file = Self.chooseFile(prompt: "Use Recipe", message: "Choose a dataset recipe, e.g. a dataset’s recipe.json")
+            else { return }
+            do {
+                recipe = try DatasetRecipe.parse(try Data(contentsOf: file))
+            } catch {
+                return note(Self.describe(error))
+            }
+        }
+        guard let folder = Self.chooseFolder(prompt: "Build Here") else { return }
+        await run("Building the dataset…") {
+            let result = try await datasets.build(recipe: recipe, in: folder, appVersion: AppComposition.appVersion)
+            revealURL = result.url
+            return (["Dataset written: \(result.url.lastPathComponent)"] + Self.datasetSummary(result.audit, recipe: recipe), false)
+        }
+    }
+
+    static func datasetSummary(_ audit: DatasetAudit, recipe: DatasetRecipe) -> [String] {
+        var out = [
+            "Recipe “\(recipe.name)” (\(audit.recipeSHA256.prefix(12))): \(audit.candidates) candidate responses, \(audit.included) included, \(audit.excluded) excluded."
+        ]
+        if !audit.tiers.isEmpty {
+            out.append("Included by label evidence: "
+                + audit.tiers.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+                + ". Labels are Arena’s claims, not verified identities.")
+        }
+        out.append("Splits: " + ["train", "validation", "test"].map { "\($0) \(audit.splits[$0] ?? 0)" }.joined(separator: ", ")
+            + " · \(audit.groups) group(s), \(audit.labels) label(s).")
+        let reasons = audit.exclusionReasons.sorted { ($0.value, $1.key) > ($1.value, $0.key) }.prefix(5)
+        if !reasons.isEmpty {
+            out.append("Most common exclusions: " + reasons.map { "\($0.key.replacingOccurrences(of: "_", with: " ")) \($0.value)" }
+                .joined(separator: ", ") + ".")
+        }
+        out.append(audit.isClean
+            ? "Split checks passed: no group, conversation, prompt family or duplicate crosses splits."
+            : "Split checks failed (" + audit.violations.filter { $0.value > 0 }.keys.sorted().joined(separator: ", ") + "). Nothing would be written.")
+        return out + audit.notes
+    }
+
     private func note(_ text: String) {
         lines = [text]
         failed = true
@@ -143,7 +213,24 @@ final class MaintenanceModel {
     }
 
     static func describe(_ error: any Error) -> String {
-        switch error as? BackupError {
+        switch error {
+        case let error as DatasetRecipeError:
+            switch error {
+            case .notJSONObject: return "That file is not a dataset recipe (not a JSON object)."
+            case .unsupportedSchema(let schema): return "This recipe version (\(schema)) is not supported by this version."
+            case .unknownKey(let path): return "The recipe has an unknown key at \(path). Nothing was built."
+            case .wrongType(let path, let expected): return "The recipe value at \(path) must be \(expected). Nothing was built."
+            case .invalidValue(let path, let reason): return "The recipe value at \(path) is invalid: \(reason). Nothing was built."
+            }
+        case let error as DatasetError:
+            switch error {
+            case .auditFailed(let checks): return "The dataset failed its split checks (\(checks.joined(separator: ", "))). Nothing was written."
+            case .cancelled: return "Cancelled. Nothing was written."
+            case .io(let what): return "A file operation failed (\(what)). Nothing partial was left behind."
+            }
+        default: break
+        }
+        return switch error as? BackupError {
         case .notABackup: "That folder is not an Arena Suite backup."
         case .unsupportedFormat(let format): "This backup format (\(format)) is not supported by this version."
         case .fileMismatch(let what): "The backup does not match its manifest (\(what)). Do not rely on it."
@@ -155,6 +242,16 @@ final class MaintenanceModel {
         case .io(let what): "A file operation failed (\(what)). Nothing partial was left behind."
         case .none: "The action failed (\((error as NSError).domain) \((error as NSError).code))."
         }
+    }
+
+    static func chooseFile(prompt: String, message: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = prompt
+        panel.message = message
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     static func chooseFolder(prompt: String, message: String? = nil) -> URL? {
@@ -193,6 +290,19 @@ struct MaintenanceView: View {
                 }
                 row("Save Diagnostics…", "A content-free report for troubleshooting.") { await model.saveDiagnostics() }
             }
+            Text("Datasets").font(Theme.heading).padding(.top, 6)
+            Text("Training and attribution samples built from the archive. Labels are Arena’s claims with an evidence tier, never verified identities; related samples stay in one split.")
+                .font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                row("Validate Dataset", "Audit the default recipe: labels, exclusions, splits and leak checks.") {
+                    await model.validateDataset()
+                }
+                row("Preview Dataset", "List the first candidates and why each is included or excluded.") {
+                    await model.previewDataset()
+                }
+                row("Build Dataset…", "Write the default dataset to a new folder.") { await model.buildDataset(fromRecipe: false) }
+                row("Build from Recipe…", "Rebuild or customize from a recipe.json.") { await model.buildDataset(fromRecipe: true) }
+            }
             if accounts.isSyncing {
                 Text("A sync is running. These actions are available when it finishes.").font(Theme.caption).foregroundStyle(.orange)
             }
@@ -203,22 +313,25 @@ struct MaintenanceView: View {
                     Text(working).font(Theme.text)
                 }
             } else if !model.lines.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(Theme.text).foregroundStyle(model.failed ? .orange : .primary)
-                            .textSelection(.enabled)
-                    }
-                    if let url = model.revealURL {
-                        Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
-                            Text("Reveal in Finder").font(Theme.text)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(Theme.text).foregroundStyle(model.failed ? .orange : .primary)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let url = model.revealURL {
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
+                                Text("Reveal in Finder").font(Theme.text)
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(width: 640, height: 460, alignment: .topLeading)
+        .frame(width: 680, height: 720, alignment: .topLeading)
     }
 
     private func row(_ title: String, _ detail: String, action: @escaping () async -> Void) -> some View {

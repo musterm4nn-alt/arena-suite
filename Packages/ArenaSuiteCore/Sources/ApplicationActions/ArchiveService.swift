@@ -198,13 +198,23 @@ public actor ArchiveService {
     /// (never from the index). For the evidence inspector.
     public func rawEvidence(account: AccountID, snapshotSequence: UInt64) async throws -> RawEvidence? {
         guard let ref = try index.snapshotLocation(account: account, sequence: snapshotSequence) else { return nil }
-        let root = journals.root(for: account)
-        let record = try JournalReader(root: root).read(
+        return try await rawEvidence(at: ref)
+    }
+
+    /// The journal record at `ref`, read and digest-checked from `ref.account`'s journal. nil when
+    /// the record there does not carry `ref.sequence`.
+    public func rawEvidence(at ref: RecordRef) async throws -> RawEvidence? {
+        let record = try JournalReader(root: journals.root(for: ref.account)).read(
             at: JournalLocation(segment: ref.segment, offset: ref.offset, length: ref.length))
-        guard record.envelope.sequence == snapshotSequence else { return nil }
+        guard record.envelope.sequence == ref.sequence else { return nil }
         return RawEvidence(
             location: ref, envelope: record.envelopeBytes, payload: record.payload,
             digest: record.digest.map { String(format: "%02x", $0) }.joined(), decoderVersion: decoderVersion)
+    }
+
+    /// One frozen view of the projection for dataset building (plan v3 §14).
+    public nonisolated func datasetSource(accounts: Set<AccountID>? = nil) throws -> DatasetSource {
+        try index.datasetSource(accounts: accounts)
     }
 
     public nonisolated func counts() throws -> [String: Int] {

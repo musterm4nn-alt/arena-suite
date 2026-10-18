@@ -3,7 +3,7 @@
 Single source of truth for where the project stands (plan v3 §17). Dated observation files in
 `Docs/` are the evidence behind it; this page is replaced, not appended to.
 
-Updated 2026-09-25.
+Updated 2026-10-18.
 
 | Phase | State | Notes |
 |---|---|---|
@@ -17,13 +17,13 @@ Updated 2026-09-25.
 | **6** Exports | **Done, reviewed** | Raw/Normalized/Markdown; 306 real exports deterministic and telemetry-free (N-014). `Docs/phase6-exports-2026-09-24.md` |
 | **7** Hardening & release | **Done, reviewed** | Verify job, backup/restore (equal archive on real data), content-free diagnostics, packaging to `~/Applications`, 10× scale test. `Docs/phase7-release-2026-09-24.md`, `Docs/release-notes-1.0.md`, review `Docs/reviews/2026-09-24-phase7.md` |
 | §14 Read-only MCP | **Done, reviewed** | `arena-suite-mcp` (stdio): list, search, get, export through ApplicationActions over a read-only index; no network, no writes, telemetry masked. Live: 3 accounts / 57 conversations, all formats byte-equal to app exports. `Docs/mcp-readonly-2026-09-25.md`, review `Docs/reviews/2026-09-25-mcp.md` |
-| §14 Datasets | Next | Go decision 2026-09-25 |
-| §14 Maintenance | Planned | Go decision 2026-09-25 |
+| §14 Datasets | **Done, reviewed** | Recipe-driven builds from the journal: message-scoped labels with evidence tiers (never identities), every exclusion reason, grouping before splits, independent split audit, deterministic private output. Real archive: 22 samples by default, 41 with requested selections, audits clean (N-015). `Docs/datasets-2026-09-27.md`, review `Docs/reviews/2026-10-18-datasets.md` |
+| §14 Maintenance | Next | Go decision 2026-09-25 |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next
 
-1. **A4 (tomorrow or later):** `open -n DerivedData/NativeAuthProof.app --args --phase0a` once more after
+1. **A4 (overdue):** `open -n DerivedData/NativeAuthProof.app --args --phase0a` once more after
    ≥ 24 h, so the report shows whether the saved session still verifies and whether cookies were re-issued.
 2. §14 is under way (go decision 2026-09-25). Track B stays blocked: plan §1 condition 1 is not met.
 3. To use the MCP server: `bash Scripts/build-mcp.sh`, then register `~/.local/bin/arena-suite-mcp` with your MCP client.

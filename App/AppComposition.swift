@@ -14,11 +14,13 @@ enum AppComposition {
         let maintenance: Maintenance
     }
 
-    /// Verify job, backups and diagnostics (plan v3 §13, Phase 7).
+    /// Verify job, backups and diagnostics (plan v3 §13, Phase 7), and datasets (§14).
     struct Maintenance {
         let verification: VerificationService
         let backups: BackupService
         let diagnostics: DiagnosticsService
+        /// nil when the index could not be opened.
+        let datasets: DatasetService?
         /// Holds new syncs off while journals are being read as a whole.
         let sync: HistorySyncService
     }
@@ -71,6 +73,7 @@ enum AppComposition {
                 archive: archive, journals: journals,
                 environment: .init(
                     appVersion: appVersion, osVersion: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)")),
+            datasets: archive.map(DatasetService.init(archive:)),
             sync: sync)
         return Services(
             accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance)

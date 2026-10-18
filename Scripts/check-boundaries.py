@@ -24,7 +24,7 @@ mcp_forbidden = re.compile(
     r"URLSession|URLRequest|NWConnection|NWListener|Socket|JournalWriter|\.writer\(|"
     r"\.project\(|\.rebuild\(|\.reset\(|\.apply\(|\.replay\(|checkAgainstJournal|"
     r"ArchiveIndex\(url:|DatabasePool|DatabaseQueue|\.save\(|\.load\(\)|PrivateFile\.|"
-    r"\.export\(|BackupService|VerificationService|DiagnosticsService|HistorySyncService|AccountService|"
+    r"\.export\(|\.build\(recipe:|BackupService|VerificationService|DiagnosticsService|HistorySyncService|AccountService|"
     r"FileManager\.default\.(?:create|remove|move|copy|replace|setAttributes|trash)|"
     r"\.write\(to:|(?<![.\w])open\(|\bchmod\(|\bunlink\(|\brename\(",
 )
@@ -34,6 +34,7 @@ for probe in [
     "try PrivateFile.write(d, to: u)", "try d.write(to: u)", "FileManager.default.createDirectory(at: u)",
     "ExportService(archive: a).export(account: x)", "let f = open(p, O_RDWR)", "a.checkAgainstJournal(scratch: u)",
     "index.reset()", "try await journals.writer(for: a)", "URLSession.shared", "ArchiveIndex(url: u)", "chmod(p, 0)",
+    "try await datasets.build(recipe: r, in: u, appVersion: v)",
 ]:
     assert mcp_forbidden.search(probe), f"MCP deny-list self-test missed: {probe}"
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:

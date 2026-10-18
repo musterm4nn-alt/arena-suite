@@ -873,6 +873,177 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    // MARK: Dataset source (plan v3 §14)
+
+    /// Everything a dataset build reads, in one read transaction, so the checkpoints, the content
+    /// digest and every row describe the same projection. `accounts` limits the conversations
+    /// (nil = all); checkpoints, claims and votes always cover every account.
+    public func datasetSource(accounts: Set<AccountID>? = nil) throws -> DatasetSource {
+        try pool.read { db in
+            let decoderVersion = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'decoder_version'")
+            let digest = try Self.contentDigest(db)
+
+            var unknown: [String: [UnknownFieldRange]] = [:]
+            for row in try Row.fetchAll(
+                db, sql: "SELECT account_id, path, count, first_seq, last_seq FROM unknown_fields ORDER BY account_id, path")
+            {
+                let first: Int64 = row["first_seq"]
+                let last: Int64 = row["last_seq"]
+                unknown[row["account_id"], default: []].append(
+                    UnknownFieldRange(
+                        path: row["path"], count: row["count"], firstSequence: UInt64(max(0, first)),
+                        lastSequence: UInt64(max(0, last))))
+            }
+            var sourceAccounts: [DatasetSourceAccount] = []
+            for row in try Row.fetchAll(db, sql: "SELECT account_id, last_sequence FROM checkpoints ORDER BY account_id") {
+                let text: String = row["account_id"]
+                guard let account = Self.accountID(text) else { continue }
+                let value: Int64 = row["last_sequence"]
+                sourceAccounts.append(
+                    DatasetSourceAccount(account: account, checkpoint: UInt64(max(0, value)), unknownFields: unknown[text] ?? []))
+            }
+
+            var conversations: [DatasetSourceConversation] = []
+            for row in try Row.fetchAll(db, sql: Self.datasetConversationSelect) {
+                guard let summary = Self.summary(from: row) else { continue }
+                if let accounts, !accounts.contains(summary.account) { continue }
+                let accountID = summary.account.rawValue.uuidString
+                var location: RecordRef?
+                var messages: [DetailMessage] = []
+                var warnings: [IndexWarning] = []
+                if let sequence = summary.latestSnapshotSequence {
+                    if let segment: Int = row["snapshot_segment"], let offset: Int = row["snapshot_offset"],
+                        let length: Int = row["snapshot_length"]
+                    {
+                        location = RecordRef(account: summary.account, sequence: sequence, segment: segment, offset: offset, length: length)
+                    }
+                    messages = try Self.snapshotMessages(db, accountID: accountID, seq: sequence)
+                    warnings = try Row.fetchAll(
+                        db, sql: "SELECT seq, code, detail FROM warnings WHERE account_id = ? AND seq = ? ORDER BY ordinal",
+                        arguments: [accountID, Int64(sequence)]
+                    ).map { IndexWarning(sequence: UInt64($0["seq"] as Int64), code: $0["code"], detail: $0["detail"]) }
+                }
+                conversations.append(
+                    DatasetSourceConversation(
+                        summary: summary, updatedOrder: row["updated_order"], snapshotLocation: location, messages: messages,
+                        snapshotWarnings: warnings))
+            }
+
+            let claims = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT account_id, seq, conversation_id, subject, subject_id, role, model_id, display_name,
+                           organization, provider, source
+                    FROM model_claims ORDER BY account_id, seq, subject, subject_id, role, source, model_id
+                    """
+            ).compactMap { row -> SequencedClaim? in
+                guard let account = Self.accountID(row["account_id"]) else { return nil }
+                let sequence: Int64 = row["seq"]
+                let role: String = row["role"]
+                return SequencedClaim(
+                    account: account, sequence: UInt64(max(0, sequence)), conversationID: row["conversation_id"],
+                    claim: ModelClaim(
+                        subject: ModelClaim.Subject(rawValue: row["subject"]), subjectID: row["subject_id"],
+                        role: role.isEmpty ? nil : role, modelID: row["model_id"], displayName: row["display_name"],
+                        organization: row["organization"], provider: row["provider"], source: row["source"]))
+            }
+            let feedback = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT f.account_id AS account_id, f.snapshot_seq AS snapshot_seq, s.remote_id AS conversation_id,
+                           f.remote_id AS remote_id, f.value AS value, f.message_a AS message_a, f.message_b AS message_b
+                    FROM feedback f JOIN snapshots s ON s.account_id = f.account_id AND s.seq = f.snapshot_seq
+                    ORDER BY f.account_id, f.snapshot_seq, f.remote_id
+                    """
+            ).compactMap { row -> SequencedFeedback? in
+                guard let account = Self.accountID(row["account_id"]) else { return nil }
+                let sequence: Int64 = row["snapshot_seq"]
+                return SequencedFeedback(
+                    account: account, sequence: UInt64(max(0, sequence)), conversationID: row["conversation_id"],
+                    feedback: ArchivedFeedback(
+                        remoteID: row["remote_id"], value: row["value"], messageA: row["message_a"], messageB: row["message_b"]))
+            }
+            return DatasetSource(
+                decoderVersion: decoderVersion, contentDigest: digest, accounts: sourceAccounts,
+                conversations: conversations, claims: claims, feedback: feedback)
+        }
+    }
+
+    private static let datasetConversationSelect = """
+        SELECT c.account_id AS account_id, c.remote_id AS remote_id, c.kind AS kind, c.title AS title,
+               c.mode AS mode, c.modality AS modality, c.updated_at AS updated_at, c.updated_order AS updated_order,
+               c.latest_snapshot_seq AS latest_snapshot_seq, c.absent_seq AS absent_seq,
+               latest.segment AS snapshot_segment, latest.record_offset AS snapshot_offset,
+               latest.record_length AS snapshot_length,
+               (SELECT COUNT(*) FROM snapshots s
+                  WHERE s.account_id = c.account_id AND s.remote_id = c.remote_id) AS snapshot_count,
+               (SELECT COUNT(*) FROM messages m
+                  WHERE m.account_id = c.account_id AND m.snapshot_seq = c.latest_snapshot_seq) AS message_count
+        FROM conversations c
+        LEFT JOIN snapshots latest ON latest.account_id = c.account_id AND latest.seq = c.latest_snapshot_seq
+        ORDER BY c.account_id, c.remote_id
+        """
+
+    /// One snapshot's messages with parents, blocks and attachments, in four queries rather than
+    /// three per message. Same values and order as `conversation(account:remoteID:snapshot:)`.
+    private static func snapshotMessages(_ db: Database, accountID: String, seq: UInt64) throws -> [DetailMessage] {
+        let arguments: StatementArguments = [accountID, Int64(seq)]
+        var parents: [String: [String]] = [:]
+        for row in try Row.fetchAll(
+            db,
+            sql: "SELECT message_id, parent_id FROM message_parents WHERE account_id = ? AND snapshot_seq = ? ORDER BY message_id, ordinal",
+            arguments: arguments)
+        {
+            parents[row["message_id"], default: []].append(row["parent_id"])
+        }
+        var blocks: [String: [DetailBlock]] = [:]
+        for row in try Row.fetchAll(
+            db,
+            sql: """
+                SELECT message_id, kind, text, tool_name, tool_call_id, payload, pointer FROM blocks
+                WHERE account_id = ? AND snapshot_seq = ? ORDER BY message_id, ordinal
+                """,
+            arguments: arguments)
+        {
+            let kind: String = row["kind"]
+            blocks[row["message_id"], default: []].append(
+                DetailBlock(
+                    kind: BlockKind(rawValue: kind) ?? .opaque, text: row["text"], toolName: row["tool_name"],
+                    toolCallID: row["tool_call_id"], payload: row["payload"], pointer: row["pointer"] ?? ""))
+        }
+        var attachments: [String: [ArchivedAttachment]] = [:]
+        for row in try Row.fetchAll(
+            db,
+            sql: """
+                SELECT message_id, name, content_type, has_url FROM attachments
+                WHERE account_id = ? AND snapshot_seq = ? ORDER BY message_id, ordinal
+                """,
+            arguments: arguments)
+        {
+            let hasURL: Int = row["has_url"]
+            attachments[row["message_id"], default: []].append(
+                ArchivedAttachment(name: row["name"], contentType: row["content_type"], hasURL: hasURL != 0))
+        }
+        return try Row.fetchAll(
+            db,
+            sql: """
+                SELECT remote_id, role, status, lane, model_remote_id, created_at FROM messages
+                WHERE account_id = ? AND snapshot_seq = ? ORDER BY ordinal
+                """,
+            arguments: arguments
+        ).map { row in
+            let id: String = row["remote_id"]
+            return DetailMessage(
+                remoteID: id, role: row["role"], status: row["status"], lane: row["lane"], parentIDs: parents[id] ?? [],
+                modelRemoteID: row["model_remote_id"], createdAt: row["created_at"], blocks: blocks[id] ?? [],
+                attachments: attachments[id] ?? [])
+        }
+    }
+
+    private static func accountID(_ text: String) -> AccountID? {
+        UUID(uuidString: text).map { AccountID(rawValue: $0) }
+    }
+
     public func counts() throws -> [String: Int] {
         try pool.read { db in
             var counts: [String: Int] = [:]

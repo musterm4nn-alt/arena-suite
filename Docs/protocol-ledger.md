@@ -37,6 +37,12 @@ entry types `evaluation`/`agentic`, auth-cookie names and lifetimes, `/api/me` w
 isolation in one process. Also records that detail `messages[].metadata` contains per-user
 anti-abuse telemetry. The native detail fixture now exists (`native-detail.fixture.json`).
 
+N-015: [datasets-2026-09-27.md](datasets-2026-09-27.md) records, from the archived journals (counts only):
+model claims on `battle` conversations appear only after a pairwise vote (25 of 40 battles, exactly the voted ones;
+no battle `history_list` claim); all 148 vote-scoped claims agree with the message `modelId`; all 217 message claims
+are in the revealed set; every assistant message has one parent, a user prompt, and in multi-turn battles that prompt's
+parent is one lane's response (113 `a`, 111 `b`). Which history each lane's model received is not observable.
+
 N-013: [phase4-index-2026-09-24.md](phase4-index-2026-09-24.md) records that every field in the 51 archived
 detail and 7 list responses is recognized by `arena-decoder/1` (0 unknown paths, 0 warnings), content-block kinds
 `text`/`reasoning`/`tool-call`/`tool-result`, lanes `a`/`b`, and that `JSONSerialization` keeps the first duplicate key.
