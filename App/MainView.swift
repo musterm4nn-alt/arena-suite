@@ -20,35 +20,42 @@ struct MainView: View {
     let maintenance: MaintenanceModel
     let profiles: ArenaWebProfiles
     @State private var destination = MainDestination.archive
+    /// The sidebar as an icon rail (like the site's collapsed sidebar). The archive remembers the
+    /// user's choice; opening the site always starts with the rail, to give the page the room.
+    @AppStorage("sidebarRailInArchive") private var archiveRail = false
+    @State private var siteRail = true
     @State private var showingAccounts = false
     @State private var showingMaintenance = false
     @State private var showingInspector = false
 
+    // Laid out here rather than with NavigationSplitView: its sidebar cannot switch reliably
+    // between full width and a rail (it restores a saved width and grows the window when shown).
     var body: some View {
-        Group {
-            switch destination {
-            case .archive:
-                NavigationSplitView {
-                    sidebar
-                } content: {
-                    ConversationListView(archive: archive)
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 320)
-                } detail: {
-                    TranscriptView(archive: archive, showingInspector: $showingInspector)
-                        .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Theme.background)
-                        .inspector(isPresented: $showingInspector) {
-                            EvidenceInspector(archive: archive).inspectorColumnWidth(min: 260, ideal: 320, max: 520)
-                        }
-                }
-            case .site(let account):
-                NavigationSplitView {
-                    sidebar
-                } detail: {
-                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles).id(account)
+        HStack(spacing: 0) {
+            sidebar
+            Theme.border.frame(width: 1)
+            Group {
+                switch destination {
+                case .archive:
+                    HSplitView {
+                        // Minimums leave room for the full sidebar and the inspector at the
+                        // window's minimum width.
+                        ConversationListView(archive: archive)
+                            .frame(minWidth: 240, idealWidth: 320, maxWidth: 520, maxHeight: .infinity)
+                        TranscriptView(archive: archive, showingInspector: $showingInspector)
+                            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Theme.background)
+                            .inspector(isPresented: $showingInspector) {
+                                EvidenceInspector(archive: archive).inspectorColumnWidth(min: 260, ideal: 320, max: 520)
+                            }
+                    }
+                case .site(let account):
+                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite).id(account)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .arenaPalette()
         .departureMono()
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in
@@ -98,11 +105,53 @@ struct MainView: View {
         }
     }
 
-    private var sidebar: some View {
-        SidebarView(
-            accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
-            showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
+    private var rail: Bool { destination == .archive ? archiveRail : siteRail }
+
+    private func setRail(_ value: Bool) {
+        if destination == .archive { archiveRail = value } else { siteRail = value }
+    }
+
+    /// The user's click on an account's site entry: shows the site with the sidebar as a rail.
+    private func openSite(_ account: AccountID) {
+        profiles.open(account)
+        siteRail = true
+        destination = .site(account)
+    }
+
+    /// Full sidebar or rail; its own button (or Control-Command-S) switches between them.
+    @ViewBuilder private var sidebar: some View {
+        if rail {
+            SidebarRail(
+                accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
+                showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance, openSite: openSite
+            ) { setRail(false) }
+        } else {
+            SidebarView(
+                accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
+                showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance, openSite: openSite
+            ) { setRail(true) }
+            .frame(width: 240)
+        }
+    }
+}
+
+/// Switches the sidebar between full and rail (Control-Command-S, as for a sidebar).
+private struct SidebarToggle: View {
+    let collapsed: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.left")
+                .imageScale(.large)
+                .frame(width: 40, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .keyboardShortcut("s", modifiers: [.control, .command])
+        .help(collapsed ? "Show Sidebar" : "Collapse Sidebar")
+        .accessibilityLabel(collapsed ? "Show Sidebar" : "Collapse Sidebar")
     }
 }
 
@@ -115,11 +164,17 @@ private struct SidebarView: View {
     @Binding var destination: MainDestination
     @Binding var showingAccounts: Bool
     @Binding var showingMaintenance: Bool
+    let openSite: (AccountID) -> Void
+    let collapse: () -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                header("Archive")
+                HStack(alignment: .firstTextBaseline) {
+                    header("Archive")
+                    Spacer()
+                    SidebarToggle(collapsed: false, action: collapse)
+                }
                 row(title: "All accounts", subtitle: "\(archive.conversations.count) conversations", account: nil)
                 header("Accounts").padding(.top, 10)
                 ForEach(accounts.accounts) { account in
@@ -202,8 +257,7 @@ private struct SidebarView: View {
         let selected = destination == .site(account)
         let open = profiles.sessions[account] != nil
         return Button {
-            profiles.open(account)
-            destination = .site(account)
+            openSite(account)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "globe").imageScale(.small)
@@ -217,6 +271,117 @@ private struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help("Use \(profiles.siteName) here with this account's own web profile")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+// MARK: - Sidebar rail
+
+/// The collapsed sidebar, like the site's: icons only, with the same destinations as the full
+/// sidebar. Every icon has a tooltip and an accessibility label.
+private struct SidebarRail: View {
+    static let width: CGFloat = 64
+    @Bindable var accounts: AccountsModel
+    @Bindable var archive: ArchiveModel
+    let profiles: ArenaWebProfiles
+    @Binding var destination: MainDestination
+    @Binding var showingAccounts: Bool
+    @Binding var showingMaintenance: Bool
+    let openSite: (AccountID) -> Void
+    let expand: () -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            SidebarToggle(collapsed: true, action: expand)
+            ScrollView {
+                VStack(spacing: 6) {
+                    icon(
+                        "tray.full", label: "All accounts · \(archive.conversations.count) conversations",
+                        selected: destination == .archive && archive.accountFilter == nil
+                    ) {
+                        archive.accountFilter = nil
+                        destination = .archive
+                    }
+                    ForEach(accounts.accounts) { account in
+                        Theme.border.frame(width: 24, height: 1).padding(.vertical, 4)
+                        avatar(account)
+                        icon(
+                            "globe", label: "\(profiles.siteName) · \(account.displayName)",
+                            selected: destination == .site(account.id), marked: profiles.sessions[account.id] != nil
+                        ) { openSite(account.id) }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .scrollIndicators(.never)
+            // The full sidebar's message line, which the rail has no room for.
+            if let message = archive.message ?? accounts.message {
+                icon("exclamationmark.triangle", label: message, selected: false, tint: .red, action: expand)
+            }
+            icon("person.2", label: "Manage Accounts…", selected: false) { showingAccounts = true }
+            icon("wrench.and.screwdriver", label: "Maintenance…", selected: false) { showingMaintenance = true }
+        }
+        .padding(.vertical, 10)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.background)
+    }
+
+    /// The account's archive, shown as its initial (the site shows the user's avatar there). Its
+    /// tooltip carries the sync state and last result; its menu syncs or stops, as in the sidebar.
+    private func avatar(_ account: AccountSummary) -> some View {
+        let selected = destination == .archive && archive.accountFilter == account.id
+        let syncing = accounts.syncing[account.id] != nil
+        let status: String = {
+            if let progress = accounts.syncing[account.id] { return AccountsView.describe(progress) }
+            if let manifest = accounts.lastSync[account.id] { return AccountsView.describe(manifest) }
+            return AccountsView.label(account.state)
+        }()
+        return Button {
+            archive.accountFilter = account.id
+            destination = .archive
+        } label: {
+            Text(account.displayName.prefix(1).uppercased())
+                .font(Theme.text)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Theme.raised))
+                .overlay(Circle().strokeBorder(syncing ? Theme.primaryText : Theme.border))
+                .frame(width: 40, height: 34)
+                .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.sunken : .clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(account.displayName) · \(status)")
+        .accessibilityLabel("\(account.displayName) archive, \(status)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            if syncing {
+                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }
+            } else if account.state == .signedIn {
+                Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
+            }
+        }
+    }
+
+    private func icon(
+        _ symbol: String, label: String, selected: Bool, marked: Bool = false, tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .imageScale(.large)
+                .foregroundStyle(tint ?? Theme.primaryText)
+                .frame(width: 40, height: 34)
+                .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.sunken : .clear))
+                // A session that is open in the background, like the full sidebar's "open".
+                .overlay(alignment: .topTrailing) {
+                    if marked && !selected { Circle().fill(Theme.primaryText).frame(width: 5, height: 5).padding(6) }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(marked && !selected ? "\(label) (open)" : label)
+        .accessibilityLabel(marked && !selected ? "\(label), open" : label)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -301,7 +466,7 @@ private struct ConversationListView: View {
                 }
             }
         }
-        .searchable(text: $archive.searchText, placement: .sidebar, prompt: "Search archive")
+        .searchable(text: $archive.searchText, placement: .toolbar, prompt: "Search archive")
         .toolbar {
             Toggle(isOn: $archive.includeReasoningAndTools) { Text("Reasoning & tools").font(Theme.text) }
                 .help("Also search reasoning, tool calls and tool results")

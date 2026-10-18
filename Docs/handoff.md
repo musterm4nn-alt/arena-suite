@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-18, after the §14 datasets work.
+Updated 2026-10-18, after the embedded arena.ai sidebar rail.
 
 ## Where things stand
 
@@ -28,8 +28,11 @@ Updated 2026-10-18, after the §14 datasets work.
   - Off-site links only go through an "Open in Browser" banner.
   - The user confirmed sign-in and a battle in it (separate-window build).
   - The app's palette matches arena.ai's dark theme (`Theme`).
-  - Docs: `Docs/arena-window-2026-10-18.md`; reviews `Docs/reviews/2026-10-18-arena-window.md` and
-    `Docs/reviews/2026-10-18-single-window.md`.
+  - The sidebar collapses to an icon rail (`SidebarRail`, Control-Command-S), automatically when a
+    site entry is clicked. `MainView` lays it out itself, without `NavigationSplitView`, because
+    that view's sidebar could not switch reliably between full and rail.
+  - Docs: `Docs/arena-window-2026-10-18.md`; reviews `Docs/reviews/2026-10-18-arena-window.md`,
+    `Docs/reviews/2026-10-18-single-window.md` and `Docs/reviews/2026-10-18-sidebar-rail.md`.
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -39,7 +42,7 @@ Updated 2026-10-18, after the §14 datasets work.
 
 0. **Live check of the single-window build** (the user's own use of Arena). Sign-in and a battle
    already worked in the separate-window build. Still to check:
-   - opening the site row;
+   - opening the site row (the sidebar should collapse to the rail);
    - switching to the archive and back while a battle generates;
    - Close Session;
    - whether Sync History archives that conversation.

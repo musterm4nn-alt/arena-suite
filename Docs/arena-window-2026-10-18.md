@@ -206,3 +206,79 @@ harmonize".
   Session or quit.
 - **A dialog in a background page is declined.** For example, a site confirmation while the
   archive is shown answers "cancel". The page notes it when shown again.
+
+## Third iteration: sidebar rail (2026-10-18)
+
+Request: "in arena.ai, when you hide the sidebar, it [collapses to an icon rail] … i want the arena
+suite sidebar to also do something like this, and it should happen automatically when you click
+on the button to start arena.ai".
+
+### Acceptance criteria
+
+1. **Rail.** The sidebar collapses to a narrow icon rail instead of disappearing:
+   - a toggle;
+   - the archive;
+   - per account, its initial (that account's archive) and a globe (its site, with a dot while its
+     session is open);
+   - Manage Accounts and Maintenance.
+
+   Every icon has a tooltip and an accessibility label, and the selected one is marked as on the
+   site.
+2. **Toggle.** The sidebar's own button, or Control-Command-S, switches between full and rail. The
+   system sidebar toggle, which would hide the sidebar completely, is gone.
+3. **Automatic.** Every click on a site entry, in the full sidebar or the rail, shows the site with
+   the sidebar collapsed to the rail. The user can expand it again there.
+4. **The archive keeps its own choice.** It is remembered in the app's defaults
+   (`sidebarRailInArchive`), so going back from the site restores it. The default is the full
+   sidebar.
+5. **Unchanged:**
+   - the site still loads only from the user's click (`openSite` → `ArenaWebProfiles.open`);
+   - the window keeps its size when switching;
+   - the list stays resizable;
+   - the inspector, search and arrow keys still work.
+
+### What changed
+
+| Change | Where |
+|---|---|
+| `NavigationSplitView` replaced by an explicit layout: `HStack` of sidebar (240 pt) or rail (64 pt), a border, then the archive (`HSplitView` of list and transcript, with the inspector) or the site | `App/MainView.swift` |
+| `SidebarRail`, `SidebarToggle`; `openSite(_:)` opens the session, sets the rail and shows the site | `App/MainView.swift` |
+| Search field placed in the toolbar (it was a sidebar placement of the split view) | `App/MainView.swift` |
+| The rail keeps the sidebar's sync surface: a warning icon for the sidebar's message (clicking it expands the sidebar), a Sync History / Stop Sync menu on each initial, and the sync state in the initial's tooltip | `App/MainView.swift` |
+| The site pane's own Open button (shown when its session is closed) goes through `openSite`, so it collapses the sidebar too | `App/ArenaWebPane.swift`, `App/MainView.swift` |
+
+Why not `NavigationSplitView`: tried first, and its sidebar would not switch reliably.
+- Shrinking it to 64 pt worked, but growing it back ignored the minimum width and stopped at
+  140 pt.
+- At launch it restored that saved 140 pt width.
+- Hiding the sidebar and showing it again grew the window by the sidebar's width each time.
+
+The test runs left a saved split-view width and a wider window frame in the app's defaults, shared
+by the Debug and installed builds. Both were reset: the split-view entry was deleted and the window
+width set back to 1200 pt.
+
+### Evidence
+
+- `bash Scripts/build.sh Debug`: no warnings. `python3 Scripts/check-boundaries.py` passes.
+- Debug build against the real archive, from window captures (not kept):
+  - full sidebar at 240 pt, unclipped;
+  - Control-Command-S collapses to the rail, and again restores the full sidebar;
+  - the window stays at 1200 pt throughout;
+  - list, transcript and inspector fit beside either;
+  - the search field shows in the toolbar.
+- The site pane's toolbar outside a navigation container, checked without loading the site: a
+  standalone SwiftUI app with the same layout shows the Back/Forward/Reload/Home group after the
+  traffic lights, then the title and subtitle, then the actions.
+- Independent review: `Docs/reviews/2026-10-18-sidebar-rail.md`.
+- Not observed by the author: the site with the rail. Opening the site row loads arena.ai, which is
+  the user's own use, so the automatic collapse there is part of the user's live check.
+
+### Limits
+
+- **Fixed sidebar width.** The full sidebar is 240 pt and cannot be resized, unlike before.
+- **The sidebar now starts below the toolbar.** It no longer runs full height under the title bar,
+  because that was a `NavigationSplitView` feature.
+- **The rail shows accounts as initials.** Two accounts with the same initial are told apart only
+  by tooltip and order.
+- **The list's width resets after a visit to the site**, because the archive's split view is
+  rebuilt when it comes back.

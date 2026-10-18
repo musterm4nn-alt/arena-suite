@@ -159,6 +159,8 @@ struct ArenaWebPane: View {
     let accountID: AccountID
     @Bindable var accounts: AccountsModel
     let profiles: ArenaWebProfiles
+    /// The user's Open click; the main window opens the session and collapses its sidebar.
+    let open: (AccountID) -> Void
     @State private var confirmingClear = false
 
     private var account: AccountSummary? { accounts.accounts.first { $0.id == accountID } }
@@ -186,7 +188,7 @@ struct ArenaWebPane: View {
                 } description: {
                     Text("Nothing is loaded until you open it.")
                 } actions: {
-                    Button("Open \(profiles.siteName)") { profiles.open(accountID) }.buttonStyle(.arenaPill)
+                    Button("Open \(profiles.siteName)") { open(accountID) }.buttonStyle(.arenaPill)
                 }
                 .navigationTitle(title(account))
             } else {
