@@ -17,6 +17,9 @@ public struct ConversationSummary: Sendable, Equatable {
     public let mode: String?
     public let modality: String?
     public let updatedAt: String?
+    /// `updatedAt` as the decoder parsed it (microseconds since 1970), the key the list is sorted
+    /// by; nil when it could not be parsed. Views group by this rather than parsing again.
+    public let updatedOrder: Int64?
     public let snapshotCount: Int
     public let latestSnapshotSequence: UInt64?
     public let messageCount: Int
@@ -24,7 +27,8 @@ public struct ConversationSummary: Sendable, Equatable {
 
     public init(
         account: AccountID, remoteID: String, kind: String, title: String?, mode: String?, modality: String?,
-        updatedAt: String?, snapshotCount: Int, latestSnapshotSequence: UInt64?, messageCount: Int, isAbsent: Bool
+        updatedAt: String?, snapshotCount: Int, latestSnapshotSequence: UInt64?, messageCount: Int, isAbsent: Bool,
+        updatedOrder: Int64? = nil
     ) {
         self.account = account
         self.remoteID = remoteID
@@ -33,6 +37,7 @@ public struct ConversationSummary: Sendable, Equatable {
         self.mode = mode
         self.modality = modality
         self.updatedAt = updatedAt
+        self.updatedOrder = updatedOrder
         self.snapshotCount = snapshotCount
         self.latestSnapshotSequence = latestSnapshotSequence
         self.messageCount = messageCount
@@ -1109,7 +1114,7 @@ public final class ArchiveIndex: Sendable {
 
     private static let summarySelect = """
         SELECT c.account_id AS account_id, c.remote_id AS remote_id, c.kind AS kind, c.title AS title,
-               c.mode AS mode, c.modality AS modality, c.updated_at AS updated_at,
+               c.mode AS mode, c.modality AS modality, c.updated_at AS updated_at, c.updated_order AS updated_order,
                c.latest_snapshot_seq AS latest_snapshot_seq, c.absent_seq AS absent_seq,
                (SELECT COUNT(*) FROM snapshots s
                   WHERE s.account_id = c.account_id AND s.remote_id = c.remote_id) AS snapshot_count,
@@ -1127,7 +1132,7 @@ public final class ArchiveIndex: Sendable {
             account: AccountID(rawValue: uuid), remoteID: row["remote_id"], kind: row["kind"], title: row["title"],
             mode: row["mode"], modality: row["modality"], updatedAt: row["updated_at"],
             snapshotCount: row["snapshot_count"], latestSnapshotSequence: latest.map { UInt64($0) },
-            messageCount: row["message_count"], isAbsent: absent != nil)
+            messageCount: row["message_count"], isAbsent: absent != nil, updatedOrder: row["updated_order"])
     }
 
     private static func parents(_ db: Database, accountID: String, seq: UInt64, messageID: String) throws -> [String] {

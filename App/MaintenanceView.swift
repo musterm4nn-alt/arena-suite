@@ -270,11 +270,25 @@ struct MaintenanceView: View {
     let accounts: AccountsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Maintenance").font(Theme.heading)
-            Text("Everything here reads your archive locally. Nothing is sent to Arena.")
-                .font(Theme.caption).foregroundStyle(.secondary)
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+        VStack(spacing: 0) {
+            HeaderBar {
+                Text("Maintenance")
+            } trailing: {
+                EmptyView()
+            }
+            page
+                .padding(28)
+                .frame(maxWidth: 820, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity)
+        }
+        .background(Theme.background)
+        .navigationTitle("Maintenance")
+    }
+
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Everything here reads your archive locally. Nothing is sent to Arena.").foregroundStyle(.secondary)
+            section("Archive") {
                 row("Verify Archive", "Check every journal record and compare the index with a fresh replay.") {
                     await model.verify()
                 }
@@ -290,10 +304,10 @@ struct MaintenanceView: View {
                 }
                 row("Save Diagnostics…", "A content-free report for troubleshooting.") { await model.saveDiagnostics() }
             }
-            Text("Datasets").font(Theme.heading).padding(.top, 6)
-            Text("Training and attribution samples built from the archive. Labels are Arena’s claims with an evidence tier, never verified identities; related samples stay in one split.")
-                .font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+            section("Datasets") {
+                Text("Training and attribution samples built from the archive. Labels are Arena’s claims with an evidence tier, never verified identities; related samples stay in one split.")
+                    .font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
                 row("Validate Dataset", "Audit the default recipe: labels, exclusions, splits and leak checks.") {
                     await model.validateDataset()
                 }
@@ -304,41 +318,56 @@ struct MaintenanceView: View {
                 row("Build from Recipe…", "Rebuild or customize from a recipe.json.") { await model.buildDataset(fromRecipe: true) }
             }
             if accounts.isSyncing {
-                Text("A sync is running. These actions are available when it finishes.").font(Theme.caption).foregroundStyle(.orange)
+                Text("A sync is running. These actions are available when it finishes.").foregroundStyle(.orange)
             }
-            Divider()
-            if let working = model.working {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(working).font(Theme.text)
-                }
-            } else if !model.lines.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
-                            Text(line).font(Theme.text).foregroundStyle(model.failed ? .orange : .primary)
-                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let url = model.revealURL {
-                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
-                                Text("Reveal in Finder").font(Theme.text)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            Spacer(minLength: 0)
+            output
         }
-        .padding(20)
-        .frame(width: 680, height: 720, alignment: .topLeading)
+    }
+
+    /// The running action, or the last result, in a sunken panel that fills the rest of the sheet.
+    private var output: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                if let working = model.working {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(working)
+                    }
+                } else if model.lines.isEmpty {
+                    Text("Results appear here.").foregroundStyle(.tertiary)
+                } else {
+                    ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line).foregroundStyle(model.failed ? .orange : .primary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let url = model.revealURL {
+                        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                            .buttonStyle(.arenaPill)
+                            .padding(.top, 6)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.sunken))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+    }
+
+    private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(Theme.caption).foregroundStyle(.secondary).accessibilityAddTraits(.isHeader)
+            content()
+        }
     }
 
     private func row(_ title: String, _ detail: String, action: @escaping () async -> Void) -> some View {
-        GridRow {
-            Button { Task { await action() } } label: { Text(title).font(Theme.text).frame(minWidth: 170, alignment: .leading) }
+        HStack(spacing: 14) {
+            Button { Task { await action() } } label: { Text(title).frame(width: 150, alignment: .leading) }
+                .buttonStyle(.arenaPill)
                 .disabled(model.busy)
-            Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+            Text(detail).font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

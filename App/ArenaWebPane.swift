@@ -166,15 +166,11 @@ struct ArenaWebPane: View {
     private var account: AccountSummary? { accounts.accounts.first { $0.id == accountID } }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if let account, let session = profiles.sessions[accountID] {
+                header(account, page: session.page)
                 ArenaWebHost(session: session)
                     .safeAreaInset(edge: .top, spacing: 0) { banners(session.page) }
-                    .toolbar { toolbar(account, page: session.page) }
-                    // A label for the profile, not a verified identity: the app never reads which
-                    // Arena account is signed in there (ADR 0006).
-                    .navigationTitle(title(account))
-                    .navigationSubtitle(session.page.host ?? "")
                     .confirmationDialog(
                         "Clear web data for \(account.displayName)'s web profile?", isPresented: $confirmingClear
                     ) {
@@ -183,46 +179,83 @@ struct ArenaWebPane: View {
                         Text("This signs you out of this web profile and deletes its cookies and site storage. Your archive is not affected.")
                     }
             } else if let account {
-                ContentUnavailableView {
-                    Label("\(profiles.siteName) is closed", systemImage: "globe")
-                } description: {
-                    Text("Nothing is loaded until you open it.")
-                } actions: {
-                    Button("Open \(profiles.siteName)") { open(accountID) }.buttonStyle(.arenaPill)
+                #if DEBUG
+                // Development: `--preview-site-header` draws the open page's header over the closed
+                // placeholder, with a page model that has no web view (nothing is loaded).
+                if CommandLine.arguments.contains("--preview-site-header") {
+                    header(account, page: ArenaWebPage())
+                } else {
+                    HeaderBar(divider: true) {
+                        Text(title(account)).foregroundStyle(.secondary).lineLimit(1)
+                    } trailing: {
+                        EmptyView()
+                    }
                 }
-                .navigationTitle(title(account))
+                #else
+                HeaderBar(divider: true) {
+                    Text(title(account)).foregroundStyle(.secondary).lineLimit(1)
+                } trailing: {
+                    EmptyView()
+                }
+                #endif
+                VStack(spacing: 10) {
+                    Image(systemName: "globe").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text("\(profiles.siteName) is closed").font(Theme.heading)
+                    Text("Nothing is loaded until you open it.").foregroundStyle(.secondary)
+                    Button("Open \(profiles.siteName)") { open(accountID) }.buttonStyle(.arenaPill).padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView(
-                    "Account not found", systemImage: "person.crop.circle.badge.xmark",
-                    description: Text("This account is not in Arena Suite's account list. Nothing is shown and nothing is deleted."))
+                VStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle.badge.xmark").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text("Account not found").font(Theme.heading)
+                    Text("This account is not in Arena Suite's account list. Nothing is shown and nothing is deleted.")
+                        .foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.center)
+                .padding(40)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // A label for the profile, not a verified identity: the app never reads which Arena
+        // account is signed in there (ADR 0006).
+        .navigationTitle(account.map(title) ?? profiles.siteName)
         .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background)
     }
 
     private func title(_ account: AccountSummary) -> String { "\(profiles.siteName) · web profile of \(account.displayName)" }
 
-    @ToolbarContentBuilder
-    private func toolbar(_ account: AccountSummary, page: ArenaWebPage) -> some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button { page.goBack() } label: { Label("Back", systemImage: "chevron.left") }
-                .disabled(!page.canGoBack).keyboardShortcut("[", modifiers: .command)
-            Button { page.goForward() } label: { Label("Forward", systemImage: "chevron.right") }
-                .disabled(!page.canGoForward).keyboardShortcut("]", modifiers: .command)
-            Button { page.reloadOrStop() } label: {
-                Label(page.isLoading ? "Stop" : "Reload", systemImage: page.isLoading ? "xmark" : "arrow.clockwise")
+    /// The page's controls, in the window's top band like the archive's header.
+    private func header(_ account: AccountSummary, page: ArenaWebPage) -> some View {
+        HeaderBar(divider: true) {
+            HStack(spacing: 2) {
+                Button { page.goBack() } label: { Label("Back", systemImage: "chevron.left") }
+                    .disabled(!page.canGoBack).keyboardShortcut("[", modifiers: .command)
+                    .help("Back (⌘[)")
+                Button { page.goForward() } label: { Label("Forward", systemImage: "chevron.right") }
+                    .disabled(!page.canGoForward).keyboardShortcut("]", modifiers: .command)
+                    .help("Forward (⌘])")
+                Button { page.reloadOrStop() } label: {
+                    Label(page.isLoading ? "Stop" : "Reload", systemImage: page.isLoading ? "xmark" : "arrow.clockwise")
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .help(page.isLoading ? "Stop (⌘R)" : "Reload (⌘R)")
+                Button { page.goHome() } label: { Label("Home", systemImage: "house") }
+                    .help("\(profiles.siteName) home")
             }
-            .keyboardShortcut("r", modifiers: .command)
-            Button { page.goHome() } label: { Label("Home", systemImage: "house") }
-        }
-        ToolbarItemGroup(placement: .primaryAction) {
+            .buttonStyle(.arenaIcon)
+            Text(title(account)).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 6)
+            if let host = page.host, host != profiles.siteName {
+                Text(host).foregroundStyle(.tertiary).lineLimit(1)
+            }
+        } trailing: {
             if let progress = accounts.syncing[account.id] {
-                Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary)
-                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }.font(Theme.text)
+                Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary).lineLimit(1)
+                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }.buttonStyle(.arenaPill)
             } else {
                 Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
-                    .font(Theme.text)
+                    .buttonStyle(.arenaPill)
                     .disabled(account.state != .signedIn)
                     .help(
                         account.state == .signedIn
@@ -236,8 +269,12 @@ struct ArenaWebPane: View {
                 Button("Close \(profiles.siteName) Session") { Task { await profiles.close(account.id) } }
                 Button("Clear Web Data…") { confirmingClear = true }
             } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                Label("More", systemImage: "ellipsis")
             }
+            .menuStyle(.button)
+            .buttonStyle(.arenaIcon)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
     }
 

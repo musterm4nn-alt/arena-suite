@@ -11,6 +11,9 @@ final class AccountsModel {
     private(set) var loading = true
     private(set) var syncing: [AccountID: SyncProgress] = [:]
     private(set) var lastSync: [AccountID: SyncManifest] = [:]
+    /// Why each account's last sync failed, kept per account: with several syncs running, one
+    /// account's success must not erase another's failure.
+    private(set) var syncErrors: [AccountID: String] = [:]
     var message: String?
 
     private let service: AccountService
@@ -36,9 +39,9 @@ final class AccountsModel {
         do {
             let manifest = try await sync.sync(id)
             lastSync[id] = manifest
-            message = nil
+            syncErrors[id] = nil
         } catch {
-            message = Self.describe(error)
+            syncErrors[id] = Self.describe(error)
         }
         poll.cancel()
         syncing[id] = nil
@@ -47,6 +50,12 @@ final class AccountsModel {
     }
 
     func cancelSync(_ id: AccountID) async { await sync.cancel(id) }
+
+    /// Clears the shown errors (the sidebar's Dismiss). Manifests and the status file keep the outcome.
+    func dismissErrors() {
+        message = nil
+        syncErrors = [:]
+    }
 
     var isSyncing: Bool { !syncing.isEmpty }
 
@@ -106,7 +115,10 @@ final class AccountsModel {
     func verify(_ id: AccountID) async { _ = await run(id) { try await $0.verify(id) } }
 
     func remove(_ id: AccountID) async {
-        if await run(id, { try await $0.remove(id) }) { await onAccountRemoved?(id) }
+        if await run(id, { try await $0.remove(id) }) {
+            syncErrors[id] = nil
+            await onAccountRemoved?(id)
+        }
     }
 
     /// Called after an account was removed (the app deletes its web profile, ADR 0006).

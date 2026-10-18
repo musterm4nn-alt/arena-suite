@@ -219,6 +219,9 @@ final class ArchiveModel {
         }
     }
 
+    /// Hides the notice for the last export (the file stays where it was written).
+    func dismissExport() { lastExport = nil }
+
     /// Display names from `revealedModels`, keyed by model ID (claims keep their source).
     var revealedNames: [String: String] {
         Dictionary(

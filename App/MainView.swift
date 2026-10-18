@@ -10,10 +10,18 @@ enum MainDestination: Hashable {
     case archive
     /// The site in this account's web profile (ADR 0006).
     case site(AccountID)
+    /// Accounts: add, sign in, verify, sync, remove.
+    case accounts
+    /// Verify, back up, restore, diagnostics and datasets.
+    case maintenance
+
+    var isSite: Bool { if case .site = self { true } else { false } }
 }
 
-/// The one app window: sidebar (archive, accounts and each account's site page) beside the archive
-/// or the site. Launch always shows the archive; the site loads only when the user opens it.
+/// The one app window, laid out like the site: a sidebar (site entry, search, sync, the history by
+/// date and the account switcher) beside the archive or the site. It has no title bar or toolbar;
+/// each pane draws its own header bar in the window's top band. Launch always shows the archive;
+/// the site loads only when the user opens it.
 struct MainView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
@@ -24,8 +32,7 @@ struct MainView: View {
     /// user's choice; opening the site always starts with the rail, to give the page the room.
     @AppStorage("sidebarRailInArchive") private var archiveRail = false
     @State private var siteRail = true
-    @State private var showingAccounts = false
-    @State private var showingMaintenance = false
+    @State private var searching = false
     @State private var showingInspector = false
 
     // Laid out here rather than with NavigationSplitView: its sidebar cannot switch reliably
@@ -37,36 +44,25 @@ struct MainView: View {
             Group {
                 switch destination {
                 case .archive:
-                    HSplitView {
-                        // Minimums leave room for the full sidebar and the inspector at the
-                        // window's minimum width.
-                        ConversationListView(archive: archive)
-                            .frame(minWidth: 240, idealWidth: 320, maxWidth: 520, maxHeight: .infinity)
-                        TranscriptView(archive: archive, showingInspector: $showingInspector)
-                            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Theme.background)
-                            .inspector(isPresented: $showingInspector) {
-                                EvidenceInspector(archive: archive).inspectorColumnWidth(min: 260, ideal: 320, max: 520)
-                            }
-                    }
+                    ArchivePane(archive: archive, accounts: accounts, siteName: profiles.siteName, showingInspector: $showingInspector)
                 case .site(let account):
                     ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite).id(account)
+                case .accounts:
+                    AccountsView(model: accounts)
+                case .maintenance:
+                    MaintenanceView(model: maintenance, accounts: accounts)
                 }
             }
+            // With the rail, the window buttons reach past the sidebar into the header bar.
+            .environment(\.headerLeadingInset, rail ? max(0, Theme.windowButtonsWidth - Theme.railWidth - 1) : 0)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .ignoresSafeArea()
         .arenaPalette()
         .departureMono()
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in
             if case .site(let account) = destination, !ids.contains(account) { destination = .archive }
-        }
-        .sheet(isPresented: $showingAccounts) {
-            AccountsView(model: accounts).arenaSheet { showingAccounts = false }
-        }
-        .sheet(isPresented: $showingMaintenance) {
-            MaintenanceView(model: maintenance, accounts: accounts)
-                .arenaSheet(doneDisabled: maintenance.working != nil) { showingMaintenance = false }
         }
         .task {
             await accounts.start()
@@ -80,6 +76,7 @@ struct MainView: View {
             for _ in 0..<100 where archive.conversations.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
             if let index = arguments.firstIndex(of: "--preview-search"), arguments.indices.contains(index + 1) {
                 archive.searchText = arguments[index + 1]
+                searching = true
             }
             if let index = arguments.firstIndex(of: "--preview-conversation"), arguments.indices.contains(index + 1),
                 let match = archive.conversations.first(where: { ($0.title ?? "").hasPrefix(arguments[index + 1]) })
@@ -93,22 +90,30 @@ struct MainView: View {
                     await archive.export(.markdown, exactRawBodies: false, to: FileManager.default.temporaryDirectory.appendingPathComponent("arena-preview-exports"))
                 }
             }
+            // `--preview-site-closed` (or `--preview-site-header`) shows the first account's site pane
+            // without opening its session: nothing is loaded.
+            if arguments.contains("--preview-site-closed") || arguments.contains("--preview-site-header"),
+                let first = accounts.accounts.first
+            {
+                destination = .site(first.id)
+            }
+            if arguments.contains("--preview-accounts") { destination = .accounts }
             if arguments.contains("--preview-maintenance") {
-                showingMaintenance = true
+                destination = .maintenance
                 await maintenance.verify()
             }
             if arguments.contains("--validate-dataset") {
-                showingMaintenance = true
+                destination = .maintenance
                 await maintenance.validateDataset()
             }
             #endif
         }
     }
 
-    private var rail: Bool { destination == .archive ? archiveRail : siteRail }
+    private var rail: Bool { destination.isSite ? siteRail : archiveRail }
 
     private func setRail(_ value: Bool) {
-        if destination == .archive { archiveRail = value } else { siteRail = value }
+        if destination.isSite { siteRail = value } else { archiveRail = value }
     }
 
     /// The user's click on an account's site entry: shows the site with the sidebar as a rail.
@@ -123,727 +128,14 @@ struct MainView: View {
         if rail {
             SidebarRail(
                 accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
-                showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance, openSite: openSite
+                searching: $searching, openSite: openSite
             ) { setRail(false) }
         } else {
             SidebarView(
                 accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
-                showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance, openSite: openSite
+                searching: $searching, openSite: openSite
             ) { setRail(true) }
-            .frame(width: 240)
+            .frame(width: Theme.sidebarWidth)
         }
-    }
-}
-
-/// Switches the sidebar between full and rail (Control-Command-S, as for a sidebar).
-private struct SidebarToggle: View {
-    let collapsed: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "sidebar.left")
-                .imageScale(.large)
-                .frame(width: 40, height: 30)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .keyboardShortcut("s", modifiers: [.control, .command])
-        .help(collapsed ? "Show Sidebar" : "Collapse Sidebar")
-        .accessibilityLabel(collapsed ? "Show Sidebar" : "Collapse Sidebar")
-    }
-}
-
-// MARK: - Sidebar
-
-private struct SidebarView: View {
-    @Bindable var accounts: AccountsModel
-    @Bindable var archive: ArchiveModel
-    let profiles: ArenaWebProfiles
-    @Binding var destination: MainDestination
-    @Binding var showingAccounts: Bool
-    @Binding var showingMaintenance: Bool
-    let openSite: (AccountID) -> Void
-    let collapse: () -> Void
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    header("Archive")
-                    Spacer()
-                    SidebarToggle(collapsed: false, action: collapse)
-                }
-                row(title: "All accounts", subtitle: "\(archive.conversations.count) conversations", account: nil)
-                header("Accounts").padding(.top, 10)
-                ForEach(accounts.accounts) { account in
-                    VStack(alignment: .leading, spacing: 4) {
-                        row(title: account.displayName, subtitle: AccountsView.label(account.state), account: account.id)
-                        Group {
-                            if let progress = accounts.syncing[account.id] {
-                                Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary)
-                            } else if let manifest = accounts.lastSync[account.id] {
-                                Text(AccountsView.describe(manifest)).font(Theme.caption).foregroundStyle(.secondary).lineLimit(3)
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                        Group {
-                            if accounts.syncing[account.id] != nil {
-                                Button("Stop") { Task { await accounts.cancelSync(account.id) } }
-                            } else if account.state == .signedIn {
-                                Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
-                                    .accessibilityHint("Reads your Arena history for this account into the local archive")
-                            }
-                        }
-                        .buttonStyle(.arenaPill)
-                        .padding(.horizontal, 6)
-                        siteRow(account.id)
-                    }
-                    .padding(.vertical, 4)
-                }
-                if archive.problems.warnings > 0 || archive.problems.unknownPaths > 0 {
-                    header("Attention").padding(.top, 10)
-                    Text("\(archive.problems.warnings) decoder warning(s), \(archive.problems.unknownPaths) unknown field path(s). Raw evidence is kept.")
-                        .font(Theme.caption).foregroundStyle(.orange).padding(.horizontal, 6)
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(Theme.background)
-        .font(Theme.text)
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                if archive.projecting { Text("Updating index…").font(Theme.caption).foregroundStyle(.secondary) }
-                if let message = archive.message ?? accounts.message {
-                    Text(message).font(Theme.caption).foregroundStyle(.red).textSelection(.enabled)
-                }
-                Button("Manage Accounts…") { showingAccounts = true }.buttonStyle(.arenaPill)
-                Button("Maintenance…") { showingMaintenance = true }.buttonStyle(.arenaPill)
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.background)
-        }
-    }
-
-    private func header(_ title: String) -> some View {
-        Text(title).font(Theme.caption).foregroundStyle(.secondary).padding(.horizontal, 6)
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    /// Shows the archive, filtered to one account or none.
-    private func row(title: String, subtitle: String, account: AccountID?) -> some View {
-        let selected = destination == .archive && archive.accountFilter == account
-        return Button {
-            archive.accountFilter = account
-            destination = .archive
-        } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(Theme.text).fontWeight(selected ? .bold : .regular)
-                Text(subtitle).font(Theme.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .arenaSelection(selected)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// Shows the site in this account's web profile, opening its session on the first click.
-    private func siteRow(_ account: AccountID) -> some View {
-        let selected = destination == .site(account)
-        let open = profiles.sessions[account] != nil
-        return Button {
-            openSite(account)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "globe").imageScale(.small)
-                Text(profiles.siteName).fontWeight(selected ? .bold : .regular)
-                if open && !selected { Text("open").foregroundStyle(.secondary) }
-            }
-            .font(Theme.text)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .arenaSelection(selected)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Use \(profiles.siteName) here with this account's own web profile")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-// MARK: - Sidebar rail
-
-/// The collapsed sidebar, like the site's: icons only, with the same destinations as the full
-/// sidebar. Every icon has a tooltip and an accessibility label.
-private struct SidebarRail: View {
-    static let width: CGFloat = 64
-    @Bindable var accounts: AccountsModel
-    @Bindable var archive: ArchiveModel
-    let profiles: ArenaWebProfiles
-    @Binding var destination: MainDestination
-    @Binding var showingAccounts: Bool
-    @Binding var showingMaintenance: Bool
-    let openSite: (AccountID) -> Void
-    let expand: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            SidebarToggle(collapsed: true, action: expand)
-            ScrollView {
-                VStack(spacing: 6) {
-                    icon(
-                        "tray.full", label: "All accounts · \(archive.conversations.count) conversations",
-                        selected: destination == .archive && archive.accountFilter == nil
-                    ) {
-                        archive.accountFilter = nil
-                        destination = .archive
-                    }
-                    ForEach(accounts.accounts) { account in
-                        Theme.border.frame(width: 24, height: 1).padding(.vertical, 4)
-                        avatar(account)
-                        icon(
-                            "globe", label: "\(profiles.siteName) · \(account.displayName)",
-                            selected: destination == .site(account.id), marked: profiles.sessions[account.id] != nil
-                        ) { openSite(account.id) }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .scrollIndicators(.never)
-            // The full sidebar's message line, which the rail has no room for.
-            if let message = archive.message ?? accounts.message {
-                icon("exclamationmark.triangle", label: message, selected: false, tint: .red, action: expand)
-            }
-            icon("person.2", label: "Manage Accounts…", selected: false) { showingAccounts = true }
-            icon("wrench.and.screwdriver", label: "Maintenance…", selected: false) { showingMaintenance = true }
-        }
-        .padding(.vertical, 10)
-        .frame(width: Self.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Theme.background)
-    }
-
-    /// The account's archive, shown as its initial (the site shows the user's avatar there). Its
-    /// tooltip carries the sync state and last result; its menu syncs or stops, as in the sidebar.
-    private func avatar(_ account: AccountSummary) -> some View {
-        let selected = destination == .archive && archive.accountFilter == account.id
-        let syncing = accounts.syncing[account.id] != nil
-        let status: String = {
-            if let progress = accounts.syncing[account.id] { return AccountsView.describe(progress) }
-            if let manifest = accounts.lastSync[account.id] { return AccountsView.describe(manifest) }
-            return AccountsView.label(account.state)
-        }()
-        return Button {
-            archive.accountFilter = account.id
-            destination = .archive
-        } label: {
-            Text(account.displayName.prefix(1).uppercased())
-                .font(Theme.text)
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(Theme.raised))
-                .overlay(Circle().strokeBorder(syncing ? Theme.primaryText : Theme.border))
-                .frame(width: 40, height: 34)
-                .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.sunken : .clear))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("\(account.displayName) · \(status)")
-        .accessibilityLabel("\(account.displayName) archive, \(status)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .contextMenu {
-            if syncing {
-                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }
-            } else if account.state == .signedIn {
-                Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
-            }
-        }
-    }
-
-    private func icon(
-        _ symbol: String, label: String, selected: Bool, marked: Bool = false, tint: Color? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .imageScale(.large)
-                .foregroundStyle(tint ?? Theme.primaryText)
-                .frame(width: 40, height: 34)
-                .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.sunken : .clear))
-                // A session that is open in the background, like the full sidebar's "open".
-                .overlay(alignment: .topTrailing) {
-                    if marked && !selected { Circle().fill(Theme.primaryText).frame(width: 5, height: 5).padding(6) }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(marked && !selected ? "\(label) (open)" : label)
-        .accessibilityLabel(marked && !selected ? "\(label), open" : label)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-// MARK: - Conversation list
-
-private struct ConversationListView: View {
-    @Bindable var archive: ArchiveModel
-    @FocusState private var listFocused: Bool
-
-    private static func key(_ conversation: ConversationSummary) -> ArchiveModel.ConversationKey {
-        .init(account: conversation.account, remoteID: conversation.remoteID)
-    }
-
-    /// Up and down arrows move the selection, as in a list.
-    private func step(_ offset: Int, _ proxy: ScrollViewProxy) -> KeyPress.Result {
-        let keys = archive.conversations.map(Self.key)
-        guard !keys.isEmpty else { return .ignored }
-        let current = archive.selection.flatMap { keys.firstIndex(of: $0) }
-        let index = current.map { min(max($0 + offset, 0), keys.count - 1) } ?? (offset > 0 ? 0 : keys.count - 1)
-        archive.select(keys[index])
-        proxy.scrollTo(keys[index])
-        return .handled
-    }
-
-    var body: some View {
-        Group {
-            if !archive.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                List(archive.hits, id: \.self) { hit in
-                    Button { archive.open(hit) } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(hit.title ?? "Untitled").font(Theme.text).lineLimit(1)
-                            Text(hit.snippet).font(Theme.caption).foregroundStyle(.secondary).lineLimit(3)
-                            Text(hit.kind).font(Theme.caption).foregroundStyle(.tertiary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .font(Theme.text)
-                .scrollContentBackground(.hidden)
-                .background(Theme.background)
-                .overlay { if archive.hits.isEmpty { ContentUnavailableView.search(text: archive.searchText) } }
-            } else {
-                // Drawn here rather than with List selection, which always uses the system accent.
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(archive.conversations, id: \.self) { conversation in
-                                let key = Self.key(conversation)
-                                Button {
-                                    archive.select(key)
-                                    listFocused = true
-                                } label: {
-                                    ConversationRow(conversation: conversation)
-                                        .font(Theme.text)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .arenaSelection(archive.selection == key)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(archive.selection == key ? .isSelected : [])
-                                .id(key)
-                            }
-                        }
-                        .padding(10)
-                    }
-                    .focusable()
-                    .focused($listFocused)
-                    .focusEffectDisabled()
-                    .onKeyPress(.downArrow) { step(1, proxy) }
-                    .onKeyPress(.upArrow) { step(-1, proxy) }
-                }
-                .background(Theme.background)
-                .overlay {
-                    if archive.conversations.isEmpty {
-                        ContentUnavailableView(
-                            "No archived conversations", systemImage: "tray",
-                            description: Text("Sign in under Manage Accounts, then Sync History."))
-                    }
-                }
-            }
-        }
-        .searchable(text: $archive.searchText, placement: .toolbar, prompt: "Search archive")
-        .toolbar {
-            Toggle(isOn: $archive.includeReasoningAndTools) { Text("Reasoning & tools").font(Theme.text) }
-                .help("Also search reasoning, tool calls and tool results")
-        }
-    }
-}
-
-extension SearchHit: @retroactive Hashable {
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account.rawValue)
-        hasher.combine(conversationID)
-        hasher.combine(messageID)
-        hasher.combine(kind)
-    }
-}
-
-extension ConversationSummary: @retroactive Hashable {
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account.rawValue)
-        hasher.combine(remoteID)
-    }
-}
-
-private struct ConversationRow: View {
-    let conversation: ConversationSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(conversation.title ?? "Untitled").font(Theme.text).lineLimit(2)
-            HStack(spacing: 6) {
-                Text([conversation.mode, conversation.modality].compactMap { $0 }.joined(separator: " · "))
-                if conversation.latestSnapshotSequence == nil { Text("list only") }
-                if conversation.snapshotCount > 1 { Text("\(conversation.snapshotCount) snapshots") }
-                if conversation.isAbsent { Text("not on Arena").foregroundStyle(.orange) }
-            }
-            .font(Theme.caption)
-            .foregroundStyle(.secondary)
-            if let updated = conversation.updatedAt {
-                Text(updated.prefix(16)).font(Theme.caption).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - Transcript
-
-private struct TranscriptView: View {
-    @Bindable var archive: ArchiveModel
-    @Binding var showingInspector: Bool
-    @AppStorage("exportFormat") private var exportFormat = ExportFormat.markdown.rawValue
-    @State private var confirmExactRaw = false
-
-    var body: some View {
-        if let detail = archive.detail, let layout = archive.layout {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        header(detail)
-                        if detail.messages.isEmpty {
-                            Text(detail.summary.latestSnapshotSequence == nil
-                                ? "Only listed on Arena; no transcript is available for this conversation type yet."
-                                : "No messages in this snapshot.")
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(layout.turns) { turn in
-                            TurnView(turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage) {
-                                archive.inspect($0)
-                                showingInspector = true
-                            } inspectVote: { vote in
-                                archive.inspect(.init(title: "Vote \(vote.remoteID)", pointers: ["$.pairwiseFeedbacks[] (id \(vote.remoteID))"]))
-                                showingInspector = true
-                            }
-                        }
-                        if !layout.unmatchedVotes.isEmpty {
-                            Text("Votes not tied to a single turn:").foregroundStyle(.secondary)
-                            ForEach(layout.unmatchedVotes, id: \.remoteID) { vote in
-                                Text("Vote: \(vote.value ?? "unknown") (messages \(vote.messageA ?? "?"), \(vote.messageB ?? "?"))")
-                                    .font(Theme.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .padding(22)
-                    .textSelection(.enabled)
-                }
-                .onChange(of: archive.scrollRequest) {
-                    if let target = archive.highlightedMessage {
-                        withAnimation { proxy.scrollTo(target, anchor: .center) }
-                    }
-                }
-            }
-            .toolbar {
-                if detail.snapshotSequences.count > 1 {
-                    Picker(
-                        "Snapshot",
-                        selection: Binding(get: { archive.snapshotSequence }, set: { archive.selectSnapshot($0) })
-                    ) {
-                        Text("Latest").tag(UInt64?.none)
-                        ForEach(detail.snapshotSequences, id: \.self) { Text("Record \($0)").tag(UInt64?.some($0)) }
-                    }
-                    .help("Each sync that found changes kept a separate snapshot")
-                }
-                Picker("Format", selection: $exportFormat) {
-                    ForEach(ExportFormat.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
-                }
-                .help("Export format (remembered)")
-                Menu {
-                    Button("Export to Downloads") { Task { await archive.export(format, exactRawBodies: false, to: nil) } }
-                    Button("Export to Folder…") {
-                        if let folder = Self.chooseFolder() { Task { await archive.export(format, exactRawBodies: false, to: folder) } }
-                    }
-                    if format == .rawJSON {
-                        Divider()
-                        Button("Raw JSON with Exact Bodies (includes Arena telemetry)…") { confirmExactRaw = true }
-                    }
-                } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                } primaryAction: {
-                    Task { await archive.export(format, exactRawBodies: false, to: nil) }
-                }
-                .disabled(archive.exporting || detail.summary.latestSnapshotSequence == nil)
-                .help("Export this snapshot as \(format.label) to Downloads")
-                Button { showingInspector.toggle() } label: { Label("Evidence", systemImage: "doc.text.magnifyingglass") }
-                    .help("Show the raw journal record behind this transcript")
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let result = archive.lastExport {
-                    HStack {
-                        Text("Exported \(result.url.lastPathComponent) · \(result.byteCount) bytes · SHA-256 \(result.sha256.prefix(12))…")
-                            .font(Theme.caption).lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        Button { NSWorkspace.shared.activateFileViewerSelecting([result.url]) } label: { Text("Reveal in Finder").font(Theme.caption) }
-                    }
-                    .padding(8)
-                    .background(Theme.raised)
-                    .overlay(alignment: .top) { Theme.border.frame(height: 1) }
-                }
-            }
-            .confirmationDialog(
-                "Export raw bodies exactly?", isPresented: $confirmExactRaw
-            ) {
-                Button("Export Exact Raw JSON to Downloads") { Task { await archive.export(.rawJSON, exactRawBodies: true, to: nil) } }
-            } message: {
-                Text("Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
-            }
-        } else if archive.selection != nil {
-            ProgressView()
-        } else {
-            ContentUnavailableView("Select a conversation", systemImage: "text.bubble")
-        }
-    }
-
-    private var format: ExportFormat { ExportFormat(rawValue: exportFormat) ?? .markdown }
-
-    static func chooseFolder() -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Export Here"
-        return panel.runModal() == .OK ? panel.url : nil
-    }
-
-    @ViewBuilder private func header(_ detail: ConversationDetail) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(detail.summary.title ?? "Untitled").font(Theme.heading)
-            Text([detail.summary.kind, detail.summary.mode, detail.summary.modality].compactMap { $0 }.joined(separator: " · "))
-                .foregroundStyle(.secondary)
-            let conversationClaims = detail.claims.filter { $0.subject == .conversation }
-            if !conversationClaims.isEmpty {
-                HStack {
-                    Text("Model claims (each with its source; not verified identity):").foregroundStyle(.secondary)
-                    Button {
-                        archive.inspect(.init(title: "Model claims", pointers: ["$.revealedModels[]", "history list: $.entries[].modelAId / modelBId"]))
-                        showingInspector = true
-                    } label: { Image(systemName: "doc.text.magnifyingglass") }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Show evidence for model claims")
-                }
-                ForEach(Array(conversationClaims.enumerated()), id: \.offset) { _, claim in
-                    Text("  \(claim.role.map { "lane \($0.uppercased()): " } ?? "")\(claim.displayName ?? claim.modelID) — \(claim.source)")
-                        .font(Theme.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-}
-
-private struct TurnView: View {
-    let turn: TranscriptLayout.Turn
-    let names: [String: String]
-    let highlighted: String?
-    let inspect: (DetailMessage) -> Void
-    let inspectVote: (ArchivedFeedback) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let prompt = turn.prompt {
-                MessageView(message: prompt, title: "You", note: nil, highlighted: highlighted, isPrompt: true, inspect: inspect)
-            }
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(Array(turn.lanes.enumerated()), id: \.offset) { _, lane in
-                    VStack(alignment: .leading, spacing: 8) {
-                        if lane.hasAlternatives {
-                            Text("\(lane.messages.count) responses in this lane (regenerations or branches), in server order")
-                                .font(Theme.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(lane.messages, id: \.message.remoteID) { entry in
-                            MessageView(
-                                message: entry.message, title: laneTitle(lane.lane, entry.message),
-                                note: entry.otherParents.isEmpty ? nil : "Replies to \(entry.otherParents.joined(separator: ", "))",
-                                highlighted: highlighted, inspect: inspect)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            }
-            ForEach(turn.otherRoles, id: \.remoteID) { message in
-                MessageView(message: message, title: "Role: \(message.role ?? "not stated")", note: nil, highlighted: highlighted, inspect: inspect)
-            }
-            ForEach(turn.votes, id: \.remoteID) { vote in
-                HStack {
-                    Text("Your vote: \(vote.value ?? "unknown")").font(Theme.caption).foregroundStyle(.secondary)
-                    Button { inspectVote(vote) } label: { Image(systemName: "doc.text.magnifyingglass") }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Show evidence for this vote")
-                }
-            }
-        }
-    }
-
-    private func laneTitle(_ lane: String?, _ message: DetailMessage) -> String {
-        let model = message.modelRemoteID.map { names[$0] ?? $0 }
-        return (lane.map { "Lane \($0.uppercased())" } ?? "Response (lane not exposed)") + (model.map { " · \($0)" } ?? "")
-    }
-}
-
-private struct MessageView: View {
-    let message: DetailMessage
-    let title: String
-    let note: String?
-    let highlighted: String?
-    var isPrompt = false
-    let inspect: (DetailMessage) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).fontWeight(.bold)
-                if let status = message.status, status != "success" { Text("[\(status)]").foregroundStyle(.orange) }
-                Spacer()
-                Button { inspect(message) } label: { Image(systemName: "doc.text.magnifyingglass") }
-                    .buttonStyle(.borderless)
-                    .help("Show raw evidence for this message")
-                    .accessibilityLabel("Show raw evidence")
-            }
-            if let note { Text(note).font(Theme.caption).foregroundStyle(.secondary) }
-            ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
-                BlockView(block: block)
-            }
-            ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                Text("Attachment: \(attachment.name ?? "unnamed") \(attachment.contentType.map { "(\($0))" } ?? "")")
-                    .font(Theme.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        // As on Arena's site: your prompt in a filled bubble, responses in outlined panes.
-        .background {
-            let shape = RoundedRectangle(cornerRadius: 8)
-            ZStack {
-                shape.fill(isPrompt ? Theme.raised : Theme.background)
-                if message.remoteID == highlighted { shape.fill(Color.yellow.opacity(0.15)) }
-                shape.strokeBorder(Theme.border)
-            }
-        }
-        .overlay(alignment: .leading) {
-            if message.remoteID == highlighted { Text("▶").font(Theme.caption).offset(x: -14).accessibilityLabel("Search match") }
-        }
-        .id(message.remoteID)
-    }
-}
-
-private struct BlockView: View {
-    let block: DetailBlock
-
-    var body: some View {
-        switch block.kind {
-        case .text:
-            Text(Self.markdown(block.text ?? ""))
-        case .reasoning:
-            DisclosureGroup("Reasoning") { Text(block.text ?? "").foregroundStyle(.secondary) }
-        case .toolCall:
-            DisclosureGroup("Tool call · \(block.toolName ?? "unknown")") { payload }
-        case .toolResult:
-            DisclosureGroup("Tool result · \(block.toolName ?? block.toolCallID ?? "")") { payload }
-        case .sources:
-            DisclosureGroup("Sources") { payload }
-        case .opaque:
-            DisclosureGroup("Unrecognized block (kept as-is)") { payload }
-        }
-    }
-
-    /// Inline Markdown only (emphasis, code, links as text); whitespace preserved; nothing is loaded.
-    static func markdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
-    }
-
-    private var payload: some View {
-        Text(block.payload ?? "").font(Theme.caption).foregroundStyle(.secondary).lineLimit(40)
-    }
-}
-
-// MARK: - Evidence inspector
-
-private struct EvidenceInspector: View {
-    @Bindable var archive: ArchiveModel
-    @State private var showBody = false
-    @State private var hex = false
-    private static let textLimit = 262_144
-    private static let hexLimit = 65_536
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Evidence").font(Theme.heading)
-                if let target = archive.inspected {
-                    Text(target.title).textSelection(.enabled)
-                    ForEach(target.pointers, id: \.self) { Text($0).font(Theme.caption).foregroundStyle(.secondary) }
-                } else {
-                    Text("Choose an evidence button on a message, vote or claim.").foregroundStyle(.secondary)
-                }
-                if archive.inspected != nil && archive.evidenceUnavailable {
-                    Text("The raw record for this snapshot is unavailable.").foregroundStyle(.orange)
-                }
-                if let evidence = archive.evidence {
-                    Divider()
-                    Text("Journal record \(evidence.location.sequence) · segment \(evidence.location.segment) · offset \(evidence.location.offset) · \(evidence.location.length) bytes")
-                    Text("SHA-256 \(evidence.digest)").font(Theme.caption).textSelection(.enabled)
-                    Text("Digest verified on read · current decoder \(evidence.decoderVersion)").font(Theme.caption).foregroundStyle(.secondary)
-                    Text("Envelope").fontWeight(.bold)
-                    Text("Reformatted for display; the digest covers the stored bytes.").font(Theme.caption).foregroundStyle(.secondary)
-                    Text(Self.pretty(evidence.envelope)).font(Theme.caption).textSelection(.enabled)
-                    Toggle(isOn: $showBody) { Text("Show raw body (\(evidence.payload.count) bytes)").font(Theme.text) }
-                    if showBody {
-                        Text("The raw body includes Arena's per-message metadata (anti-abuse telemetry about you). It is shown here only on request and never indexed or exported by default.")
-                            .font(Theme.caption).foregroundStyle(.orange)
-                        Toggle(isOn: $hex) { Text("Hex").font(Theme.text) }
-                        let limit = hex ? Self.hexLimit : Self.textLimit
-                        if evidence.payload.count > limit {
-                            Text("Showing the first \(limit) of \(evidence.payload.count) bytes.").font(Theme.caption).foregroundStyle(.orange)
-                        }
-                        Text(hex ? Self.hex(evidence.payload.prefix(limit)) : String(decoding: evidence.payload.prefix(limit), as: UTF8.self))
-                            .font(Theme.caption).textSelection(.enabled)
-                    }
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(Theme.background)
-        .departureMono()
-        .onChange(of: archive.inspected) { showBody = false }
-    }
-
-    static func pretty(_ data: Data) -> String {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-            let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        else { return String(decoding: data, as: UTF8.self) }
-        return String(decoding: pretty, as: UTF8.self)
-    }
-
-    static func hex(_ data: Data) -> String {
-        stride(from: 0, to: data.count, by: 16).map { start in
-            let row = data[data.startIndex + start..<data.startIndex + min(start + 16, data.count)]
-            return String(format: "%08x  ", start) + row.map { String(format: "%02x", $0) }.joined(separator: " ")
-        }.joined(separator: "\n")
     }
 }

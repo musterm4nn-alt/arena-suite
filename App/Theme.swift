@@ -40,6 +40,8 @@ extension Theme {
     static let primaryText = adaptive(dark: 0xF3F0EC, light: 0x1B1A19)
     /// Controls (toggles, progress): a warm grey instead of the system accent.
     static let accent = adaptive(dark: 0x6B635B, light: 0x5B544C)
+    /// Under the pointer: between the background and a raised surface.
+    static let hover = adaptive(dark: 0x2F2D2B, light: 0xF1EEEA)
 
     private static func adaptive(dark: UInt32, light: UInt32) -> Color {
         Color(
@@ -49,6 +51,52 @@ extension Theme {
                     srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255,
                     blue: CGFloat(value & 0xFF) / 255, alpha: 1)
             })
+    }
+}
+
+/// The window's layout. The window has no title bar or toolbar of its own: each pane draws a header
+/// bar in the top band, where the window buttons sit (centered 16 pt from the top, ending near
+/// x = 68; measured on macOS 26, 2026-10-18). The band stays draggable like a title bar.
+extension Theme {
+    static let barHeight: CGFloat = 32
+    /// What the window buttons cover at the top-left, with a margin.
+    static let windowButtonsWidth: CGFloat = 80
+    static let sidebarWidth: CGFloat = 260
+    static let railWidth: CGFloat = 52
+}
+
+/// How far a pane's header bar must start from its leading edge to clear the window buttons (only
+/// when the sidebar is a rail, which is narrower than they are).
+private struct HeaderLeadingInsetKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var headerLeadingInset: CGFloat {
+        get { self[HeaderLeadingInsetKey.self] }
+        set { self[HeaderLeadingInsetKey.self] = newValue }
+    }
+}
+
+/// A pane's header bar in the window's top band: leading content, then trailing controls.
+struct HeaderBar<Leading: View, Trailing: View>: View {
+    var divider = false
+    @ViewBuilder let leading: Leading
+    @ViewBuilder let trailing: Trailing
+    @Environment(\.headerLeadingInset) private var inset
+
+    var body: some View {
+        HStack(spacing: 6) {
+            leading
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.leading, 14 + inset)
+        .padding(.trailing, 8)
+        .frame(height: Theme.barHeight)
+        .frame(maxWidth: .infinity)
+        .background(Theme.background)
+        .overlay(alignment: .bottom) { if divider { Theme.border.frame(height: 1) } }
     }
 }
 
@@ -62,33 +110,6 @@ extension View {
         foregroundStyle(Theme.primaryText)
             .tint(Theme.accent)
             .background(Theme.background)
-            .toolbarBackground(Theme.background, for: .windowToolbar)
-            .toolbarBackground(.visible, for: .windowToolbar)
-    }
-
-    /// A list or scroll view drawn on the palette instead of the system background or material.
-    func arenaBackground(_ color: Color = Theme.background) -> some View {
-        scrollContentBackground(.hidden).background(color)
-    }
-
-    /// A sheet on the palette. Done stays a confirmation toolbar item (with a Done button inside the
-    /// sheet instead, the app refused to quit while the sheet was open), drawn as a pill; the system
-    /// still draws that toolbar's footer strip in its own color.
-    func arenaSheet(doneDisabled: Bool = false, done: @escaping () -> Void) -> some View {
-        buttonStyle(.arenaPill)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: done).buttonStyle(.arenaPill).disabled(doneDisabled)
-                }
-            }
-            .arenaPalette()
-            .departureMono()
-    }
-
-    /// The site's selected-row look: a darker, rounded background.
-    func arenaSelection(_ selected: Bool) -> some View {
-        padding(.horizontal, 6).padding(.vertical, 3)
-            .background(RoundedRectangle(cornerRadius: 6).fill(selected ? Theme.sunken : .clear))
     }
 }
 
@@ -110,4 +131,113 @@ struct ArenaPillStyle: ButtonStyle {
 
 extension ButtonStyle where Self == ArenaPillStyle {
     static var arenaPill: ArenaPillStyle { ArenaPillStyle() }
+}
+
+/// A borderless icon button, highlighted under the pointer (header bars, the rail, hover actions).
+struct ArenaIconButtonStyle: ButtonStyle {
+    var size = CGSize(width: 28, height: 24)
+    var selected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        IconBody(configuration: configuration, size: size, selected: selected)
+    }
+
+    private struct IconBody: View {
+        let configuration: ButtonStyleConfiguration
+        let size: CGSize
+        let selected: Bool
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .labelStyle(.iconOnly)
+                .frame(width: size.width, height: size.height)
+                .foregroundStyle(Theme.primaryText.opacity(isEnabled ? (hovering || selected ? 1 : 0.72) : 0.3))
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(selected || configuration.isPressed ? Theme.sunken : hovering && isEnabled ? Theme.hover : .clear))
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
+extension ButtonStyle where Self == ArenaIconButtonStyle {
+    static var arenaIcon: ArenaIconButtonStyle { ArenaIconButtonStyle() }
+    static func arenaIcon(width: CGFloat, height: CGFloat, selected: Bool = false) -> ArenaIconButtonStyle {
+        ArenaIconButtonStyle(size: CGSize(width: width, height: height), selected: selected)
+    }
+}
+
+/// A full-width row like the site's sidebar entries: darker when selected, lighter under the pointer.
+struct ArenaRowStyle: ButtonStyle {
+    var selected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        RowBody(configuration: configuration, selected: selected)
+    }
+
+    private struct RowBody: View {
+        let configuration: ButtonStyleConfiguration
+        let selected: Bool
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .foregroundStyle(Theme.primaryText.opacity(isEnabled ? 1 : 0.4))
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(selected || configuration.isPressed ? Theme.sunken : hovering && isEnabled ? Theme.hover : .clear))
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
+extension ButtonStyle where Self == ArenaRowStyle {
+    static var arenaRow: ArenaRowStyle { ArenaRowStyle() }
+    static func arenaRow(selected: Bool) -> ArenaRowStyle { ArenaRowStyle(selected: selected) }
+}
+
+/// A text field on the palette: a sunken rounded box with an optional leading symbol.
+struct ArenaField<Field: View>: View {
+    var symbol: String?
+    @ViewBuilder let field: Field
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let symbol { Image(systemName: symbol).foregroundStyle(.secondary) }
+            field.textFieldStyle(.plain).font(Theme.text)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.sunken))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.border))
+    }
+}
+
+/// An account's initial in a circle (the site shows the user's avatar there).
+struct AccountBadge: View {
+    let text: String?
+    var symbol = "person.2"
+    var size: CGFloat = 24
+    var active = false
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.raised)
+            Circle().strokeBorder(active ? Theme.primaryText : Theme.border, lineWidth: active ? 1.5 : 1)
+            if let text {
+                Text(text).font(Theme.text)
+            } else {
+                Image(systemName: symbol).imageScale(.small)
+            }
+        }
+        .frame(width: size, height: size)
+    }
 }

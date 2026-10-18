@@ -19,32 +19,44 @@ struct AccountsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Accounts").font(.title2)
-                Spacer()
-                Button("Add Account…") { sheet = .add }
+        VStack(spacing: 0) {
+            HeaderBar {
+                Text("Accounts")
+            } trailing: {
+                Button("Add Account…") { sheet = .add }.buttonStyle(.arenaPill)
             }
-            if model.loading && model.accounts.isEmpty {
-                ProgressView("Checking saved sessions…")
-            } else if model.accounts.isEmpty {
-                Text("No accounts yet. Add your Arena account to start archiving your history.")
-                    .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Each account has its own sign-in, journal and web profile.").foregroundStyle(.secondary)
+                    VStack(spacing: 10) {
+                        if model.loading && model.accounts.isEmpty {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Checking saved sessions…").foregroundStyle(.secondary)
+                            }
+                        } else if model.accounts.isEmpty {
+                            Text("No accounts yet. Add your Arena account to start archiving your history.")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        ForEach(model.accounts) { account in
+                            row(account)
+                        }
+                    }
+                    if let message = model.message {
+                        Text(message).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                    Text("Read-only archiver. Your password is sent to Arena once and never stored; session cookies are kept in your Keychain.")
+                        .font(Theme.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(28)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            List(model.accounts) { account in
-                row(account)
-            }
-            .listStyle(.inset)
-            .arenaBackground(Theme.sunken)
-            if let message = model.message {
-                Text(message).foregroundStyle(.red).textSelection(.enabled)
-            }
-            Text("Read-only archiver. Your password is sent to Arena once and never stored; session cookies are kept in your Keychain.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(20)
-        .frame(minWidth: 560, minHeight: 320)
+        .background(Theme.background)
+        .navigationTitle("Accounts")
         .sheet(item: $sheet) { kind in
             switch kind {
             case .add:
@@ -61,43 +73,61 @@ struct AccountsView: View {
     }
 
     @ViewBuilder private func row(_ account: AccountSummary) -> some View {
-        HStack {
-            VStack(alignment: .leading) {
+        HStack(alignment: .center, spacing: 12) {
+            AccountBadge(
+                text: String(account.displayName.prefix(1)).uppercased(), size: 32,
+                active: model.syncing[account.id] != nil)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(account.displayName)
-                Text(Self.label(account.state)).font(.caption).foregroundStyle(Self.color(account.state))
+                HStack(spacing: 6) {
+                    Circle().fill(Self.color(account.state)).frame(width: 6, height: 6)
+                    Text(Self.label(account.state)).foregroundStyle(.secondary)
+                }
+                .font(Theme.caption)
                 if let progress = model.syncing[account.id] {
-                    Text(Self.describe(progress)).font(.caption).foregroundStyle(.secondary)
+                    Text(Self.describe(progress)).font(Theme.caption).foregroundStyle(.secondary)
                 } else if let manifest = model.lastSync[account.id] {
-                    Text(Self.describe(manifest)).font(.caption).foregroundStyle(manifest.outcome == .completed ? Color.secondary : .orange)
+                    Text(Self.describe(manifest)).font(Theme.caption)
+                        .foregroundStyle(manifest.outcome == .completed ? Color.secondary : .orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = model.syncErrors[account.id] {
+                    Text(error).font(Theme.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer()
-            if model.working.contains(account.id) {
-                ProgressView().controlSize(.small)
-            } else if confirmRemoval == account.id {
-                Text("Remove from this Mac?").font(.caption)
-                Button("Remove", role: .destructive) {
-                    confirmRemoval = nil
-                    Task { await model.remove(account.id) }
-                }
-                Button("Cancel") { confirmRemoval = nil }
-            } else {
-                if model.syncing[account.id] != nil {
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                if model.working.contains(account.id) {
                     ProgressView().controlSize(.small)
-                    Button("Stop") { Task { await model.cancelSync(account.id) } }
-                } else if account.state == .signedIn {
-                    Button("Sync History") { Task { await model.syncHistory(account.id) } }
-                }
-                if model.syncing[account.id] != nil {
-                    EmptyView()
-                } else if account.state == .signedIn || account.state == .unreachable || account.state == .blocked {
-                    Button("Verify") { Task { await model.verify(account.id) } }
+                } else if confirmRemoval == account.id {
+                    Text("Remove from this Mac?").font(Theme.caption)
+                    Button("Remove", role: .destructive) {
+                        confirmRemoval = nil
+                        Task { await model.remove(account.id) }
+                    }
+                    Button("Cancel") { confirmRemoval = nil }
                 } else {
-                    Button("Sign In…") { sheet = .signIn(account) }
+                    if model.syncing[account.id] != nil {
+                        ProgressView().controlSize(.small)
+                        Button("Stop") { Task { await model.cancelSync(account.id) } }
+                    } else if account.state == .signedIn {
+                        Button("Sync History") { Task { await model.syncHistory(account.id) } }
+                    }
+                    if model.syncing[account.id] != nil {
+                        EmptyView()
+                    } else if account.state == .signedIn || account.state == .unreachable || account.state == .blocked {
+                        Button("Verify") { Task { await model.verify(account.id) } }
+                    } else {
+                        Button("Sign In…") { sheet = .signIn(account) }
+                    }
+                    Button("Remove…") { confirmRemoval = account.id }
                 }
-                Button("Remove…") { confirmRemoval = account.id }
             }
+            .buttonStyle(.arenaPill)
         }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.sunken.opacity(0.6)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.border))
         .accessibilityElement(children: .combine)
     }
 
@@ -157,12 +187,15 @@ private struct SignInSheet: View {
     @State private var working = false
 
     var body: some View {
-        Form {
-            Text(title).font(.headline)
-            if asksForName { TextField("Name on this Mac (optional)", text: $name) }
-            TextField("Arena email", text: $email).textContentType(.username)
-            SecureField("Arena password", text: $password).textContentType(.password)
-            HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(Theme.heading)
+            if asksForName {
+                ArenaField(symbol: "person") { TextField("Name on this Mac (optional)", text: $name) }
+            }
+            ArenaField(symbol: "envelope") { TextField("Arena email", text: $email).textContentType(.username) }
+            ArenaField(symbol: "key") { SecureField("Arena password", text: $password).textContentType(.password) }
+            HStack(spacing: 8) {
+                if working { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Sign In") {
@@ -178,11 +211,12 @@ private struct SignInSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(working || email.isEmpty || password.isEmpty)
             }
-            if working { ProgressView().controlSize(.small) }
+            .padding(.top, 4)
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(24)
+        .frame(width: 440)
         .buttonStyle(.arenaPill)
+        .departureMono()
         .arenaPalette()
     }
 }

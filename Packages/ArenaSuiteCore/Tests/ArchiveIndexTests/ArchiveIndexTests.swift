@@ -78,6 +78,26 @@ private func apply(
     #expect(first.messages.map(\.remoteID) == ["m1"])
 }
 
+@Test func listingCarriesTheParsedUpdateInstantInListOrder() throws {
+    let index = try ArchiveIndex(url: tempIndexURL())
+    let account = AccountID()
+    func dated(_ id: String, _ text: String?, _ order: Int64?) -> ArchiveEvent {
+        .snapshot(ConversationSnapshot(
+            facts: ConversationFacts(remoteID: id, kind: "evaluation", updatedAt: text, updatedOrder: order),
+            messages: [], lastMessageIDs: [], claims: [], feedback: []))
+    }
+    // One snapshot per journal record, as the decoder emits them.
+    try apply(index, account: account, 1, [dated("old", "2026-09-01 10:00:00+00", 1_788_256_800_000_000)])
+    try apply(index, account: account, 2, [dated("unparsed", "not a time", nil)])
+    try apply(index, account: account, 3, [dated("new", "2026-10-01 10:00:00+00", 1_790_848_800_000_000)])
+    let summaries = try index.conversations(account: account)
+    // Newest first by the decoder's instant; an unparsed time sorts last and keeps its text.
+    #expect(summaries.map(\.remoteID) == ["new", "old", "unparsed"])
+    #expect(summaries.map(\.updatedOrder) == [1_790_848_800_000_000, 1_788_256_800_000_000, nil])
+    #expect(summaries.last?.updatedAt == "not a time")
+    #expect(try index.conversation(account: account, remoteID: "new")?.summary.updatedOrder == 1_790_848_800_000_000)
+}
+
 @Test func claimsCoexistWithProvenance() throws {
     let index = try ArchiveIndex(url: tempIndexURL())
     let account = AccountID()

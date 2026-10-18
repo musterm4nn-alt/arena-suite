@@ -19,7 +19,11 @@ struct ArenaSuiteApp: App {
         let services = AppComposition.makeServices()
         let archive = ArchiveModel(archive: services.archive, unavailableReason: services.archiveUnavailable)
         let accounts = AccountsModel(services: services, archiveRoot: AppComposition.archiveRoot)
-        accounts.onSyncFinished = { [archive] _ in await archive.projectAll(accounts.accounts.map(\.id)) }
+        // One index update after the last of several concurrent syncs, not one per finished job.
+        accounts.onSyncFinished = { [archive] _ in
+            guard !accounts.isSyncing else { return }
+            await archive.projectAll(accounts.accounts.map(\.id))
+        }
         let profiles = ArenaWebProfiles(policy: services.website)
         accounts.onAccountRemoved = { [profiles] id in await profiles.accountRemoved(id) }
         _profiles = State(initialValue: profiles)
@@ -38,8 +42,10 @@ struct ArenaSuiteApp: App {
     var body: some Scene {
         WindowGroup("Arena Suite") {
             MainView(accounts: accounts, archive: archive, maintenance: maintenance, profiles: profiles)
-                .frame(minWidth: 1200, minHeight: 600)
+                .frame(minWidth: 1040, minHeight: 600)
         }
+        // No title bar or toolbar: the panes draw their own header bars (Theme.barHeight).
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1440, height: 900)
         .commands {
             CommandGroup(replacing: .newItem) {}

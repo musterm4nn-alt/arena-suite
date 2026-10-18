@@ -58,8 +58,8 @@ the user.
      as in any browser.
    - New-window requests load in the same page when they target Arena, and are offered through
      the banner otherwise. They never get a second web view.
-   - The toolbar's "Open Page in Browser" opens the current page in the default browser, as a
-     user click.
+   - "Open Page in Browser" (the header bar's More menu) opens the current page in the default
+     browser, as a user click.
    - Camera and microphone requests are denied. Downloads, in any frame, and file uploads happen
      only through a save or open panel the user confirms. A download that replaces an existing
      file is written beside it first, and the original is replaced only after the download
@@ -71,7 +71,7 @@ the user.
      page's requests, including those of a session kept in the background, are the site's own;
      the app does not originate, rate-limit, observe or record them.
    - A conversation made there reaches the archive only through the user-initiated native history
-     sync, which journals the server's history responses exactly. The site's toolbar offers that
+     sync, which journals the server's history responses exactly. The site's header bar offers that
      account's Sync History button.
    - Native `sendPrompt`/`createConversation` remain `unsupported (blocked: reCAPTCHA v3, N-004)`,
      and Track B is unchanged.
@@ -92,8 +92,8 @@ The user asked that Arena Suite always be one window ("not pop out a second one 
     downloads it asks for are declined (nothing is presented off-screen), and the page shows a
     notice about it when it is shown again. "Shown" is measured as the web view being in a
     visible, non-minimized window, which is the case only while its pane is displayed.
-  - The toolbar's "Close <site> Session" ends it: the page stops and the web view is released.
-    The sign-in stays in the profile.
+  - "Close <site> Session" (the header bar's More menu) ends it: the page stops and the web view
+    is released. The sign-in stays in the profile.
   - Removing the account ends its session, then deletes the profile.
 - Still exactly one web view per open session, and none is hidden with `isHidden`/`alphaValue` or
   drawn off-screen: a session not shown is simply not in any view hierarchy, like a background
