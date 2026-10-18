@@ -24,6 +24,7 @@ let package = Package(
         .testTarget(name: "CaptureJournalTests", dependencies: ["CaptureJournal"]),
         .testTarget(name: "ArchiveIndexTests", dependencies: ["ArchiveIndex", "SuiteDomain", "ApplicationActions", "CaptureJournal"]),
         .testTarget(name: "DatasetTests", dependencies: ["ApplicationActions", "ArchiveIndex", "SuiteDomain", "CaptureJournal"]),
+        .testTarget(name: "ApplicationActionsTests", dependencies: ["ApplicationActions"]),
     ],
     swiftLanguageModes: [.v6]
 )

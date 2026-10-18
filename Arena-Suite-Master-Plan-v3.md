@@ -48,6 +48,7 @@ What v3 keeps from v2 unchanged in spirit: record before interpret, the raw jour
 
 - Sending prompts, continuing, stopping, regenerating, voting, revealing models, uploading files.
 - Any browser runtime: no WebView, no embedded browser, no browser-token transfer, no page scripts. (Browser DevTools remain allowed as a research instrument outside the product, as in Phase 0.)
+  - **Amended 2026-10-18 by the user (ADR 0006):** one exception, a visible arena.ai window the user drives, with one web profile per account. It runs no injected scripts, reads no page, cookie or storage data, transfers no tokens, uses no hidden web view, and stays outside the journal. Conversations made there reach the archive only through the native history sync. Native generation (Track B, below) is unchanged.
 - MCP, training datasets, timing fingerprinting, model-attribution features.
 - File/workspace downloads, unless Phase 0-A finds exposed file resources in history detail (then see §9.4).
 

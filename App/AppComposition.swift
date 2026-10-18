@@ -12,6 +12,8 @@ enum AppComposition {
         let archive: ArchiveService?
         let archiveUnavailable: String?
         let maintenance: Maintenance
+        /// Where the embedded site window may go (ADR 0006).
+        let website: WebSitePolicy
     }
 
     /// Verify job, backups and diagnostics (plan v3 §13, Phase 7), and datasets (§14).
@@ -76,6 +78,7 @@ enum AppComposition {
             datasets: archive.map(DatasetService.init(archive:)),
             sync: sync)
         return Services(
-            accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance)
+            accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance,
+            website: ArenaWebsite.policy)
     }
 }

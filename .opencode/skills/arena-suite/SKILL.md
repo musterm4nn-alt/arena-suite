@@ -23,7 +23,9 @@ Do not build later phases because their abstractions look convenient.
 
 v1 is a **native, read-only archiver**: sign in, restore sessions, sync history, journal it, index it, browse/search, export Raw/Normalized/Markdown.
 
-Out of scope for v1: sending prompts, continuing, stopping, voting, revealing models, uploading, MCP, datasets, timing fingerprints. Native generation (Track B) is blocked by reCAPTCHA v3 (N-004) and starts only under v3 §1's conditions. Never copy browser tokens, run a hidden WebView, or solve/bypass challenges. Voting and reveal exist only inside Track B as manual, user-clicked actions (v3 §1); never automated, batched, suggested, or exposed to MCP.
+Out of scope for v1: natively sending prompts, continuing, stopping, voting, revealing models, uploading, timing fingerprints. Native generation (Track B) is blocked by reCAPTCHA v3 (N-004) and starts only under v3 §1's conditions. Never copy browser tokens, run a hidden WebView, or solve/bypass challenges.
+
+The one browser runtime is the visible arena.ai window (ADR 0006, `App/ArenaWebWindow.swift`). The user drives it; it has one web profile per account. Keep it free of injected scripts, page/cookie/storage reads, scheme handlers, user-agent changes and a second web view. Its traffic is outside the journal; it archives only through the native history sync. Voting and reveal exist only inside Track B as manual, user-clicked actions (v3 §1); never automated, batched, suggested, or exposed to MCP.
 
 ## 3. Evidence rules
 

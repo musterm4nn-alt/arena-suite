@@ -105,7 +105,12 @@ final class AccountsModel {
 
     func verify(_ id: AccountID) async { _ = await run(id) { try await $0.verify(id) } }
 
-    func remove(_ id: AccountID) async { _ = await run(id) { try await $0.remove(id) } }
+    func remove(_ id: AccountID) async {
+        if await run(id, { try await $0.remove(id) }) { await onAccountRemoved?(id) }
+    }
+
+    /// Called after an account was removed (the app deletes its web profile, ADR 0006).
+    var onAccountRemoved: ((AccountID) async -> Void)?
 
     private func run<T: Sendable>(_ id: AccountID, _ work: (AccountService) async throws -> T) async -> Bool {
         working.insert(id)

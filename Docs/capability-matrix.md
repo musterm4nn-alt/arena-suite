@@ -29,3 +29,11 @@ prove refresh, restoration, a second account or chat, and no raw native response
 
 Modes/modalities remain extensible provider strings when observed; no mode availability is claimed.
 No fake adapter implementation returns a successful send or authentication result.
+
+## 2026-10-18 note: embedded arena.ai window (ADR 0006)
+
+The app now shows arena.ai in a visible window the user drives. That is a browser, not a native
+capability, so no row above changes because of it. Native `createConversation`/`sendPrompt` stay
+blocked by reCAPTCHA v3 (N-004); plan v3 §1 reports them as `unsupported`, not `unknown`.
+Conversations made in the window reach the archive only through `listHistory`/`getHistoryDetail`
+in a user-initiated sync.

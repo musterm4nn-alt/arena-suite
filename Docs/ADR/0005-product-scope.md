@@ -15,6 +15,8 @@ conditional Track B.
 - Track B (generation, plus manual user-clicked vote/reveal) is **blocked** by N-004 and starts only
   under plan §1's conditions.
 - No browser runtime, browser-token transfer or challenge bypass in any version.
+  *Amended 2026-10-18 (ADR 0006):* the one allowed browser runtime is the visible, user-driven
+  arena.ai window. Browser-token transfer and challenge bypass remain excluded in every version.
 - Traffic policy per plan §2.
 
 ## Gate R — terms of use and account risk (user decision recorded)

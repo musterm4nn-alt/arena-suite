@@ -18,6 +18,11 @@ Updated 2026-10-18, after the §14 datasets work.
   - 3 accounts, all signed in; 57 conversations; journals of 30 / 31 / 49 records.
   - Verify is clean, and the live index equals a fresh replay.
 - §14 read-only MCP is done and reviewed: `Packages/ArenaSuiteMCP`, `Docs/mcp-readonly-2026-09-25.md`.
+- **Embedded arena.ai window** (ADR 0006, user decision 2026-10-18): `App/ArenaWebWindow.swift`, opened
+  per account from the sidebar ("Open arena.ai"). It has one web profile per account and a Sync
+  History button. It deletes profiles only for removed accounts (`WebProfileLifecycle`), and
+  off-site links only go through an "Open in Browser" banner. `Docs/arena-window-2026-10-18.md`,
+  review `Docs/reviews/2026-10-18-arena-window.md`.
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -25,6 +30,9 @@ Updated 2026-10-18, after the §14 datasets work.
 
 ## Open items
 
+0. **Live check of the arena.ai window** (the user's own use of Arena). Sign in inside the window,
+   run a battle, then Sync History. Record in `Docs/arena-window-2026-10-18.md` whether sign-in and
+   prompts work in the window (reCAPTCHA) and whether the conversation was archived.
 1. **A4, the 24-hour session check.** It is overdue (the last run was 2026-09-24). Ask the user to
    run:
    `open -n ~/Documents/arena-suite-opus/DerivedData/NativeAuthProof.app --args --phase0a`
@@ -57,8 +65,11 @@ Updated 2026-10-18, after the §14 datasets work.
 
 ## Hard constraints
 
-- No CAPTCHA or anti-abuse bypass, no browser-token transfer, and no WebView or browser runtime in
-  the product.
+- No CAPTCHA or anti-abuse bypass and no browser-token transfer.
+- No WebView or browser runtime in the product, except the visible, user-driven arena.ai window
+  (ADR 0006). That window has no injected scripts, no page, cookie or storage reads, no hidden web
+  views and no user-agent change, and stays outside the journal. `Scripts/check-boundaries.py`
+  enforces this.
 - **Traffic policy:** sync is user-initiated, one request in flight per account, at least 1 s
   spacing. Stop on 403 or a challenge page; honor `Retry-After` once.
 - **Never commit** credentials, cookies, passwords, the team ID, the email address or the signing
@@ -135,7 +146,7 @@ To test a clean install with the Release binary, point it at an empty home folde
   - `ArenaAdapter`: sessions/Keychain, history routes and sync, `ArenaArchiveDecoder`. This is the
     only module that knows Arena routes.
   - Most integration tests live in `Tests/AdapterTests`.
-- **`App/`:** SwiftUI.
+- **`App/`:** SwiftUI. `ArenaWebWindow.swift` is the only file that may import WebKit (ADR 0006).
   - `AppComposition.swift` is the only file allowed to import `ArenaAdapter`.
   - Also: the Accounts, Archive and Maintenance models and views, and `Theme`.
   - The Xcode project is hand-written. When adding a file, add both a `PBXFileReference` and a

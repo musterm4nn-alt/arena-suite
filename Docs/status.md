@@ -19,6 +19,7 @@ Updated 2026-10-18.
 | §14 Read-only MCP | **Done, reviewed** | `arena-suite-mcp` (stdio): list, search, get, export through ApplicationActions over a read-only index; no network, no writes, telemetry masked. Live: 3 accounts / 57 conversations, all formats byte-equal to app exports. `Docs/mcp-readonly-2026-09-25.md`, review `Docs/reviews/2026-09-25-mcp.md` |
 | §14 Datasets | **Done, reviewed** | Recipe-driven builds from the journal: message-scoped labels with evidence tiers (never identities), every exclusion reason, grouping before splits, independent split audit, deterministic private output. Real archive: 22 samples by default, 41 with requested selections, audits clean (N-015). `Docs/datasets-2026-09-27.md`, review `Docs/reviews/2026-10-18-datasets.md` |
 | §14 Maintenance | Next | Go decision 2026-09-25 |
+| arena.ai window (ADR 0006) | **Built, reviewed, live check pending** | A visible, user-driven arena.ai window, one web profile per account, with no scripts and no page or cookie reads; it archives through the normal sync. Native generation is unchanged. `Docs/arena-window-2026-10-18.md`, review `Docs/reviews/2026-10-18-arena-window.md` |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next

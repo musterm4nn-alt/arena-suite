@@ -9,6 +9,7 @@ struct MainView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
     let maintenance: MaintenanceModel
+    let profiles: ArenaWebProfiles
     @State private var showingAccounts = false
     @State private var showingMaintenance = false
     @State private var showingInspector = false
@@ -16,7 +17,7 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(
-                accounts: accounts, archive: archive, showingAccounts: $showingAccounts,
+                accounts: accounts, archive: archive, siteName: profiles.siteName, showingAccounts: $showingAccounts,
                 showingMaintenance: $showingMaintenance)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } content: {
@@ -47,6 +48,8 @@ struct MainView: View {
         .task {
             await accounts.start()
             await archive.projectAll(accounts.accounts.map(\.id))
+            // Finishes web profile deletions for removed accounts that could not complete earlier.
+            await profiles.lifecycle.retryPending()
             #if DEBUG
             // Development: `--preview-conversation "<title prefix>"` opens that conversation and the
             // evidence inspector, for screenshots of this window only.
@@ -85,6 +88,8 @@ struct MainView: View {
 private struct SidebarView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
+    let siteName: String
+    @Environment(\.openWindow) private var openWindow
     @Binding var showingAccounts: Bool
     @Binding var showingMaintenance: Bool
 
@@ -109,6 +114,8 @@ private struct SidebarView: View {
                                 Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
                                     .accessibilityHint("Reads your Arena history for this account into the local archive")
                             }
+                            Button("Open \(siteName)") { openWindow(id: ArenaWebWindow.id, value: account.id) }
+                                .help("Use \(siteName) in a window with this account's own web profile")
                         }
                         .buttonStyle(.link)
                         .font(Theme.text)

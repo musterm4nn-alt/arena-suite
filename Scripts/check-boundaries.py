@@ -2,6 +2,7 @@
 
 import pathlib
 import re
+import subprocess
 
 root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
@@ -40,6 +41,56 @@ for probe in [
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:
     assert not mcp_forbidden.search(allowed_text), f"MCP deny-list self-test over-matched: {allowed_text}"
 
+# Embedded site window (ADR 0006): WebKit only in this file, and there no scripts, no page, cookie
+# or storage reads, no scheme handlers, no user-agent change, no content capture (of the page or
+# the screen), no dynamic dispatch that could reach any of these, no default, shared or ephemeral
+# data store, and exactly one web view (no aliases or other constructors).
+web_window = "App/ArenaWebWindow.swift"
+web_forbidden = re.compile(
+    r"evaluateJavaScript|callAsyncJavaScript|WKUserScript|addUserScript|userContentController|WKScriptMessageHandler|"
+    r"WKContentWorld|httpCookieStore|WKHTTPCookieStore|HTTPCookie|fetchDataRecords|setURLSchemeHandler|WKURLSchemeHandler|"
+    r"customUserAgent|applicationNameForUserAgent|isInspectable|createWebArchiveData|takeSnapshot|createPDF|printOperation|"
+    r"loadHTMLString|loadFileURL|loadSimulatedRequest|\.load\(\s*\w+\s*,\s*mimeType|WKWebsiteDataStore\.default\(|"
+    r"WKWebsiteDataStore\(\s*\)|\.nonPersistent\(|isHidden|alphaValue|javaScriptCanOpenWindowsAutomatically|"
+    r"bitmapImageRepForCachingDisplay|cacheDisplay|dataWithPDF|dataWithEPS|CGWindowListCreateImage|NSBitmapImageRep|"
+    r"ScreenCaptureKit|SCScreenshotManager|NSImage\(|"
+    r"NSClassFromString|NSSelectorFromString|\.perform\(|#selector|value\(forKey|setValue\(|objc_msgSend|dlsym|"
+    r"class_getInstanceMethod|method_exchangeImplementations|typealias|WKWebView\.init|WKWebView\.self|\.init\(frame",
+)
+for probe in [
+    "webView.evaluateJavaScript(\"document.cookie\")", "try await webView.callAsyncJavaScript(s, contentWorld: .page)",
+    "configuration.userContentController.add(self, name: \"x\")", "store.httpCookieStore.getAllCookies()",
+    "webView.customUserAgent = \"Safari\"", "configuration.applicationNameForUserAgent = \"Version/18 Safari\"",
+    "webView.isInspectable = true", "webView.takeSnapshot(with: nil)", "webView.loadHTMLString(h, baseURL: u)",
+    "configuration.websiteDataStore = WKWebsiteDataStore.default()", "webView.isHidden = true",
+    "store.fetchDataRecords(ofTypes: t)", "configuration.setURLSchemeHandler(h, forURLScheme: \"x\")",
+    "webView.createWebArchiveData { _ in }", "configuration.preferences.setValue(true, forKey: \"x\")",
+    # Evasions raised in review (2026-10-18).
+    "configuration.websiteDataStore = WKWebsiteDataStore()", "webView.bitmapImageRepForCachingDisplay(in: r)",
+    "webView.cacheDisplay(in: r, to: rep)", "webView.dataWithPDF(inside: r)", "CGWindowListCreateImage(r, o, w, i)",
+    "NSClassFromString(\"WKUserScript\")", "webView.perform(NSSelectorFromString(\"evaluateJavaScript:completionHandler:\"))",
+    "typealias V = WKWebView", "let v = WKWebView.init(frame: r, configuration: c)", "let t = WKWebView.self",
+    "webView.value(forKey: \"x\")", "NSImage(data: d)",
+]:
+    assert web_forbidden.search(probe), f"Web window deny-list self-test missed: {probe}"
+for allowed_text in [
+    "WKWebsiteDataStore(forIdentifier: account.rawValue)", "webView.load(URLRequest(url: home))",
+    "store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)",
+    "WKWebsiteDataStore.remove(forIdentifier: id)", "if action.shouldPerformDownload { }",
+    "let webView = WKWebView(frame: .zero, configuration: configuration)",
+]:
+    assert not web_forbidden.search(allowed_text), f"Web window deny-list self-test over-matched: {allowed_text}"
+
+# Every tracked Swift file is product code (registered below), a test, a package manifest, or an
+# out-of-product tool. A new top-level source folder fails here until it is registered.
+tracked = subprocess.run(["git", "-C", str(root), "ls-files", "*.swift"], capture_output=True, text=True, check=True).stdout.splitlines()
+for relative in tracked:
+    in_product = relative.startswith("App/") or re.match(r"Packages/[^/]+/Sources/", relative)
+    exempt = re.match(r"Packages/[^/]+/(Tests/|Package\.swift$)", relative) or relative.startswith("Tools/")
+    assert in_product or exempt, f"Swift file outside every registered location: {relative}"
+    if relative != web_window and not relative.startswith("Tools/") and (root / relative).exists():
+        assert not re.search(r"\bimport\s+WebKit\b", (root / relative).read_text()), f"WebKit outside {web_window}: {relative}"
+
 files = list((root / "App").rglob("*.swift"))
 for package in (root / "Packages").iterdir():
     files.extend((package / "Sources").rglob("*.swift"))
@@ -59,6 +110,12 @@ for path in files:
     # The composition root alone may wire concrete adapter implementations.
     if relative == "App/AppComposition.swift":
         permitted.add("ArenaAdapter")
+    if relative == web_window:
+        permitted.add("WebKit")
+        text = path.read_text()
+        forbidden = web_forbidden.findall(text)
+        assert not forbidden, f"Forbidden web API in {relative}: {sorted(set(forbidden))}"
+        assert len(re.findall(r"\bWKWebView\(", text)) == 1, f"{relative} must create exactly one WKWebView"
     assert imports <= permitted, (
         f"Forbidden imports in {relative}: {imports - permitted}"
     )
