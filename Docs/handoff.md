@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-18, after the app-wide UI rework (committed locally, not pushed).
+Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushed).
 
 ## Where things stand
 
@@ -31,8 +31,8 @@ Updated 2026-10-18, after the app-wide UI rework (committed locally, not pushed)
   - The sidebar collapses to an icon rail (`SidebarRail`, Control-Command-S), automatically when a
     site entry is clicked. `MainView` lays it out itself, without `NavigationSplitView`, because
     that view's sidebar could not switch reliably between full and rail.
-- **App-wide UI rework** (`Docs/ui-rework-2026-10-18.md`): built and committed locally, **not
-  pushed**. The user said not to push it to GitHub until they approve it.
+- **App-wide UI rework** (`Docs/ui-rework-2026-10-18.md`): approved by the user on 2026-10-18 and
+  pushed. Review: `Docs/reviews/2026-10-18-ui-rework.md`.
   - The window has no title bar or toolbar; each pane draws a 32 pt `HeaderBar` in the top band.
   - The sidebar holds the site entry, Search (⌘F), Sync History, the history by date and the
     account switcher.
@@ -46,21 +46,21 @@ Updated 2026-10-18, after the app-wide UI rework (committed locally, not pushed)
 
 ## Open items
 
-0. **The user's approval of the UI rework**, then push (`git push origin HEAD:main`). Not before.
-1. **Live check of the single-window build** (the user's own use of Arena). Sign-in and a battle
+0. **Live check of the single-window build** (the user's own use of Arena). Sign-in and a battle
    already worked in the separate-window build. Still to check:
    - opening the site row (the sidebar should collapse to the rail);
+   - the site's header bar over a real page (seen only with `--preview-site-header`);
    - switching to the archive and back while a battle generates;
    - Close Session;
    - whether Sync History archives that conversation.
 
    Record the results in `Docs/arena-window-2026-10-18.md`.
-2. **A4, the 24-hour session check.** It is overdue (the last run was 2026-09-24). Ask the user to
+1. **A4, the 24-hour session check.** It is overdue (the last run was 2026-09-24). Ask the user to
    run:
    `open -n ~/Documents/arena-suite-opus/DerivedData/NativeAuthProof.app --args --phase0a`
    Then record in the Phase 0-A docs, `Docs/status.md` and the protocol ledger whether the saved
    session still verifies and whether cookies were re-issued.
-3. **Plan §14 items.** The user gave the go decision on 2026-09-25 ("get started on the §14 items").
+2. **Plan §14 items.** The user gave the go decision on 2026-09-25 ("get started on the §14 items").
    Order: MCP (done), datasets (done), maintenance (next). Track B stays blocked (§1 condition 1).
    - read-only MCP (search, get conversation, export through ApplicationActions; no network
      actions, voting or reveal);
@@ -69,7 +69,7 @@ Updated 2026-10-18, after the app-wide UI rework (committed locally, not pushed)
    - maintenance (selective purge with journal rewrite, reparse promotion/rollback, tiered
      verification).
 
-4. **Known test gaps** (from the Phase 7 review; they are covered by reading only, not by tests):
+3. **Known test gaps** (from the Phase 7 review; they are covered by reading only, not by tests):
    - a fault-injection test that changes accounts in the middle of a backup;
    - cancelling a backup mid-copy.
 
