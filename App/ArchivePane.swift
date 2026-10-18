@@ -137,6 +137,10 @@ struct ArchivePane: View {
             ProgressView().controlSize(.small)
         } else {
             VStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 96, height: 96)
+                    .accessibilityHidden(true)
                 Text("Arena Suite").font(Theme.heading)
                 firstStep
             }

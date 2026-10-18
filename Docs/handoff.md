@@ -204,6 +204,10 @@ To test a clean install with the Release binary, point it at an empty home folde
     `PBXBuildFile` entry to `ArenaSuite.xcodeproj/project.pbxproj`.
 - **Tools:** `Tools/NativeAuthProof` (Phase 0 research app, never linked), `Tools/CrashHarness`,
   `Tools/FixtureHarness`, `Tools/Dev/window_shot.swift`.
+- **App icon:** `App/Resources/AppIcon.icon`, an Icon Composer document (SVG layers, glass) that
+  actool compiles into `Assets.car` plus an `.icns` for macOS 14–25. Regenerate it with
+  `python3 Tools/Dev/make_app_icon.py App/Resources/AppIcon.icon` and preview it with Icon
+  Composer's `ictool` (usage in the script).
 - **`Packages/ArenaSuiteMCP`:** `ArchiveMCP` (tools, JSON-RPC, `LineFramer`) and the
   `arena-suite-mcp` executable. It links ArenaSuiteCore only, opens the index with
   `ArchiveIndex(readingExistingAt:)` and `ArchiveService(readOnly:)`, and reads the registry with
