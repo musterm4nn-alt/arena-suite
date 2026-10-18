@@ -5,7 +5,7 @@ import Testing
 @testable import ApplicationActions
 
 // ADR 0006: a web profile is deleted only for an account the user removed, never inferred from an
-// account list; one in use waits for its window to close; a failed deletion is retried next launch.
+// account list; one in use (an open session) waits until it is last closed; a failed deletion is retried next launch.
 
 @MainActor
 private final class Recorder {
@@ -31,7 +31,7 @@ private let b = AccountID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-00
     #expect(lifecycle.pending.isEmpty && r.saved.last == [])
 }
 
-@MainActor @Test func aProfileInUseIsDeletedWhenItsLastWindowCloses() async {
+@MainActor @Test func aProfileInUseIsDeletedWhenItIsLastClosed() async {
     let r = Recorder()
     let lifecycle = r.lifecycle()
     lifecycle.opened(a)
@@ -40,11 +40,11 @@ private let b = AccountID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-00
     await lifecycle.accountRemoved(a)
     #expect(r.removed.isEmpty && lifecycle.pending == [a] && r.saved.last == [a], "saved before anything is attempted")
     await lifecycle.closed(a)
-    #expect(r.removed.isEmpty, "one window still open")
+    #expect(r.removed.isEmpty, "still in use once more")
     await lifecycle.closed(a)
     #expect(r.removed == [a] && lifecycle.pending.isEmpty)
     await lifecycle.closed(b)
-    #expect(r.removed == [a], "closing a window never deletes a profile that was not removed")
+    #expect(r.removed == [a], "closing never deletes a profile that was not removed")
     await lifecycle.closed(b)  // extra close is harmless
     #expect(!lifecycle.isInUse(b))
 }

@@ -1,11 +1,11 @@
 import Foundation
 import SuiteDomain
 
-/// When the embedded site window's per-account web profiles are deleted (ADR 0006).
+/// When the embedded site's per-account web profiles are deleted (ADR 0006).
 ///
 /// A profile is deleted only for an account the user removed: never inferred from an account list,
-/// which may be missing, unreadable or belong to another archive root. A profile still used by an
-/// open window is deleted when its last window closes. A deletion that fails (WebKit releases a
+/// which may be missing, unreadable or belong to another archive root. A profile still in use (an
+/// open session) is deleted when it is last closed. A deletion that fails (WebKit releases a
 /// closed web view asynchronously) stays pending in `persist` and is retried at the next launch.
 @MainActor
 public final class WebProfileLifecycle {

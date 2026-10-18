@@ -41,11 +41,11 @@ for probe in [
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:
     assert not mcp_forbidden.search(allowed_text), f"MCP deny-list self-test over-matched: {allowed_text}"
 
-# Embedded site window (ADR 0006): WebKit only in this file, and there no scripts, no page, cookie
+# Embedded site pane (ADR 0006): WebKit only in this file, and there no scripts, no page, cookie
 # or storage reads, no scheme handlers, no user-agent change, no content capture (of the page or
 # the screen), no dynamic dispatch that could reach any of these, no default, shared or ephemeral
 # data store, and exactly one web view (no aliases or other constructors).
-web_window = "App/ArenaWebWindow.swift"
+web_window = "App/ArenaWebPane.swift"
 web_forbidden = re.compile(
     r"evaluateJavaScript|callAsyncJavaScript|WKUserScript|addUserScript|userContentController|WKScriptMessageHandler|"
     r"WKContentWorld|httpCookieStore|WKHTTPCookieStore|HTTPCookie|fetchDataRecords|setURLSchemeHandler|WKURLSchemeHandler|"

@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationActions
-import SuiteDomain
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -22,7 +21,7 @@ struct ArenaSuiteApp: App {
         let accounts = AccountsModel(services: services, archiveRoot: AppComposition.archiveRoot)
         accounts.onSyncFinished = { [archive] _ in await archive.projectAll(accounts.accounts.map(\.id)) }
         let profiles = ArenaWebProfiles(policy: services.website)
-        accounts.onAccountRemoved = { [profiles] id in await profiles.lifecycle.accountRemoved(id) }
+        accounts.onAccountRemoved = { [profiles] id in await profiles.accountRemoved(id) }
         _profiles = State(initialValue: profiles)
         _accounts = State(initialValue: accounts)
         _archive = State(initialValue: archive)
@@ -45,12 +44,5 @@ struct ArenaSuiteApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
-
-        // The embedded site window, one per account (ADR 0006).
-        WindowGroup(id: ArenaWebWindow.id, for: AccountID.self) { $account in
-            ArenaWebWindow(accountID: account, accounts: accounts, profiles: profiles)
-                .departureMono()
-        }
-        .defaultSize(width: 1280, height: 900)
     }
 }

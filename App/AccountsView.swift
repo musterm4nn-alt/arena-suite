@@ -35,6 +35,7 @@ struct AccountsView: View {
                 row(account)
             }
             .listStyle(.inset)
+            .arenaBackground(Theme.sunken)
             if let message = model.message {
                 Text(message).foregroundStyle(.red).textSelection(.enabled)
             }
@@ -181,5 +182,7 @@ private struct SignInSheet: View {
         }
         .padding(20)
         .frame(width: 420)
+        .buttonStyle(.arenaPill)
+        .arenaPalette()
     }
 }

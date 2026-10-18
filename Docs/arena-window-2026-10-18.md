@@ -1,23 +1,27 @@
-# Embedded arena.ai window (2026-10-18)
+# Embedded arena.ai (2026-10-18)
 
 Decision: the user, 2026-10-18 ("make it so that i can use arena.ai directly in the app"; chose
 the embedded window over open-in-browser after the conflict with ADR 0005/0001 was shown).
 Recorded in `Docs/ADR/0006-embedded-arena-window.md`. Native generation (Track B) is unchanged and
 still blocked (N-004).
 
+The first build (commit `c48ed05`) opened a separate window per account. After trying it, the
+user asked the same day for one window and for Arena Suite's colors to match arena.ai; see
+"Second iteration" below. Criteria 1 and 5 below describe the current state.
+
 ## Acceptance criteria
 
-1. **Opening.** Every account row in the sidebar has an "arena.ai" action that opens a window for
-   that account.
-   - Opening the same account again brings its window forward. There is one window per account.
-   - The window title names the account's web profile. It does not claim which Arena account is
-     signed in there.
+1. **Opening.** Every account in the sidebar has an "arena.ai" row that shows the site beside the
+   sidebar, in the one app window, for that account.
+   - The first click opens the account's session; later clicks show the same page. There is one
+     session per account, and no second window.
+   - The title names the account's web profile. It does not claim which Arena account is signed in
+     there.
 2. **Profiles.**
-   - Each window uses a persistent website data store keyed by the local account UUID, separate
+   - Each session uses a persistent website data store keyed by the local account UUID, separate
      from the other accounts, Safari and the native Keychain session.
    - Clear Web Data (with confirmation) deletes that profile's data and reloads Arena's home page.
-   - Removing an account deletes its profile. A profile still in use is deleted when its window
-     closes.
+   - Removing an account ends its session and deletes its profile.
    - A deletion that could not finish is retried at the next launch.
    - Nothing else is ever deleted: no deletion is inferred from an account list (logic in
      `ApplicationActions.WebProfileLifecycle`, unit-tested).
@@ -27,7 +31,7 @@ still blocked (N-004).
      subdomains (`about:blank`/`about:srcdoc` too).
    - Other `http`/`https` and `mailto` destinations are offered in a banner and open only when the
      user clicks "Open in Browser". Any other scheme is dropped.
-   - New-window requests for site pages load in the same window. Others are offered the same way.
+   - New-window requests for site pages load in the same page. Others are offered the same way.
      Nothing opens a second web view.
    - Lookalike hosts (`evilarena.ai`, `arena.ai.evil.com`, `arena.ai@evil.com`) are not the site.
 4. **Browser basics.**
@@ -40,13 +44,13 @@ still blocked (N-004).
      A replaced file is swapped only after the download finishes.
    - Camera and microphone are denied.
 5. **Never** (ADR 0006): no scripts injected or evaluated, no message handlers, no cookie or
-   storage reads, no custom scheme handlers, no hidden web views, no user-agent change. The
-   boundary check allows `WebKit` only in `App/ArenaWebWindow.swift` and rejects these APIs
-   there; its deny-list self-tests.
+   storage reads, no custom scheme handlers, no web view the user did not open, no user-agent
+   change. The boundary check allows `WebKit` only in `App/ArenaWebPane.swift` and rejects these
+   APIs there; its deny-list self-tests.
 6. **Archiving.**
-   - The window shows its account's Sync History button and progress, using the existing
+   - The site's toolbar shows its account's Sync History button and progress, using the existing
      user-initiated sync (same traffic policy, same journal).
-   - Nothing from the window is journaled, indexed or exported.
+   - Nothing from the embedded site is journaled, indexed or exported.
 7. **Docs.**
    - ADR 0006 records the decision.
    - Plan v3 §1, ADR 0005, AGENTS.md, the arena-suite skill, the handoff and the status say what
@@ -66,10 +70,10 @@ still blocked (N-004).
 | Navigation policy (pure, site-agnostic): `load`, `askToOpen` (leaving the site is always offered, never automatic), `ignore` | `ApplicationActions/WebSitePolicy.swift` |
 | Profile deletion lifecycle: only explicit removals, deferred while in use, pending removals persisted and retried | `ApplicationActions/WebProfileLifecycle.swift` |
 | Arena's instance: the observed origin and cookie domain | `ArenaAdapter/Website/ArenaWebsite.swift` |
-| Window, web view, profiles, toolbar, banners, panels, downloads | `App/ArenaWebWindow.swift` |
-| One window per account (`WindowGroup(id: "arena-web", for: AccountID.self)`); "Open arena.ai" per account in the sidebar | `App/ArenaSuiteApp.swift`, `App/MainView.swift` |
-| Profile deletion when an account is removed; pending deletions retried at launch (pending list in the app's defaults) | `AccountsModel.onAccountRemoved`, `ArenaWebProfiles`, `MainView` launch task |
-| WebKit allowed only in the window file; every tracked Swift file is scanned; a self-tested deny-list and exactly one `WKWebView(` in that file | `Scripts/check-boundaries.py` |
+| Sessions (one web view each), pane, profiles, toolbar, banners, panels, downloads | `App/ArenaWebPane.swift` |
+| One window: the sidebar switches between the archive and each account's site (`MainDestination`) | `App/MainView.swift`; the second `WindowGroup` was removed from `App/ArenaSuiteApp.swift` |
+| Profile deletion when an account is removed (its session ends first); pending deletions retried at launch (pending list in the app's defaults) | `AccountsModel.onAccountRemoved`, `ArenaWebProfiles.accountRemoved`, `MainView` launch task |
+| WebKit allowed only in the pane file; every tracked Swift file is scanned; a self-tested deny-list and exactly one `WKWebView(` in that file | `Scripts/check-boundaries.py` |
 
 ## Evidence
 
@@ -80,8 +84,8 @@ still blocked (N-004).
   - `about:blank`/`about:srcdoc`, `mailto:`, and hostless URLs;
   - IDN lookalikes and userinfo with a lookalike host;
   - that leaving the site is only ever offered.
-- `WebProfileLifecycle` tests: only the removed account's profile is deleted; deletion waits for
-  the last window; a failed deletion is retried at the next launch only; nothing is deleted
+- `WebProfileLifecycle` tests: only the removed account's profile is deleted; deletion waits until
+  the profile is no longer in use (now: its session closed); a failed deletion is retried at the next launch only; nothing is deleted
   without an explicit removal.
 - `arenaWebsitePolicyIsTheObservedOrigin` (adapter tests): the home page is the native origin, and
   a challenge URL as a main frame is never loaded in place.
@@ -89,27 +93,116 @@ still blocked (N-004).
   forms.
 - The app builds with no warnings, so every WebKit delegate method matched its SDK signature.
   `Scripts/test-offline.sh` passes.
-- Not observed by the author: the window has not been opened against arena.ai. Loading the site is
-  the user's own use of Arena, so the live check is theirs (see Limits).
+- **Live check by the user (2026-10-18, separate-window build):** signed in on the embedded site
+  and started a battle, which was accepted and generating. So sign-in works for that account and
+  reCAPTCHA accepted a prompt sent from the embedded web view. Not yet checked: whether Sync
+  History archived that conversation.
+- The author has not loaded arena.ai in the app; loading the site is the user's own use of Arena.
 
 ## Limits
 
-- **Live behaviour unverified:**
-  - sign-in in the window (Google sign-in is expected to refuse an embedded browser; email and
-    password are expected to work);
-  - whether reCAPTCHA accepts prompts from the window;
+- **Live behaviour not yet checked:**
+  - which sign-in methods work (Google sign-in is expected to refuse an embedded browser);
   - whether any Arena flow needs a popup window. Popups never get a second web view: site pages
-    load in place, everything else goes through the "Open in Browser" banner.
+    load in place, everything else goes through the "Open in Browser" banner;
+  - the single-window build itself (see "Second iteration").
 - **Signed-in account unknown to the app.** It cannot tell which Arena account is signed in to a
-  window, because it never reads cookies or the page. Signing account B into account A's window
-  only affects that window. Sync History still syncs account A's own native session.
-- **Window traffic is not journaled.** A conversation is archived only when the history sync sees
-  it.
+  web profile, because it never reads cookies or the page. Signing account B into account A's
+  profile only affects that profile. Sync History still syncs account A's own native session.
+- **Embedded-site traffic is not journaled.** A conversation is archived only when the history
+  sync sees it.
 - **Camera and microphone are denied.** Voice input on the site will not work.
-- **Profile removal while the window is open.** WebKit releases a closed web view asynchronously.
-  If the profile is still held, deletion is retried when the window closes and again at the next
-  launch.
+- **Profile removal.** Removing an account ends its session first, but WebKit releases a web view
+  asynchronously. If the profile is still held, deletion is retried at the next launch.
 - **Profiles of accounts dropped by a backup restore are not deleted.** Only explicit removals
   delete, so restoring a backup without an account leaves that account's web profile in place.
   This is safe but uses space.
 - **Independent review:** `Docs/reviews/2026-10-18-arena-window.md`.
+
+## Second iteration: one window and matching colors (2026-10-18)
+
+Request (after the live check): "Arena Suite should by default always be one window, not pop out
+a second one for arena.ai, and secondly, the colour palette of arena.ai and arena suite don't
+harmonize".
+
+### Acceptance criteria
+
+1. **One window.**
+   - No second window scene.
+   - Each account's "arena.ai" sidebar row shows the site beside the sidebar.
+   - "All accounts" or an account row shows the archive again.
+   - Launch always shows the archive and loads nothing from the site.
+2. **Sessions survive switching.**
+   - The first click opens the account's session (one web view).
+   - Showing the archive or another account keeps that page, like a background tab. The sidebar
+     marks it "open".
+   - While not shown, the page cannot present dialogs, uploads or downloads: they are declined,
+     with a notice.
+   - "Close arena.ai Session" ends it, and removing the account ends it before its profile is
+     deleted.
+   - ADR 0006 is amended to say so.
+3. **Palette.**
+   - The archive uses arena.ai's warm neutral dark colors, sampled from the user's screenshot:
+     - background `#252523`;
+     - selected rows `#1b1a19`;
+     - prompt bubble `#403c3a`;
+     - borders `#403d39`;
+     - text `#f3f0ec`.
+   - Backgrounds are opaque instead of wallpaper-tinted, and there is no system blue in the app's
+     own controls.
+   - Selections are drawn as arena.ai's darker rounded rows.
+   - Prompts are filled bubbles and responses are outlined panes, as on the site.
+4. **Unchanged:**
+   - every ADR 0006 boundary (the boundary check, with the file renamed);
+   - the conversation list's keyboard navigation (up/down arrows);
+   - quitting with a sheet open.
+
+### What changed
+
+| Change | Where |
+|---|---|
+| `ArenaWebProfiles` (observable) owns the sessions: `open`, `close`, `accountRemoved` | `App/ArenaWebPane.swift` |
+| `ArenaWebSession`: the one `WKWebView`, its delegate and `ArenaWebPage` | `App/ArenaWebPane.swift` |
+| `ArenaWebHost` moves the session's web view into the pane, and out of it when the pane goes away | `App/ArenaWebPane.swift` |
+| Page dialogs, uploads and downloads need a visible window, otherwise they are declined with a notice | `App/ArenaWebPane.swift` |
+| `MainDestination` (`archive` or `site(account)`); the sidebar is drawn in the palette, with a site row per account | `App/MainView.swift` |
+| Palette tokens; `arenaPalette`, `arenaSelection`, `arenaSheet`; `ArenaPillStyle` replaces blue link buttons | `App/Theme.swift` |
+| Conversation list drawn with its own selection (List selection always uses the system accent, which is Blue on this Mac) | `App/MainView.swift` |
+| File renamed `ArenaWebWindow.swift` → `ArenaWebPane.swift` (project and boundary check updated) | `ArenaSuite.xcodeproj`, `Scripts/check-boundaries.py` |
+
+### Evidence
+
+- `bash Scripts/build.sh Debug`: no warnings. `python3 Scripts/check-boundaries.py` passes,
+  including the exactly-one-`WKWebView(` rule. `Scripts/test-offline.sh` passes.
+- Debug build against the real archive, checked from captures of the Arena Suite window only (not
+  kept):
+  - the background measures exactly `#252523`;
+  - the selected conversation is the dark rounded row;
+  - prompt bubbles and outlined response panes match the site;
+  - Maintenance uses pill buttons, and the sheet's Done is a pill.
+- Manual checks in that Debug build (not automated; the app has no UI test target):
+  - **Arrow keys.** A row was pressed through accessibility, then ↑ was sent. The selection and
+    transcript moved to the row above.
+  - **Quit with a sheet open.** An in-sheet Done button made the app refuse an AppleScript quit
+    ("User canceled"). With Done kept as a confirmation toolbar item (pill-styled), quit works,
+    as before.
+- The site in the main window was not loaded by the author. That live check (open the site row,
+  switch to the archive and back during a battle, Close Session) is the user's.
+
+- Independent review: `Docs/reviews/2026-10-18-single-window.md`. It found no code defect in the
+  session model or boundaries. Its fixes are applied:
+  - the help text no longer claims the page's chats are archived;
+  - "shown" now requires a visible, non-minimized window;
+  - the traffic-policy scope is stated in plan v3 §2 and the ADR.
+
+### Limits
+
+- **Light palette is a guess.** Only arena.ai's dark theme was sampled. The light colors are
+  matching warm neutrals.
+- **System chrome.** The sheet footer strip (behind Done), column dividers, the search field and
+  toolbar buttons are drawn by macOS in its own colors. List selection was replaced only in the
+  conversation list. The Accounts sheet's list keeps its own row style.
+- **Background sessions use memory.** Each opened account keeps a web content process until Close
+  Session or quit.
+- **A dialog in a background page is declined.** For example, a site confirmation while the
+  archive is shown answers "cancel". The page notes it when shown again.

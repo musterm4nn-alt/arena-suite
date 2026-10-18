@@ -22,7 +22,7 @@ If the canonical plan is absent, do not invent a substitute architecture.
 - v1 is a native, read-only Arena archiver (sign in, sync history, browse, search, export). It does not send prompts, vote, reveal models, or upload files.
 - Native generation is Track B: blocked (reCAPTCHA v3, N-004) and started only under v3 §1's conditions. Voting/reveal belong to Track B as manual, user-clicked actions only — never automated or exposed to MCP.
 - No browser-token transfer, no CAPTCHA or anti-abuse bypass.
-- No WebView/browser runtime in the product except the visible, user-driven arena.ai window (ADR 0006). That window never runs injected scripts, never reads the page, cookies or storage, and never feeds anything to native code or the journal. It has no hidden web views and uses one web profile per account.
+- No WebView/browser runtime in the product except the visible, user-driven embedded arena.ai in the main window (ADR 0006). It never runs injected scripts, never reads the page, cookies or storage, and never feeds anything to native code or the journal. It has no web view the user did not open, and it uses one web profile and at most one session per account. A user-opened session may keep its page while the archive is shown, like a background tab; the app never acts on it.
 - Follow the v3 §2 traffic policy: user-initiated sync, one request in flight per account, honor rate limits, stop on 403/challenge.
 - Record before interpret.
 - The append-only raw journal is authoritative. SQLite and normalized projections are rebuildable.

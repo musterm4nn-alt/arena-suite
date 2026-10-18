@@ -4,46 +4,62 @@ import ArchiveIndex
 import SuiteDomain
 import SwiftUI
 
-/// Sidebar (accounts) · conversation list with search · transcript, with the raw-evidence inspector.
+/// What the window shows beside the sidebar.
+enum MainDestination: Hashable {
+    /// Conversation list with search · transcript, with the raw-evidence inspector.
+    case archive
+    /// The site in this account's web profile (ADR 0006).
+    case site(AccountID)
+}
+
+/// The one app window: sidebar (archive, accounts and each account's site page) beside the archive
+/// or the site. Launch always shows the archive; the site loads only when the user opens it.
 struct MainView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
     let maintenance: MaintenanceModel
     let profiles: ArenaWebProfiles
+    @State private var destination = MainDestination.archive
     @State private var showingAccounts = false
     @State private var showingMaintenance = false
     @State private var showingInspector = false
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(
-                accounts: accounts, archive: archive, siteName: profiles.siteName, showingAccounts: $showingAccounts,
-                showingMaintenance: $showingMaintenance)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230)
-        } content: {
-            ConversationListView(archive: archive)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320)
-        } detail: {
-            TranscriptView(archive: archive, showingInspector: $showingInspector)
-                .frame(minWidth: 440)
-                .inspector(isPresented: $showingInspector) {
-                    EvidenceInspector(archive: archive).inspectorColumnWidth(min: 260, ideal: 320, max: 520)
+        Group {
+            switch destination {
+            case .archive:
+                NavigationSplitView {
+                    sidebar
+                } content: {
+                    ConversationListView(archive: archive)
+                        .navigationSplitViewColumnWidth(min: 260, ideal: 320)
+                } detail: {
+                    TranscriptView(archive: archive, showingInspector: $showingInspector)
+                        .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Theme.background)
+                        .inspector(isPresented: $showingInspector) {
+                            EvidenceInspector(archive: archive).inspectorColumnWidth(min: 260, ideal: 320, max: 520)
+                        }
                 }
+            case .site(let account):
+                NavigationSplitView {
+                    sidebar
+                } detail: {
+                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles).id(account)
+                }
+            }
         }
+        .arenaPalette()
         .departureMono()
+        .onChange(of: accounts.accounts.map(\.id)) { _, ids in
+            if case .site(let account) = destination, !ids.contains(account) { destination = .archive }
+        }
         .sheet(isPresented: $showingAccounts) {
-            AccountsView(model: accounts)
-                .departureMono()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingAccounts = false } } }
+            AccountsView(model: accounts).arenaSheet { showingAccounts = false }
         }
         .sheet(isPresented: $showingMaintenance) {
             MaintenanceView(model: maintenance, accounts: accounts)
-                .departureMono()
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { showingMaintenance = false }.disabled(maintenance.working != nil)
-                    }
-                }
+                .arenaSheet(doneDisabled: maintenance.working != nil) { showingMaintenance = false }
         }
         .task {
             await accounts.start()
@@ -81,6 +97,13 @@ struct MainView: View {
             #endif
         }
     }
+
+    private var sidebar: some View {
+        SidebarView(
+            accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
+            showingAccounts: $showingAccounts, showingMaintenance: $showingMaintenance)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
+    }
 }
 
 // MARK: - Sidebar
@@ -88,48 +111,52 @@ struct MainView: View {
 private struct SidebarView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
-    let siteName: String
-    @Environment(\.openWindow) private var openWindow
+    let profiles: ArenaWebProfiles
+    @Binding var destination: MainDestination
     @Binding var showingAccounts: Bool
     @Binding var showingMaintenance: Bool
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                header("Archive")
                 row(title: "All accounts", subtitle: "\(archive.conversations.count) conversations", account: nil)
-            } header: { Text("Archive").font(Theme.caption) }
-            Section {
+                header("Accounts").padding(.top, 10)
                 ForEach(accounts.accounts) { account in
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 4) {
                         row(title: account.displayName, subtitle: AccountsView.label(account.state), account: account.id)
-                        if let progress = accounts.syncing[account.id] {
-                            Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary)
-                        } else if let manifest = accounts.lastSync[account.id] {
-                            Text(AccountsView.describe(manifest)).font(Theme.caption).foregroundStyle(.secondary).lineLimit(3)
+                        Group {
+                            if let progress = accounts.syncing[account.id] {
+                                Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary)
+                            } else if let manifest = accounts.lastSync[account.id] {
+                                Text(AccountsView.describe(manifest)).font(Theme.caption).foregroundStyle(.secondary).lineLimit(3)
+                            }
                         }
-                        HStack {
+                        .padding(.horizontal, 6)
+                        Group {
                             if accounts.syncing[account.id] != nil {
                                 Button("Stop") { Task { await accounts.cancelSync(account.id) } }
                             } else if account.state == .signedIn {
                                 Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
                                     .accessibilityHint("Reads your Arena history for this account into the local archive")
                             }
-                            Button("Open \(siteName)") { openWindow(id: ArenaWebWindow.id, value: account.id) }
-                                .help("Use \(siteName) in a window with this account's own web profile")
                         }
-                        .buttonStyle(.link)
-                        .font(Theme.text)
+                        .buttonStyle(.arenaPill)
+                        .padding(.horizontal, 6)
+                        siteRow(account.id)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 4)
                 }
-            } header: { Text("Accounts").font(Theme.caption) }
-            if archive.problems.warnings > 0 || archive.problems.unknownPaths > 0 {
-                Section {
+                if archive.problems.warnings > 0 || archive.problems.unknownPaths > 0 {
+                    header("Attention").padding(.top, 10)
                     Text("\(archive.problems.warnings) decoder warning(s), \(archive.problems.unknownPaths) unknown field path(s). Raw evidence is kept.")
-                        .font(Theme.caption).foregroundStyle(.orange)
-                } header: { Text("Attention").font(Theme.caption) }
+                        .font(Theme.caption).foregroundStyle(.orange).padding(.horizontal, 6)
+                }
             }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Theme.background)
         .font(Theme.text)
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
@@ -137,26 +164,60 @@ private struct SidebarView: View {
                 if let message = archive.message ?? accounts.message {
                     Text(message).font(Theme.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
-                Button { showingAccounts = true } label: { Text("Manage Accounts…").font(Theme.text) }
-                Button { showingMaintenance = true } label: { Text("Maintenance…").font(Theme.text) }
+                Button("Manage Accounts…") { showingAccounts = true }.buttonStyle(.arenaPill)
+                Button("Maintenance…") { showingMaintenance = true }.buttonStyle(.arenaPill)
             }
-            .padding(10)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.background)
         }
     }
 
+    private func header(_ title: String) -> some View {
+        Text(title).font(Theme.caption).foregroundStyle(.secondary).padding(.horizontal, 6)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    /// Shows the archive, filtered to one account or none.
     private func row(title: String, subtitle: String, account: AccountID?) -> some View {
-        Button {
+        let selected = destination == .archive && archive.accountFilter == account
+        return Button {
             archive.accountFilter = account
+            destination = .archive
         } label: {
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(Theme.text).fontWeight(archive.accountFilter == account ? .bold : .regular)
+                Text(title).font(Theme.text).fontWeight(selected ? .bold : .regular)
                 Text(subtitle).font(Theme.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .arenaSelection(selected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(archive.accountFilter == account ? .isSelected : [])
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// Shows the site in this account's web profile, opening its session on the first click.
+    private func siteRow(_ account: AccountID) -> some View {
+        let selected = destination == .site(account)
+        let open = profiles.sessions[account] != nil
+        return Button {
+            profiles.open(account)
+            destination = .site(account)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "globe").imageScale(.small)
+                Text(profiles.siteName).fontWeight(selected ? .bold : .regular)
+                if open && !selected { Text("open").foregroundStyle(.secondary) }
+            }
+            .font(Theme.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .arenaSelection(selected)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Use \(profiles.siteName) here with this account's own web profile")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -164,6 +225,22 @@ private struct SidebarView: View {
 
 private struct ConversationListView: View {
     @Bindable var archive: ArchiveModel
+    @FocusState private var listFocused: Bool
+
+    private static func key(_ conversation: ConversationSummary) -> ArchiveModel.ConversationKey {
+        .init(account: conversation.account, remoteID: conversation.remoteID)
+    }
+
+    /// Up and down arrows move the selection, as in a list.
+    private func step(_ offset: Int, _ proxy: ScrollViewProxy) -> KeyPress.Result {
+        let keys = archive.conversations.map(Self.key)
+        guard !keys.isEmpty else { return .ignored }
+        let current = archive.selection.flatMap { keys.firstIndex(of: $0) }
+        let index = current.map { min(max($0 + offset, 0), keys.count - 1) } ?? (offset > 0 ? 0 : keys.count - 1)
+        archive.select(keys[index])
+        proxy.scrollTo(keys[index])
+        return .handled
+    }
 
     var body: some View {
         Group {
@@ -181,15 +258,40 @@ private struct ConversationListView: View {
                     .buttonStyle(.plain)
                 }
                 .font(Theme.text)
+                .scrollContentBackground(.hidden)
+                .background(Theme.background)
                 .overlay { if archive.hits.isEmpty { ContentUnavailableView.search(text: archive.searchText) } }
             } else {
-                List(selection: Binding(get: { archive.selection }, set: { archive.select($0) })) {
-                    ForEach(archive.conversations, id: \.self) { conversation in
-                        ConversationRow(conversation: conversation)
-                            .font(Theme.text)
-                            .tag(ArchiveModel.ConversationKey(account: conversation.account, remoteID: conversation.remoteID))
+                // Drawn here rather than with List selection, which always uses the system accent.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(archive.conversations, id: \.self) { conversation in
+                                let key = Self.key(conversation)
+                                Button {
+                                    archive.select(key)
+                                    listFocused = true
+                                } label: {
+                                    ConversationRow(conversation: conversation)
+                                        .font(Theme.text)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .arenaSelection(archive.selection == key)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(archive.selection == key ? .isSelected : [])
+                                .id(key)
+                            }
+                        }
+                        .padding(10)
                     }
+                    .focusable()
+                    .focused($listFocused)
+                    .focusEffectDisabled()
+                    .onKeyPress(.downArrow) { step(1, proxy) }
+                    .onKeyPress(.upArrow) { step(-1, proxy) }
                 }
+                .background(Theme.background)
                 .overlay {
                     if archive.conversations.isEmpty {
                         ContentUnavailableView(
@@ -335,7 +437,8 @@ private struct TranscriptView: View {
                         Button { NSWorkspace.shared.activateFileViewerSelecting([result.url]) } label: { Text("Reveal in Finder").font(Theme.caption) }
                     }
                     .padding(8)
-                    .background(.bar)
+                    .background(Theme.raised)
+                    .overlay(alignment: .top) { Theme.border.frame(height: 1) }
                 }
             }
             .confirmationDialog(
@@ -397,7 +500,9 @@ private struct TurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let prompt = turn.prompt { MessageView(message: prompt, title: "You", note: nil, highlighted: highlighted, inspect: inspect) }
+            if let prompt = turn.prompt {
+                MessageView(message: prompt, title: "You", note: nil, highlighted: highlighted, isPrompt: true, inspect: inspect)
+            }
             HStack(alignment: .top, spacing: 12) {
                 ForEach(Array(turn.lanes.enumerated()), id: \.offset) { _, lane in
                     VStack(alignment: .leading, spacing: 8) {
@@ -440,6 +545,7 @@ private struct MessageView: View {
     let title: String
     let note: String?
     let highlighted: String?
+    var isPrompt = false
     let inspect: (DetailMessage) -> Void
 
     var body: some View {
@@ -463,7 +569,15 @@ private struct MessageView: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 4).fill(message.remoteID == highlighted ? Color.yellow.opacity(0.15) : Color.secondary.opacity(0.07)))
+        // As on Arena's site: your prompt in a filled bubble, responses in outlined panes.
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 8)
+            ZStack {
+                shape.fill(isPrompt ? Theme.raised : Theme.background)
+                if message.remoteID == highlighted { shape.fill(Color.yellow.opacity(0.15)) }
+                shape.strokeBorder(Theme.border)
+            }
+        }
         .overlay(alignment: .leading) {
             if message.remoteID == highlighted { Text("▶").font(Theme.caption).offset(x: -14).accessibilityLabel("Search match") }
         }
@@ -549,6 +663,7 @@ private struct EvidenceInspector: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Theme.background)
         .departureMono()
         .onChange(of: archive.inspected) { showBody = false }
     }

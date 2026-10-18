@@ -48,7 +48,7 @@ What v3 keeps from v2 unchanged in spirit: record before interpret, the raw jour
 
 - Sending prompts, continuing, stopping, regenerating, voting, revealing models, uploading files.
 - Any browser runtime: no WebView, no embedded browser, no browser-token transfer, no page scripts. (Browser DevTools remain allowed as a research instrument outside the product, as in Phase 0.)
-  - **Amended 2026-10-18 by the user (ADR 0006):** one exception, a visible arena.ai window the user drives, with one web profile per account. It runs no injected scripts, reads no page, cookie or storage data, transfers no tokens, uses no hidden web view, and stays outside the journal. Conversations made there reach the archive only through the native history sync. Native generation (Track B, below) is unchanged.
+  - **Amended 2026-10-18 by the user (ADR 0006):** one exception, arena.ai shown visibly inside the app's main window (first a separate window; moved into the main window the same day at the user's request), driven by the user, with one web profile per account. It runs no injected scripts, reads no page, cookie or storage data, transfers no tokens, opens no web view the user did not open, and stays outside the journal. Conversations made there reach the archive only through the native history sync. Native generation (Track B, below) is unchanged.
 - MCP, training datasets, timing fingerprinting, model-attribution features.
 - File/workspace downloads, unless Phase 0-A finds exposed file resources in history detail (then see §9.4).
 
@@ -85,6 +85,7 @@ Traffic policy for all versions (design decisions, enforced in the adapter):
 - Never use multiple accounts to work around limits. Never automate account creation.
 - Identify nothing false: do not spoof a browser user agent or TLS fingerprint. Foundation's defaults are used as-is.
 - Any 403 or challenge response on a read endpoint stops the job, is recorded, and surfaces as `interaction_required`/`blocked`. No retry loop.
+- *Scope note, 2026-10-18 (ADR 0006):* this policy governs the app's native requests. The embedded arena.ai page the user opens is the site's own browser traffic, including while its session is kept in the background. The app does not originate, rate-limit, observe or record it, and it cannot detect a 403 or challenge there; Arena's own page handles those.
 
 Privacy: the archive holds private conversations. Store it under Application Support with `0700` permissions; document that at-rest protection relies on FileVault. Diagnostics and logs never contain conversation text, cookies, or identity values.
 

@@ -42,7 +42,7 @@
   A00000000000000000000054 = {isa = PBXFileReference; lastKnownFileType = text; path = App/Resources/Fonts/DepartureMono-LICENSE.txt; sourceTree = "<group>";};
   A00000000000000000000055 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/MaintenanceView.swift; sourceTree = "<group>";};
   A00000000000000000000063 = {isa = PBXBuildFile; fileRef = A00000000000000000000055;};
-  A00000000000000000000056 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/ArenaWebWindow.swift; sourceTree = "<group>";};
+  A00000000000000000000056 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/ArenaWebPane.swift; sourceTree = "<group>";};
   A00000000000000000000064 = {isa = PBXBuildFile; fileRef = A00000000000000000000056;};
   A00000000000000000000060 = {isa = PBXBuildFile; fileRef = A00000000000000000000050;};
   A00000000000000000000061 = {isa = PBXBuildFile; fileRef = A00000000000000000000051;};

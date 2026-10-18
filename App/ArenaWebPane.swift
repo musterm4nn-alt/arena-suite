@@ -4,20 +4,27 @@ import SuiteDomain
 import SwiftUI
 import WebKit
 
-// The embedded site window (ADR 0006): a visible web view the user drives. This is the only file
-// that may import WebKit. It never injects or evaluates scripts, reads the page, cookies or web
-// storage, registers scheme handlers, changes the user agent, or creates a second web view
-// (`Scripts/check-boundaries.py` enforces this). Nothing from here is journaled; conversations reach
-// the archive only through the account's user-initiated history sync.
+// The embedded site pane (ADR 0006): a visible web view inside the main window that the user
+// drives. This is the only file that may import WebKit. It never injects or evaluates scripts, reads
+// the page, cookies or web storage, registers scheme handlers, changes the user agent, or creates a
+// web view other than the one per user-opened session (`Scripts/check-boundaries.py` enforces the
+// code rules). Nothing from here is journaled; conversations reach the archive only through the
+// account's user-initiated history sync.
 
 /// One persistent web profile per archiver account, separate from Safari, the other accounts and the
-/// native Keychain session. Profiles are deleted only for accounts the user removed
-/// (`WebProfileLifecycle`); the pending list lives in this app's defaults, which have the same
-/// per-app scope as WebKit's profiles (not per archive root).
-@MainActor
+/// native Keychain session, and the sessions the user opened.
+///
+/// A session starts only from the user's Open click and keeps its page while the archive is shown,
+/// like a background browser tab: the app never acts on it, and dialogs, uploads and downloads it
+/// asks for then are declined. Nothing opens a session at launch; Close Session or removing the
+/// account ends it. Profiles are deleted only for accounts the user removed (`WebProfileLifecycle`);
+/// the pending list lives in this app's defaults, which have the same per-app scope as WebKit's
+/// profiles (not per archive root).
+@MainActor @Observable
 final class ArenaWebProfiles {
     let policy: WebSitePolicy
-    let lifecycle: WebProfileLifecycle
+    @ObservationIgnored let lifecycle: WebProfileLifecycle
+    private(set) var sessions: [AccountID: ArenaWebSession] = [:]
     private static let pendingKey = "webProfilesPendingRemoval"
 
     init(policy: WebSitePolicy) {
@@ -32,19 +39,84 @@ final class ArenaWebProfiles {
                     try await WKWebsiteDataStore.remove(forIdentifier: account.rawValue)
                     return true
                 } catch {
-                    // Still held by a web view being torn down; retried on close or at the next launch.
+                    // Still held by a web view being torn down; retried at the next launch.
                     return false
                 }
             })
     }
 
-    /// The site's host, for window and button labels; the adapter owns the value.
+    /// The site's host, for titles and button labels; the adapter owns the value.
     var siteName: String { policy.home.host(percentEncoded: false) ?? policy.home.absoluteString }
 
-    func dataStore(for account: AccountID) -> WKWebsiteDataStore { WKWebsiteDataStore(forIdentifier: account.rawValue) }
+    /// Opens the account's session (the user clicked Open), or returns the one already open.
+    @discardableResult
+    func open(_ account: AccountID) -> ArenaWebSession {
+        if let session = sessions[account] { return session }
+        let session = ArenaWebSession(
+            policy: policy, store: WKWebsiteDataStore(forIdentifier: account.rawValue))
+        sessions[account] = session
+        lifecycle.opened(account)
+        return session
+    }
+
+    /// Ends the session: its page stops and its web view is released. The profile (sign-in) stays.
+    func close(_ account: AccountID) async {
+        guard let session = sessions.removeValue(forKey: account) else { return }
+        session.end()
+        await lifecycle.closed(account)
+    }
+
+    /// The user removed the account: its session ends and its profile is deleted (or retried at the
+    /// next launch if WebKit still holds it).
+    func accountRemoved(_ account: AccountID) async {
+        await lifecycle.accountRemoved(account)  // deferred while the session is open…
+        await close(account)  // …and attempted as it closes
+    }
 }
 
-/// Toolbar and banner state for one window, mirrored from the web view.
+/// One account's open page: the web view, its delegate and the toolbar state. Owned by
+/// `ArenaWebProfiles`; shown by whichever pane is displaying the account, never by two at once.
+@MainActor
+final class ArenaWebSession {
+    let page: ArenaWebPage
+    fileprivate let webView: WKWebView
+    /// Strong: WebKit holds its delegates weakly.
+    private let coordinator: Coordinator
+
+    fileprivate init(policy: WebSitePolicy, store: WKWebsiteDataStore) {
+        let page = ArenaWebPage()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = store
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let coordinator = Coordinator(policy: policy, page: page)
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        coordinator.attach(webView)
+        self.page = page
+        self.webView = webView
+        self.coordinator = coordinator
+        webView.load(URLRequest(url: policy.home))
+    }
+
+    /// Puts the web view into `host`, moving it from wherever it was shown before.
+    fileprivate func show(in host: NSView) {
+        guard webView.superview !== host else { return }
+        webView.frame = host.bounds
+        webView.autoresizingMask = [.width, .height]
+        host.addSubview(webView)
+    }
+
+    fileprivate func end() {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        coordinator.detach()
+        webView.removeFromSuperview()
+    }
+}
+
+/// Toolbar and banner state for one session, mirrored from the web view.
 @MainActor @Observable
 final class ArenaWebPage {
     fileprivate(set) var canGoBack = false
@@ -77,52 +149,60 @@ final class ArenaWebPage {
         guard let webView else { return }
         await webView.configuration.websiteDataStore.removeData(
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-        notice = "Web data for this profile was cleared. You are signed out in this window."
+        notice = "Web data for this profile was cleared. You are signed out of this web profile."
         goHome()
     }
 }
 
-struct ArenaWebWindow: View {
-    static let id = "arena-web"
-    let accountID: AccountID?
+/// The site in the main window's detail column, for one account.
+struct ArenaWebPane: View {
+    let accountID: AccountID
     @Bindable var accounts: AccountsModel
     let profiles: ArenaWebProfiles
-    @State private var page = ArenaWebPage()
     @State private var confirmingClear = false
 
     private var account: AccountSummary? { accounts.accounts.first { $0.id == accountID } }
 
     var body: some View {
         Group {
-            if let accountID, let account {
-                ArenaWebView(account: accountID, profiles: profiles, page: page)
-                    .safeAreaInset(edge: .top, spacing: 0) { banners }
-                    .toolbar { toolbar(account) }
+            if let account, let session = profiles.sessions[accountID] {
+                ArenaWebHost(session: session)
+                    .safeAreaInset(edge: .top, spacing: 0) { banners(session.page) }
+                    .toolbar { toolbar(account, page: session.page) }
                     // A label for the profile, not a verified identity: the app never reads which
                     // Arena account is signed in there (ADR 0006).
-                    .navigationTitle("\(profiles.siteName) · web profile of \(account.displayName)")
-                    .navigationSubtitle(page.host ?? "")
+                    .navigationTitle(title(account))
+                    .navigationSubtitle(session.page.host ?? "")
                     .confirmationDialog(
                         "Clear web data for \(account.displayName)'s web profile?", isPresented: $confirmingClear
                     ) {
-                        Button("Clear Web Data", role: .destructive) { Task { await page.clearWebData() } }
+                        Button("Clear Web Data", role: .destructive) { Task { await session.page.clearWebData() } }
                     } message: {
-                        Text("This signs you out in this window and deletes its cookies and site storage. Your archive is not affected.")
+                        Text("This signs you out of this web profile and deletes its cookies and site storage. Your archive is not affected.")
                     }
-            } else if accounts.loading {
-                ProgressView()
+            } else if let account {
+                ContentUnavailableView {
+                    Label("\(profiles.siteName) is closed", systemImage: "globe")
+                } description: {
+                    Text("Nothing is loaded until you open it.")
+                } actions: {
+                    Button("Open \(profiles.siteName)") { profiles.open(accountID) }.buttonStyle(.arenaPill)
+                }
+                .navigationTitle(title(account))
             } else {
                 ContentUnavailableView(
                     "Account not found", systemImage: "person.crop.circle.badge.xmark",
                     description: Text("This account is not in Arena Suite's account list. Nothing is shown and nothing is deleted."))
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
-        .task { await accounts.start() }
+        .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background)
     }
 
+    private func title(_ account: AccountSummary) -> String { "\(profiles.siteName) · web profile of \(account.displayName)" }
+
     @ToolbarContentBuilder
-    private func toolbar(_ account: AccountSummary) -> some ToolbarContent {
+    private func toolbar(_ account: AccountSummary, page: ArenaWebPage) -> some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             Button { page.goBack() } label: { Label("Back", systemImage: "chevron.left") }
                 .disabled(!page.canGoBack).keyboardShortcut("[", modifiers: .command)
@@ -144,13 +224,14 @@ struct ArenaWebWindow: View {
                     .disabled(account.state != .signedIn)
                     .help(
                         account.state == .signedIn
-                            ? "Archive this account's Arena history, including chats from this window"
+                            ? "Archive this account's Arena history with its own Arena Suite sign-in (the account signed in on this page is not checked)"
                             : "Sign this account in under Manage Accounts to archive it")
             }
             Menu {
                 Button("Open Page in Browser") { if let url = page.currentURL { NSWorkspace.shared.open(url) } }
                     .disabled(page.currentURL == nil)
                 Divider()
+                Button("Close \(profiles.siteName) Session") { Task { await profiles.close(account.id) } }
                 Button("Clear Web Data…") { confirmingClear = true }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
@@ -158,8 +239,7 @@ struct ArenaWebWindow: View {
         }
     }
 
-    @ViewBuilder
-    private var banners: some View {
+    private func banners(_ page: ArenaWebPage) -> some View {
         VStack(spacing: 0) {
             if let url = page.offered {
                 banner("This leads outside \(profiles.siteName): \(url.scheme == "mailto" ? url.absoluteString : url.host(percentEncoded: false) ?? url.absoluteString)") {
@@ -183,60 +263,46 @@ struct ArenaWebWindow: View {
     private func banner(_ text: String, @ViewBuilder actions: () -> some View) -> some View {
         HStack(spacing: 12) {
             Text(text).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-            actions()
+            actions().buttonStyle(.arenaPill)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
+        .background(Theme.raised)
+        .overlay(alignment: .bottom) { Theme.border.frame(height: 1) }
     }
 }
 
-/// The web view itself. Created once per window, for one account's profile.
-private struct ArenaWebView: NSViewRepresentable {
-    let account: AccountID
-    let profiles: ArenaWebProfiles
-    let page: ArenaWebPage
+/// Shows a session's web view. The web view moves between hosts as the pane comes and goes; leaving
+/// the pane keeps it running in its session, like a background tab.
+private struct ArenaWebHost: NSViewRepresentable {
+    let session: ArenaWebSession
 
-    func makeCoordinator() -> Coordinator { Coordinator(account: account, profiles: profiles, page: page) }
-
-    func makeNSView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = profiles.dataStore(for: account)
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
-        context.coordinator.attach(webView)
-        webView.load(URLRequest(url: profiles.policy.home))
-        return webView
+    func makeNSView(context: Context) -> NSView {
+        let host = NSView()
+        session.show(in: host)
+        return host
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {}
+    /// Nothing to update; re-showing here could pull the web view back into a host being replaced.
+    func updateNSView(_ host: NSView, context: Context) {}
 
-    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        webView.stopLoading()
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
-        coordinator.detach()
+    static func dismantleNSView(_ host: NSView, coordinator: ()) {
+        host.subviews.forEach { $0.removeFromSuperview() }
     }
+}
 
+extension ArenaWebSession {
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
-        private let account: AccountID
-        private let profiles: ArenaWebProfiles
+    fileprivate final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+        private let policy: WebSitePolicy
         private let page: ArenaWebPage
-        private var policy: WebSitePolicy { profiles.policy }
         private var observations: [NSKeyValueObservation] = []
 
-        init(account: AccountID, profiles: ArenaWebProfiles, page: ArenaWebPage) {
-            self.account = account
-            self.profiles = profiles
+        init(policy: WebSitePolicy, page: ArenaWebPage) {
+            self.policy = policy
             self.page = page
         }
 
-        /// The profile counts as in use for exactly the web view's lifetime in this window.
         func attach(_ webView: WKWebView) {
-            profiles.lifecycle.opened(account)
             page.webView = webView
             page.home = policy.home
             // Navigation state only (WebKit's own properties); never page content.
@@ -256,8 +322,6 @@ private struct ArenaWebView: NSViewRepresentable {
             observations.forEach { $0.invalidate() }
             observations = []
             page.webView = nil
-            let (lifecycle, account) = (profiles.lifecycle, account)
-            Task { await lifecycle.closed(account) }
         }
 
         private func mirror() {
@@ -266,6 +330,15 @@ private struct ArenaWebView: NSViewRepresentable {
             page.canGoForward = webView.canGoForward
             page.isLoading = webView.isLoading
             page.host = webView.url?.host(percentEncoded: false)
+        }
+
+        /// The window the page is shown in, if it is on screen: nil while the archive or another
+        /// account is shown (the web view is in no window) or the window is minimized or hidden.
+        /// Nothing is presented for a page that is not visible.
+        private func visibleWindow(_ webView: WKWebView?, declining what: String) -> NSWindow? {
+            if let window = webView?.window, window.isVisible, !window.isMiniaturized { return window }
+            page.notice = "\(what) was declined because the page was not shown."
+            return nil
         }
 
         private func apply(_ decision: WebSitePolicy.Decision, to url: URL?, in webView: WKWebView) {
@@ -393,7 +466,7 @@ private struct ArenaWebView: NSViewRepresentable {
             panel.canChooseDirectories = parameters.allowsDirectories
             panel.canChooseFiles = true
             panel.message = "Choose what to upload to \(frame.securityOrigin.host)."
-            guard let window = webView.window else { return completionHandler(nil) }
+            guard let window = visibleWindow(webView, declining: "A file upload") else { return completionHandler(nil) }
             panel.beginSheetModal(for: window) { completionHandler($0 == .OK ? panel.urls : nil) }
         }
 
@@ -413,7 +486,7 @@ private struct ArenaWebView: NSViewRepresentable {
         }
 
         private func present(_ alert: NSAlert, in webView: WKWebView, completion: @escaping @MainActor (NSApplication.ModalResponse) -> Void) {
-            guard let window = webView.window else { return completion(.cancel) }
+            guard let window = visibleWindow(webView, declining: "A page dialog") else { return completion(.cancel) }
             alert.beginSheetModal(for: window) { response in completion(response) }
         }
 
@@ -430,7 +503,7 @@ private struct ArenaWebView: NSViewRepresentable {
             let panel = NSSavePanel()
             panel.nameFieldStringValue = suggestedFilename
             panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            guard let window = download.webView?.window else { return completionHandler(nil) }
+            guard let window = visibleWindow(download.webView, declining: "A download") else { return completionHandler(nil) }
             panel.beginSheetModal(for: window) { [self] response in
                 guard response == .OK, let url = panel.url else { return completionHandler(nil) }
                 guard FileManager.default.fileExists(atPath: url.path) else { return completionHandler(url) }
