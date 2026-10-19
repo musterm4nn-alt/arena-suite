@@ -1,8 +1,8 @@
 {
   "fill": {
     "linear-gradient": [
-      "extended-srgb:0.23137,0.20784,0.18824,1.00000",
-      "extended-srgb:0.07059,0.06667,0.06275,1.00000"
+      "extended-srgb:0.17255,0.16863,0.16078,1.00000",
+      "extended-srgb:0.10196,0.09804,0.09412,1.00000"
     ],
     "orientation": {
       "start": {
@@ -20,8 +20,8 @@
       "layers": [
         {
           "glass": true,
-          "image-name": "gate.svg",
-          "name": "gate",
+          "image-name": "prompt.svg",
+          "name": "prompt",
           "position": {
             "scale": 1,
             "translation-in-points": [
@@ -44,8 +44,8 @@
       "layers": [
         {
           "glass": true,
-          "image-name": "lanes.svg",
-          "name": "lanes",
+          "image-name": "cards.svg",
+          "name": "cards",
           "position": {
             "scale": 1,
             "translation-in-points": [
@@ -56,55 +56,7 @@
         }
       ],
       "shadow": {
-        "kind": "layer-color",
-        "opacity": 0.5
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.5
-      }
-    },
-    {
-      "layers": [
-        {
-          "glass": false,
-          "image-name": "tiers.svg",
-          "name": "tiers",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "none",
-        "opacity": 0.5
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.5
-      }
-    },
-    {
-      "layers": [
-        {
-          "glass": false,
-          "image-name": "floor.svg",
-          "name": "floor",
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "none",
+        "kind": "neutral",
         "opacity": 0.5
       },
       "translucency": {

@@ -1,58 +1,84 @@
 """Generates the app icon, an Icon Composer document (App/Resources/AppIcon.icon).
 
-The mark is an arena gate: a cream arch inside two faint amphitheatre tiers, standing on the arena
-floor. Its opening holds two lanes, coral and blue, for the two anonymous models of a battle; the
-lines on them are the archived transcripts. Layers are SVG on the 1024 pt macOS canvas; the gate and
-lanes are glass.
+The mark is a miniature of the app's transcript, in the app's palette (Theme) and font: your prompt
+as a filled bubble at the trailing side, above two outlined response cards. Each card has a header
+row with its lane badge (A or B, set in Departure Mono, in a ring), a divider and lines of text.
+Layers are SVG on the 1024 pt macOS canvas; both are glass.
 
-    python3 Tools/Dev/make_app_icon.py App/Resources/AppIcon.icon [key=json ...]
+    python3 Tools/Dev/make_app_icon.py App/Resources/AppIcon.icon
 
 Preview with Icon Composer's ictool, for example:
-    "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
-        App/Resources/AppIcon.icon --export-image --output-file icon.png --platform macOS \
+    "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \\
+        App/Resources/AppIcon.icon --export-image --output-file icon.png --platform macOS \\
         --rendition Default --width 512 --height 512 --scale 1
 """
-import sys, math, json, os
-D = sys.argv[1]
-P = dict(cx=512, cy=452, R=270, r=166, foot=840, tiers=[(330, 0.24), (378, 0.12)], tier_w=22,
-         pad=24, gap=24, line_y=546, line_step=54, floor=["#3A3430", "#211E1B"])
-for kv in sys.argv[2:]:
-    k, v = kv.split("="); P[k] = json.loads(v)
-cx, cy, R, r, foot = P["cx"], P["cy"], P["R"], P["r"], P["foot"]
-os.makedirs(f"{D}/Assets", exist_ok=True)
-def arch(R_out, R_in, bottom):
-    return (f"M{cx-R_out},{bottom} L{cx-R_out},{cy} A{R_out},{R_out} 0 0 1 {cx+R_out},{cy} L{cx+R_out},{bottom} "
-            f"L{cx+R_in},{bottom} L{cx+R_in},{cy} A{R_in},{R_in} 0 0 0 {cx-R_in},{cy} L{cx-R_in},{bottom} Z")
-svg = lambda body, defs="": f'<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs>{defs}</defs>{body}</svg>'
-grad = lambda i, a, b: f'<linearGradient id="{i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{a}"/><stop offset="1" stop-color="{b}"/></linearGradient>'
-open(f"{D}/Assets/gate.svg", "w").write(svg(f'<path fill="url(#g)" d="{arch(R, r, foot)}"/>', grad("g", "#FCF8F2", "#DDD2C4")))
-open(f"{D}/Assets/tiers.svg", "w").write(svg("".join(
-    f'<path fill="#F3EDE4" fill-opacity="{op}" d="{arch(ro, ro - P["tier_w"], foot)}"/>' for ro, op in P["tiers"])))
-ri = r - P["pad"]; g2 = P["gap"] / 2
-xl0, xl1, xr0, xr1 = cx - ri, cx - g2, cx + g2, cx + ri
-top = lambda x: cy - math.sqrt(ri * ri - (x - cx) ** 2)
-lines = ""
-for x0, widths in [(xl0 + 30, [84, 58, 74]), (xr0 + 30, [84, 70, 50])]:
-    for k, w in enumerate(widths):
-        lines += f'<rect x="{x0}" y="{P["line_y"] + k * P["line_step"]}" width="{w}" height="22" rx="11"/>'
-open(f"{D}/Assets/lanes.svg", "w").write(svg(
-    f'<path fill="url(#a)" d="M{xl0},{foot} L{xl0},{cy} A{ri},{ri} 0 0 1 {xl1},{top(xl1):.1f} L{xl1},{foot} Z"/>'
-    f'<path fill="url(#b)" d="M{xr0},{foot} L{xr0},{top(xr0):.1f} A{ri},{ri} 0 0 1 {xr1},{cy} L{xr1},{foot} Z"/>'
-    f'<g fill="#FFFFFF" fill-opacity="0.46">{lines}</g>',
-    grad("a", "#FF9C6C", "#E9452A") + grad("b", "#86ABFF", "#2F4FE2")))
-if P.get("floor"):
-    fy = P["foot"]
-    open(f"{D}/Assets/floor.svg", "w").write(svg(
-        f'<rect x="-10" y="{fy}" width="1044" height="{1034 - fy}" fill="url(#f)"/>'
-        f'<rect x="-10" y="{fy}" width="1044" height="10" fill="#F3EDE4" fill-opacity="0.22"/>',
-        grad("f", P["floor"][0], P["floor"][1])))
-def group(name, glass, shadow, translucency=None):
-    return {"layers": [{"glass": glass, "image-name": f"{name}.svg", "name": name,
-                        "position": {"scale": 1, "translation-in-points": [0, 0]}}],
-            "shadow": {"kind": shadow, "opacity": 0.5},
-            "translucency": {"enabled": translucency is not None, "value": translucency or 0.5}}
-json.dump({"fill": {"linear-gradient": ["extended-srgb:0.23137,0.20784,0.18824,1.00000", "extended-srgb:0.07059,0.06667,0.06275,1.00000"],
-                    "orientation": {"start": {"x": 0.5, "y": 0}, "stop": {"x": 0.5, "y": 1}}},
-           "groups": [group("gate", True, "neutral"), group("lanes", True, "layer-color"), group("tiers", False, "none")]
-                     + ([group("floor", False, "none")] if P.get("floor") else []),
-           "supported-platforms": {"squares": ["macOS"]}}, open(f"{D}/icon.json", "w"), indent=2)
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+FONT = os.path.join(ROOT, "App/Resources/Fonts/DepartureMono-Regular.otf")
+
+# Theme's dark palette, lifted slightly where the icon needs contrast at small sizes.
+CREAM, RAISED, CARD, BORDER, BADGE = "#F3F0EC", "#433F3C", "#272624", "#4C4744", "#7A7168"
+BACKGROUND = ["extended-srgb:0.17255,0.16863,0.16078,1.00000",   # 2C2B29
+              "extended-srgb:0.10196,0.09804,0.09412,1.00000"]   # 1A1918
+
+CARD_W, CARD_H, CARDS_Y, GAP, RADIUS = 320, 452, 404, 32, 44
+PROMPT_W, PROMPT_H, PROMPT_Y = 400, 168, 172
+
+
+def glyph(text, size, cx, cy):
+    return subprocess.run(
+        ["swift", os.path.join(HERE, "glyph_paths.swift"), FONT, text, str(size), str(cx), str(cy)],
+        capture_output=True, text=True, check=True).stdout.strip()
+
+
+def svg(body):
+    return f'<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">{body}</svg>'
+
+
+def bars(x0, y0, widths, step=52, height=26, opacity=0.55):
+    return "".join(f'<rect x="{x0}" y="{y0 + i * step}" width="{w}" height="{height}" fill="{CREAM}" '
+                   f'fill-opacity="{opacity}"/>' for i, w in enumerate(widths))
+
+
+def card(x, letter, widths):
+    header = CARDS_Y + 54
+    return (f'<rect x="{x + 4}" y="{CARDS_Y + 4}" width="{CARD_W - 8}" height="{CARD_H - 8}" rx="{RADIUS - 4}" '
+            f'fill="{CARD}" stroke="{BORDER}" stroke-width="8"/>'
+            f'<circle cx="{x + 62}" cy="{header}" r="27" fill="none" stroke="{BADGE}" stroke-width="7"/>'
+            f'<path fill="{CREAM}" d="{glyph(letter, 44, x + 62, header)}"/>'
+            f'<rect x="{x + 110}" y="{header - 12}" width="{CARD_W - 172}" height="24" fill="{CREAM}" fill-opacity="0.88"/>'
+            f'<rect x="{x + 4}" y="{CARDS_Y + 104}" width="{CARD_W - 8}" height="8" fill="{BORDER}"/>'
+            + bars(x + 42, CARDS_Y + 150, widths))
+
+
+def main(out):
+    left, right = 512 - GAP // 2 - CARD_W, 512 + GAP // 2
+    prompt_x = right + CARD_W - PROMPT_W
+    prompt = (f'<rect x="{prompt_x}" y="{PROMPT_Y}" width="{PROMPT_W}" height="{PROMPT_H}" rx="{RADIUS}" fill="{RAISED}"/>'
+              + bars(prompt_x + 48, PROMPT_Y + 46, [PROMPT_W - 112, PROMPT_W - 200], step=50, opacity=0.92))
+    cards = card(left, "A", [236, 182, 212, 128, 196]) + card(right, "B", [212, 236, 150, 196, 104])
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(os.path.join(out, "Assets"))
+    layers = {"prompt": prompt, "cards": cards}
+    for name, body in layers.items():
+        with open(os.path.join(out, "Assets", f"{name}.svg"), "w") as f:
+            f.write(svg(body))
+    group = lambda name: {
+        "layers": [{"glass": True, "image-name": f"{name}.svg", "name": name,
+                    "position": {"scale": 1, "translation-in-points": [0, 0]}}],
+        "shadow": {"kind": "neutral", "opacity": 0.5}, "translucency": {"enabled": False, "value": 0.5}}
+    with open(os.path.join(out, "icon.json"), "w") as f:
+        json.dump({"fill": {"linear-gradient": BACKGROUND,
+                            "orientation": {"start": {"x": 0.5, "y": 0}, "stop": {"x": 0.5, "y": 1}}},
+                   "groups": [group(name) for name in layers],
+                   "supported-platforms": {"squares": ["macOS"]}}, f, indent=2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1])
