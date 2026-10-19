@@ -189,6 +189,11 @@ struct ArchivePane: View {
             .disabled(accounts.working.contains(account.id))
         } else {
             Text("\(archive.conversations.count) conversations archived").foregroundStyle(.secondary)
+            if archive.filter.isActive {
+                Text("\(archive.visibleConversations.count) shown by the history filters.")
+                    .font(Theme.caption)
+                    .foregroundStyle(.secondary)
+            }
             Text("Choose one in the sidebar, search with ⌘F, or open \(siteName) there.")
                 .font(Theme.caption)
                 .foregroundStyle(.tertiary)

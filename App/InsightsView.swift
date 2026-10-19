@@ -61,6 +61,8 @@ struct InsightsView: View {
     @Bindable var archive: ArchiveModel
     @Bindable var accounts: AccountsModel
     @Binding var destination: MainDestination
+    /// Opens the history filtered to what a bar or a model row counts.
+    let showHistory: (HistoryFilter) -> Void
     @State private var showAllModels = false
 
     /// Models listed before "Show all".
@@ -143,7 +145,11 @@ struct InsightsView: View {
             totals(insights)
             if !insights.activity.isEmpty || insights.undated > 0 { activity(insights) }
             HStack(alignment: .top, spacing: 36) {
-                section("Modes") { bars(insights.modes.map { Bar($0.label, $0.count) }) }
+                section("Modes") {
+                    bars(insights.modes.map { tally in
+                        Bar(HistoryFilter.label(mode: tally.mode), tally.count, id: tally.mode.map { "=" + $0 } ?? "nil") { showHistory(HistoryFilter(modes: [tally.mode])) }
+                    })
+                }
                 section("Kinds") { bars(insights.kinds.map { Bar($0.label, $0.count) }) }
             }
             if insights.accounts.count > 1 { accountsSection(insights) }
@@ -238,9 +244,22 @@ struct InsightsView: View {
             detail: "Each model’s record in the votes you cast, by the model the archive claims for each side. Your votes, not Arena’s ranking."
         ) {
             VStack(spacing: 0) {
-                ModelRow.header
-                ForEach(shown, id: \.modelID) { ModelRow(record: $0) }
+                ModelRow.header.padding(.horizontal, 8)
+                ForEach(shown, id: \.modelID) { record in
+                    Button { showHistory(HistoryFilter(votes: .with, model: record.modelID)) } label: { ModelRow(record: record) }
+                        .buttonStyle(.arenaRow)
+                        .help((record.displayName == nil ? "Never revealed; shown by its claimed model ID." : "Claimed model ID: \(record.modelID).")
+                            + " The numbers count votes. Click to show the conversations with a vote whose latest snapshot"
+                            + " claims this model; one conversation can hold several votes.")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(record.displayName ?? record.modelID)
+                        .accessibilityValue(ModelRow.spoken(record))
+                        .accessibilityHint("Shows its conversations with a vote in the history")
+                        .accessibilityAddTraits(.isButton)
+                    Theme.border.opacity(0.6).frame(height: 1).padding(.horizontal, 8)
+                }
             }
+            .padding(.horizontal, -8)
             if all.count > Self.modelsShown {
                 Button(showAllModels ? "Show Fewer" : "Show All \(all.count)") { showAllModels.toggle() }
                     .buttonStyle(.arenaPill)
@@ -303,20 +322,48 @@ struct InsightsView: View {
         let label: String
         let count: Int
         var help: String?
-        var id: String { label }
+        /// Opens the history filtered to what this bar counts, when there is such a filter.
+        var action: (() -> Void)?
+        /// Distinct even where two labels read alike.
+        let id: String
 
-        init(_ label: String, _ count: Int, help: String? = nil) {
+        init(_ label: String, _ count: Int, id: String? = nil, help: String? = nil, action: (() -> Void)? = nil) {
+            self.id = id ?? label
             self.label = label
             self.count = count
             self.help = help
+            self.action = action
         }
     }
 
-    /// Horizontal bars scaled to the largest count.
+    /// Horizontal bars scaled to the largest count. Rows with an action are links into the history;
+    /// the others get the same insets so every bar lines up.
     private func bars(_ rows: [Bar]) -> some View {
         let peak = max(1, rows.map(\.count).max() ?? 1)
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(alignment: .leading, spacing: 1) {
             ForEach(rows) { row in
+                let help = row.help ?? "\(row.label): \(row.count.formatted())"
+                if let action = row.action {
+                    Button(action: action) { barLine(row, peak: peak) }
+                        .buttonStyle(.arenaRow)
+                        .help(help + ". Click to show these conversations in the history.")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(row.label): \(row.count)")
+                        .accessibilityHint("Shows these conversations in the history")
+                        .accessibilityAddTraits(.isButton)
+                } else {
+                    barLine(row, peak: peak)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .help(help)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(row.label): \(row.count)")
+                }
+            }
+        }
+        .padding(.horizontal, -8)
+    }
+
+    private func barLine(_ row: Bar, peak: Int) -> some View {
                 HStack(spacing: 10) {
                     Text(row.label).lineLimit(1).truncationMode(.middle).frame(width: 120, alignment: .leading)
                     GeometryReader { geometry in
@@ -331,11 +378,6 @@ struct InsightsView: View {
                     .frame(height: 7)
                     Text(row.count.formatted()).frame(minWidth: 44, alignment: .trailing)
                 }
-                .help(row.help ?? "\(row.label): \(row.count.formatted())")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(row.label): \(row.count)")
-            }
-        }
     }
 }
 
@@ -423,9 +465,6 @@ private struct ModelRow: View {
                 .lineLimit(1).truncationMode(.middle)
                 .foregroundStyle(record.displayName == nil ? .secondary : .primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .help(record.displayName == nil
-                    ? "Never revealed; shown by its claimed model ID."
-                    : "Claimed model ID: \(record.modelID)")
             ForEach(Array(values.enumerated()), id: \.offset) { n, value in
                 Text(value.formatted())
                     .foregroundStyle(value == 0 ? .tertiary : .primary)
@@ -433,12 +472,11 @@ private struct ModelRow: View {
             }
             share.frame(width: Self.columns[5].width, alignment: .trailing)
         }
-        .padding(.vertical, 6)
-        .overlay(alignment: .bottom) { Theme.border.opacity(0.6).frame(height: 1) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(record.displayName ?? record.modelID)
-        .accessibilityValue(
-            "\(record.votes) votes, preferred \(record.preferred), not preferred \(record.notPreferred), ties \(record.ties), both bad \(record.bothBad)")
+        .padding(.vertical, 1)
+    }
+
+    static func spoken(_ record: ArchiveInsights.ModelRecord) -> String {
+        "\(record.votes) votes, preferred \(record.preferred), not preferred \(record.notPreferred), ties \(record.ties), both bad \(record.bothBad)"
     }
 
     @ViewBuilder private var share: some View {

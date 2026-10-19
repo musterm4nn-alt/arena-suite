@@ -102,7 +102,7 @@ private func insights(_ index: ArchiveIndex, accounts: Set<AccountID>? = nil) th
     let result = try insights(index)
     #expect(result.conversations == 4 && result.withSnapshot == 3)
     #expect(result.prompts == 3 && result.responses == 6)
-    #expect(result.modes == [.init("battle", 2), .init("not stated", 1), .init("side-by-side", 1)])
+    #expect(result.modes == [.init("battle", 2), .init(nil, 1), .init("side-by-side", 1)], "not stated stays nil")
     #expect(result.kinds == [.init("evaluation", 3), .init("agentic", 1)])
     #expect(result.accounts == [one: 2, two: 2])
     #expect(result.decoderVersion == "test/1" && result.vocabularyEvidence == "test")

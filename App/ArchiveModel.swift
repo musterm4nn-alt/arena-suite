@@ -20,8 +20,12 @@ final class ArchiveModel {
         let pointers: [String]
     }
 
+    /// Every conversation in the account scope; `visibleConversations` applies the filters.
     private(set) var conversations: [ConversationSummary] = []
+    private(set) var visibleConversations: [ConversationSummary] = []
     private(set) var hits: [SearchHit] = []
+    /// What the filter menu offers for the current scope, with counts.
+    private(set) var filterOptions = HistoryFilterOptions.empty
     private(set) var detail: ConversationDetail?
     private(set) var layout: TranscriptLayout?
     private(set) var evidence: RawEvidence?
@@ -43,10 +47,30 @@ final class ArchiveModel {
     var message: String?
 
     var accountFilter: AccountID? { didSet { if oldValue != accountFilter { reload() } } }
+    /// Mode, vote, model and date filters for the history and search (Docs/history-filters-2026-10-19.md).
+    /// Not saved: every launch starts unfiltered.
+    var filter = HistoryFilter() {
+        didSet {
+            guard oldValue != filter else { return }
+            applyFilter()
+            // A conversation the filters now hide is not left open beside a list that lacks it.
+            if let selection, !visibleKeys.contains(selection),
+                conversations.contains(where: { $0.account == selection.account && $0.remoteID == selection.remoteID })
+            {
+                select(nil)
+            }
+        }
+    }
+    /// The vote and model facets could not be read: those filters are not applied, and the filter
+    /// bar says so.
+    var facetsUnavailable: Bool { facets == nil }
     var searchText = "" { didSet { if oldValue != searchText { scheduleSearch(debounce: true) } } }
     var includeReasoningAndTools = false { didSet { if oldValue != includeReasoningAndTools { scheduleSearch(debounce: false) } } }
 
     private let archive: ArchiveService?
+    /// nil = could not be read (see `facetsUnavailable`).
+    private var facets: HistoryFacets? = .empty
+    private var visibleKeys: Set<ConversationKey> = []
     private var listGeneration = 0
     private var detailGeneration = 0
     private var evidenceGeneration = 0
@@ -85,7 +109,7 @@ final class ArchiveModel {
         let filter = accountFilter
         Task {
             let result = await Task.detached {
-                (try? archive.conversations(account: filter),
+                (try? archive.conversations(account: filter), try? archive.historyFacets(account: filter),
                     ((try? archive.warnings(account: filter).count) ?? 0, (try? archive.unknownFields(account: filter).count) ?? 0))
             }.value
             guard generation == listGeneration else { return }
@@ -94,9 +118,31 @@ final class ArchiveModel {
             } else {
                 message = "The archive index could not be read."
             }
-            problems = result.1
+            facets = result.1
+            applyFilter()
+            problems = result.2
         }
         scheduleSearch(debounce: false)
+    }
+
+    /// The most hits one search reads (the index's own cap); the filters apply to these, and the
+    /// list shows the first `shownHits`.
+    nonisolated static let searchLimit = 1_000
+    nonisolated static let shownHits = 200
+
+    /// Search hits within the conversations the filters show.
+    var visibleHits: [SearchHit] {
+        guard filter.isActive else { return hits }
+        return hits.filter { visibleKeys.contains(ConversationKey(account: $0.account, remoteID: $0.conversationID)) }
+    }
+
+    /// Applies the filters to the loaded list and recounts the menu under them (the clock is read
+    /// now, for the "past …" periods).
+    private func applyFilter() {
+        let now = Date()
+        visibleConversations = filter.apply(conversations, facets: facets, now: now, calendar: .current)
+        visibleKeys = Set(visibleConversations.map { ConversationKey(account: $0.account, remoteID: $0.remoteID) })
+        filterOptions = HistoryFilterOptions.build(conversations, facets: facets, filter: filter, now: now, calendar: .current)
     }
 
     private func scheduleSearch(debounce: Bool) {
@@ -112,7 +158,7 @@ final class ArchiveModel {
             if debounce { try? await Task.sleep(for: .milliseconds(200)) }
             guard !Task.isCancelled else { return }
             let found = await Task.detached {
-                (try? archive.search(text, account: filter, includeReasoningAndTools: wide, limit: 200)) ?? []
+                (try? archive.search(text, account: filter, includeReasoningAndTools: wide, limit: Self.searchLimit)) ?? []
             }.value
             // Apply only if the inputs are still the ones this query was for.
             guard !Task.isCancelled, text == searchText.trimmingCharacters(in: .whitespaces), filter == accountFilter,

@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-19, after the app icon and the Insights page (both committed locally, not pushed).
+Updated 2026-10-19, after the app icon, the Insights page and the history filters (all pushed at the user's request).
 
 ## Where things stand
 
@@ -51,15 +51,24 @@ Updated 2026-10-19, after the app icon and the Insights page (both committed loc
   - Sync failures set the account's state through `SyncManifest.sessionState` (guarded by the
     credential generation).
 - **New features (user request 2026-10-19: "design, develop, implement new features and
-  improvements").** Each is a milestone with a doc, tests and a second-model review, committed
-  locally; pushing needs the user's OK.
+  improvements").** Each is a milestone with a doc, tests and a second-model review. Pushing needs
+  the user's OK; the icon, Insights and the history filters were pushed on 2026-10-19.
   - **App icon:** done, chosen by the user (see the code map).
   - **Insights** (`Docs/insights-2026-10-19.md`): a sidebar and rail entry opening a read-only
     summary of the archive. `ArchiveIndex.insightsSource` (one read), `ArchiveInsights.build`
     (pure), `InsightsService`, `App/InsightsView.swift`. The vote vocabulary lives in the adapter
     (`ArenaArchiveDecoder.voteVocabulary`, N-016) and reaches the service through composition.
-  - **Next, as announced to the user:** history filters (mode, voted, model, date; plan §11),
-    bulk export of the filtered history, then a clearer Maintenance page.
+  - **History filters** (`Docs/history-filters-2026-10-19.md`, review
+    `Docs/reviews/2026-10-19-history-filters.md`): mode, votes, claimed model and update time, for
+    the sidebar history and search.
+    - Code: `HistoryFilter`, `HistoryFacets`, `HistoryFilterOptions` and `SearchSummary` in
+      ApplicationActions; `ArchiveIndex.historyFacetSource`; `HistoryFilterBar` in
+      `SidebarView.swift`. Insights' links go through `MainView.showHistory`.
+    - Semantics to keep: list-only conversations match neither vote choice; unreadable facets turn
+      the vote and model filters off (never guessed); menu counts are taken under the other active
+      filters. Filters are not saved.
+  - **Next, as announced to the user:** bulk export of the filtered history, then a clearer
+    Maintenance page.
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -184,6 +193,7 @@ Debug-only app flags:
 - `--validate-dataset` (opens Maintenance and runs Validate Dataset)
 - `--preview-accounts` (opens the Accounts page)
 - `--preview-insights` (opens the Insights page)
+- `--preview-filter "<mode>"` (filters the history to that mode and to conversations with a vote)
 - `--preview-site-closed`, `--preview-site-header` (the first account's site pane without opening
   its session; the second draws the open page's header with no web view)
 

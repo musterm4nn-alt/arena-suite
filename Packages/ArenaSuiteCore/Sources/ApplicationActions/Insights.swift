@@ -17,6 +17,17 @@ public struct ArchiveInsights: Sendable, Equatable {
         }
     }
 
+    /// A recorded mode (nil = not stated) and how many conversations have it.
+    public struct ModeTally: Sendable, Equatable {
+        public let mode: String?
+        public let count: Int
+
+        public init(_ mode: String?, _ count: Int) {
+            self.mode = mode
+            self.count = count
+        }
+    }
+
     public struct Month: Sendable, Equatable, Hashable {
         public let year: Int
         public let month: Int
@@ -81,8 +92,8 @@ public struct ArchiveInsights: Sendable, Equatable {
     /// Messages of the latest snapshots by role: your prompts ("user") and responses ("assistant").
     public let prompts: Int
     public let responses: Int
-    /// Conversations by recorded mode ("not stated" when absent), most frequent first.
-    public let modes: [Tally]
+    /// Conversations by recorded mode (nil when not stated), most frequent first.
+    public let modes: [ModeTally]
     /// Conversations by recorded kind (entry type), most frequent first.
     public let kinds: [Tally]
     public let accounts: [AccountID: Int]
@@ -157,22 +168,8 @@ public struct ArchiveInsights: Sendable, Equatable {
                     .insert(claim.modelID)
             }
         }
-        // Revealed names, from any snapshot: the latest record's name per model ID. Model IDs are
-        // Arena's own, so under all accounts a name revealed in one account labels the same ID in
-        // another.
-        var names: [String: (sequence: UInt64, account: String, name: String)] = [:]
-        for item in source.namedClaims {
-            let claim = item.claim
-            if claim.source == "detail_revealed", let name = claim.displayName {
-                let candidate = (sequence: item.sequence, account: item.account.rawValue.uuidString, name: name)
-                if let current = names[claim.modelID],
-                    (current.sequence, current.account, current.name) >= (candidate.sequence, candidate.account, candidate.name)
-                {
-                    continue
-                }
-                names[claim.modelID] = candidate
-            }
-        }
+        // Revealed names, from any snapshot (model IDs are Arena's own, shared across accounts).
+        let names = RevealedNames.latest(source.namedClaims)
 
         for item in source.votes {
             let vote = item.feedback
@@ -232,7 +229,7 @@ public struct ArchiveInsights: Sendable, Equatable {
 
         let models = records.map { id, r in
             ModelRecord(
-                modelID: id, displayName: names[id]?.name, votes: r.votes, preferred: r.preferred,
+                modelID: id, displayName: names[id], votes: r.votes, preferred: r.preferred,
                 notPreferred: r.notPreferred, ties: r.ties, bothBad: r.bothBad)
         }.sorted { lhs, rhs in
             if lhs.votes != rhs.votes { return lhs.votes > rhs.votes }
@@ -247,7 +244,9 @@ public struct ArchiveInsights: Sendable, Equatable {
             withSnapshot: conversations.filter { $0.latestSnapshotSequence != nil }.count,
             prompts: source.messages.filter { $0.role == "user" }.count,
             responses: source.messages.filter { $0.role == "assistant" }.count,
-            modes: tallies(conversations.map { $0.mode ?? "not stated" }),
+            modes: Dictionary(conversations.map { ($0.mode, 1) }, uniquingKeysWith: +)
+                .map { ModeTally($0.key, $0.value) }
+                .sorted { HistoryFilter.modeOrder(($0.mode, $0.count), ($1.mode, $1.count)) },
             kinds: tallies(conversations.map(\.kind)),
             accounts: Dictionary(conversations.map { ($0.account, 1) }, uniquingKeysWith: +),
             activity: activity, undated: undated,

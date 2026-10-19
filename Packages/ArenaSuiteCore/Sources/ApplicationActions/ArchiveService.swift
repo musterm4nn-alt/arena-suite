@@ -229,6 +229,12 @@ public actor ArchiveService {
         try index.insightsSource(accounts: accounts)
     }
 
+    /// What the history filters need beside the list (Docs/history-filters-2026-10-19.md).
+    /// `account` nil = every account.
+    public nonisolated func historyFacets(account: AccountID?) throws -> HistoryFacets {
+        HistoryFacets(source: try index.historyFacetSource(account: account))
+    }
+
     public nonisolated func counts() throws -> [String: Int] {
         try index.counts()
     }

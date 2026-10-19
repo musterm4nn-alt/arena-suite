@@ -108,4 +108,17 @@ func realArchiveInsightsAttributeEveryInterpretedVote() async throws {
     }
     print("  unknown paths under pointwiseFeedbacks: \(pointwise)")
     #expect(pointwise == 0, "no single-response feedback recorded, so the page's pairwise votes are all the votes")
+
+    // History filters (Docs/history-filters-2026-10-19.md) over the same index.
+    let list = try archive.conversations(account: nil)
+    let facets = try archive.historyFacets(account: nil)
+    let now = Date()
+    let options = HistoryFilterOptions.build(list, facets: facets, now: now, calendar: .current)
+    print("  filters: modes \(options.modes.count), with a vote \(options.withVote), without \(options.withoutVote), no transcript \(options.withoutTranscript), models \(options.models.count), years \(options.years.count), undated \(options.undated)")
+    #expect(list.count == result.conversations)
+    #expect(options.withoutTranscript == result.conversations - result.withSnapshot, "list-only conversations are neither with nor without a vote")
+    #expect(options.withVote + options.withoutVote == result.withSnapshot, "every conversation with a transcript has readable facets")
+    #expect(HistoryFilter(votes: .with).apply(list, facets: facets, now: now, calendar: .current).count == options.withVote)
+    #expect(HistoryFilter(votes: .without).apply(list, facets: facets, now: now, calendar: .current).count == options.withoutVote)
+    #expect(Set(result.models.map(\.modelID)).isSubset(of: Set(options.models.map(\.id))), "every model with a record can be filtered to")
 }

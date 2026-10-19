@@ -56,6 +56,13 @@ unrecognized, uninterpreted. Also counted (2026-10-19, journals re-projected wit
 content is recorded. An empty element would carry no path and would not be counted. Insights shows pairwise
 votes only and says so.
 
+N-017 (2026-10-19, `verified_observation` + `assumption`, counts only): in the live index (3 accounts), 18 of
+the 65 claimed model IDs are claimed in more than one account. All 18 carry a `detail_revealed` name in more
+than one account, and no model ID has more than one revealed name in any account or across accounts.
+**`assumption`:** a model ID is Arena's own identifier, the same in every account, so a name revealed in
+one account labels that ID in another (Insights and the history filters' model menu). Nothing in a response
+states this. Where names differ, the latest record's name is shown (by sequence, then account, then name).
+
 N-013: [phase4-index-2026-09-24.md](phase4-index-2026-09-24.md) records that every field in the 51 archived
 detail and 7 list responses is recognized by `arena-decoder/1` (0 unknown paths, 0 warnings), content-block kinds
 `text`/`reasoning`/`tool-call`/`tool-result`, lanes `a`/`b`, and that `JSONSerialization` keeps the first duplicate key.

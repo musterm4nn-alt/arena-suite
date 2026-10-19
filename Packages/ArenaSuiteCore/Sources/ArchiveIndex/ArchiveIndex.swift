@@ -1083,24 +1083,9 @@ public final class ArchiveIndex: Sendable {
                     feedback: ArchivedFeedback(
                         remoteID: row["remote_id"], value: row["value"], messageA: row["message_a"], messageB: row["message_b"]))
             }
-            let claimColumns = """
-                SELECT mc.account_id AS account_id, mc.seq AS seq, mc.conversation_id AS conversation_id,
-                       mc.subject AS subject, mc.subject_id AS subject_id, mc.role AS role, mc.model_id AS model_id,
-                       mc.display_name AS display_name, mc.organization AS organization, mc.provider AS provider,
-                       mc.source AS source
-                FROM model_claims mc
-                """
-            let claimOrder = " ORDER BY mc.account_id, mc.seq, mc.subject, mc.subject_id, mc.role, mc.source, mc.model_id"
             func claims(_ sql: String) throws -> [SequencedClaim] {
-                try Row.fetchAll(db, sql: claimColumns + sql + claimOrder).compactMap { row -> SequencedClaim? in
-                    guard let account = included(row["account_id"]) else { return nil }
-                    let role: String = row["role"]
-                    return SequencedClaim(
-                        account: account, sequence: sequence(row["seq"]), conversationID: row["conversation_id"],
-                        claim: ModelClaim(
-                            subject: ModelClaim.Subject(rawValue: row["subject"]), subjectID: row["subject_id"],
-                            role: role.isEmpty ? nil : role, modelID: row["model_id"], displayName: row["display_name"],
-                            organization: row["organization"], provider: row["provider"], source: row["source"]))
+                try Row.fetchAll(db, sql: Self.claimSelect + sql + Self.claimOrder).compactMap { row in
+                    included(row["account_id"]).map { Self.sequencedClaim(row, account: $0) }
                 }
             }
             return InsightsSource(
@@ -1111,6 +1096,79 @@ public final class ArchiveIndex: Sendable {
                     """),
                 namedClaims: try claims(" WHERE mc.display_name IS NOT NULL"))
         }
+    }
+
+    // MARK: History facets (Docs/history-filters-2026-10-19.md)
+
+    /// For each conversation, the votes and claimed model IDs of its latest snapshot, and every claim
+    /// that carries a display name, in one read transaction. `account` nil = every account. Claims
+    /// are matched by sequence and conversation ID. Votes are matched by sequence alone (`feedback`
+    /// has no conversation column): a record holds at most one snapshot, because `snapshots` is keyed
+    /// by (account, sequence) and written with a plain INSERT, so a sequence's votes are its snapshot's.
+    /// Every `feedback` row is a vote between two responses: the decoder projects only
+    /// `pairwiseFeedbacks` there, and Insights counts the same rows.
+    public func historyFacetSource(account: AccountID?) throws -> HistoryFacetSource {
+        let accountID = account?.rawValue.uuidString
+        return try pool.read { db in
+            let arguments = args(accountID.map { ["account": $0] } ?? [:])
+            let scope = accountID == nil ? "" : " WHERE c.account_id = :account"
+            var models: [String: [String]] = [:]
+            for row in try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT c.account_id AS account_id, c.remote_id AS remote_id, mc.model_id AS model_id
+                    FROM conversations c
+                    JOIN model_claims mc ON mc.account_id = c.account_id AND mc.seq = c.latest_snapshot_seq
+                      AND mc.conversation_id = c.remote_id
+                    """ + scope + " ORDER BY c.account_id, c.remote_id, mc.model_id",
+                arguments: arguments)
+            {
+                let account: String = row["account_id"], remote: String = row["remote_id"]
+                models["\(account)\u{0}\(remote)", default: []].append(row["model_id"])
+            }
+            let conversations = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT c.account_id AS account_id, c.remote_id AS remote_id, COUNT(f.remote_id) AS votes
+                    FROM conversations c
+                    LEFT JOIN feedback f ON f.account_id = c.account_id AND f.snapshot_seq = c.latest_snapshot_seq
+                    """ + scope + " GROUP BY c.account_id, c.remote_id ORDER BY c.account_id, c.remote_id",
+                arguments: arguments
+            ).compactMap { row -> ConversationFacet? in
+                let account: String = row["account_id"], remote: String = row["remote_id"]
+                guard let id = Self.accountID(account) else { return nil }
+                return ConversationFacet(
+                    account: id, remoteID: remote, votes: row["votes"], models: models["\(account)\u{0}\(remote)"] ?? [])
+            }
+            let named = try Row.fetchAll(
+                db,
+                sql: Self.claimSelect + " WHERE mc.display_name IS NOT NULL"
+                    + (accountID == nil ? "" : " AND mc.account_id = :account") + Self.claimOrder,
+                arguments: arguments
+            ).compactMap { row in Self.accountID(row["account_id"]).map { Self.sequencedClaim(row, account: $0) } }
+            return HistoryFacetSource(conversations: conversations, namedClaims: named)
+        }
+    }
+
+    private static let claimSelect = """
+        SELECT mc.account_id AS account_id, mc.seq AS seq, mc.conversation_id AS conversation_id,
+               mc.subject AS subject, mc.subject_id AS subject_id, mc.role AS role, mc.model_id AS model_id,
+               mc.display_name AS display_name, mc.organization AS organization, mc.provider AS provider,
+               mc.source AS source
+        FROM model_claims mc
+        """
+    private static let claimOrder = " ORDER BY mc.account_id, mc.seq, mc.subject, mc.subject_id, mc.role, mc.source, mc.model_id"
+
+    /// A row of `claimSelect` as a claim with its record.
+    private static func sequencedClaim(_ row: Row, account: AccountID) -> SequencedClaim {
+        let role: String = row["role"]
+        let sequence: Int64 = row["seq"]
+        return SequencedClaim(
+            account: account, sequence: UInt64(max(0, sequence)), conversationID: row["conversation_id"],
+            claim: ModelClaim(
+                subject: ModelClaim.Subject(rawValue: row["subject"]), subjectID: row["subject_id"],
+                role: role.isEmpty ? nil : role, modelID: row["model_id"], displayName: row["display_name"],
+                organization: row["organization"], provider: row["provider"], source: row["source"]))
     }
 
     private static let datasetConversationSelect = """

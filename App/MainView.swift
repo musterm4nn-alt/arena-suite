@@ -55,7 +55,8 @@ struct MainView: View {
                 case .accounts:
                     AccountsView(model: accounts)
                 case .insights:
-                    InsightsView(model: insights, archive: archive, accounts: accounts, destination: $destination)
+                    InsightsView(
+                        model: insights, archive: archive, accounts: accounts, destination: $destination, showHistory: showHistory)
                 case .maintenance:
                     MaintenanceView(model: maintenance, accounts: accounts)
                 }
@@ -106,6 +107,10 @@ struct MainView: View {
             }
             if arguments.contains("--preview-accounts") { destination = .accounts }
             if arguments.contains("--preview-insights") { destination = .insights }
+            // `--preview-filter "<mode>"` filters the history to that mode and to conversations with a vote.
+            if let index = arguments.firstIndex(of: "--preview-filter"), arguments.indices.contains(index + 1) {
+                archive.filter = HistoryFilter(modes: [arguments[index + 1]], votes: .with)
+            }
             if arguments.contains("--preview-maintenance") {
                 destination = .maintenance
                 await maintenance.verify()
@@ -119,6 +124,16 @@ struct MainView: View {
     }
 
     private var rail: Bool { destination.isSite ? siteRail : archiveRail }
+
+    /// Opens the history filtered as given: the search closes (so the list, not stale results, is
+    /// shown) and nothing is selected.
+    private func showHistory(_ filter: HistoryFilter) {
+        archive.searchText = ""
+        searching = false
+        archive.filter = filter
+        archive.select(nil)
+        destination = .archive
+    }
 
     private func setRail(_ value: Bool) {
         if destination.isSite { siteRail = value } else { archiveRail = value }

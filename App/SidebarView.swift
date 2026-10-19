@@ -129,11 +129,17 @@ struct SidebarView: View {
                 searchField.padding(.horizontal, 12).padding(.top, 8)
             }
             if showsResults {
+                if archive.filter.isActive {
+                    HistoryFilterBar(archive: archive).padding(.horizontal, 16).padding(.top, 12)
+                }
                 SearchResultsList(archive: archive) { hit in
                     archive.open(hit)
                     destination = .archive
                 }
             } else {
+                if !archive.conversations.isEmpty || archive.filter.isActive {
+                    HistoryFilterBar(archive: archive).padding(.horizontal, 16).padding(.top, 12)
+                }
                 HistoryList(archive: archive, destination: $destination)
             }
             SidebarStatus(accounts: accounts, archive: archive, destination: $destination)
@@ -495,7 +501,7 @@ private struct HistoryList: View {
     }
 
     var body: some View {
-        let groups = HistoryGroup.group(archive.conversations)
+        let groups = HistoryGroup.group(archive.visibleConversations)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
@@ -529,6 +535,13 @@ private struct HistoryList: View {
                     Text("No archived conversations")
                     Text("Add an account from the account menu below, then Sync History.")
                         .font(Theme.caption).foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.center)
+                .padding(20)
+            } else if archive.visibleConversations.isEmpty {
+                VStack(spacing: 8) {
+                    Text("No conversations match the filters")
+                    Button("Clear Filters") { archive.filter = HistoryFilter() }.buttonStyle(.arenaPill)
                 }
                 .multilineTextAlignment(.center)
                 .padding(20)
@@ -567,7 +580,7 @@ private struct HistoryList: View {
 
     /// Up and down arrows move the selection, as in a list.
     private func step(_ offset: Int, _ proxy: ScrollViewProxy) -> KeyPress.Result {
-        let keys = archive.conversations.map(Self.key)
+        let keys = archive.visibleConversations.map(Self.key)
         guard !keys.isEmpty else { return .ignored }
         let current = archive.selection.flatMap { keys.firstIndex(of: $0) }
         let index = current.map { min(max($0 + offset, 0), keys.count - 1) } ?? (offset > 0 ? 0 : keys.count - 1)
@@ -662,6 +675,198 @@ struct HistoryGroup: Identifiable {
     }
 }
 
+// MARK: - Filters
+
+/// Above the history: the filter menu, the active filters as removable chips, and how many of the
+/// scope's conversations they show (Docs/history-filters-2026-10-19.md).
+private struct HistoryFilterBar: View {
+    @Bindable var archive: ArchiveModel
+
+    var body: some View {
+        let active = archive.filter.isActive
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(active
+                    ? "\(archive.visibleConversations.count.formatted()) of \(archive.conversations.count.formatted()) shown"
+                    : "History")
+                    .font(Theme.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if active {
+                    Button("Clear") { archive.filter = HistoryFilter() }
+                        .buttonStyle(.plain).font(Theme.caption).foregroundStyle(.secondary)
+                        .help("Show the whole history")
+                }
+                menu
+            }
+            if archive.facetsUnavailable {
+                Text("Votes and claimed models could not be read from the index, so those filters are off.")
+                    .font(Theme.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if active { chips }
+        }
+    }
+
+    private var menu: some View {
+        let options = archive.filterOptions
+        return Menu {
+            Section("Mode") {
+                ForEach(options.modes, id: \.self) { option in
+                    Toggle(isOn: modeBinding(option.value)) {
+                        Text(verbatim: "\(HistoryFilter.label(mode: option.value)) (\(option.count))")
+                    }
+                }
+            }
+            // An inline picker is its own section, titled with its label.
+            Picker("Votes between two responses (latest snapshot)", selection: $archive.filter.votes) {
+                Text(HistoryFilter.Votes.any.label).tag(HistoryFilter.Votes.any)
+                Text(verbatim: "\(HistoryFilter.Votes.with.label) (\(options.withVote))").tag(HistoryFilter.Votes.with)
+                Text(verbatim: "\(HistoryFilter.Votes.without.label) (\(options.withoutVote))").tag(HistoryFilter.Votes.without)
+            }
+            .pickerStyle(.inline)
+            .disabled(archive.facetsUnavailable)
+            if options.withoutTranscript > 0 {
+                // A disabled line: these match neither vote choice, since their votes are not archived.
+                Text(verbatim: "\(options.withoutTranscript.formatted()) known only from the history list (no transcript)")
+            }
+            Menu("Model (claimed)") {
+                Picker("Model", selection: $archive.filter.model) {
+                    Text("Any model").tag(String?.none)
+                    ForEach(options.models) { model in
+                        Text(verbatim: "\(model.name ?? model.id) (\(model.count))").tag(Optional(model.id))
+                    }
+                    // A model chosen in another account scope stays listed, so it can be seen and changed.
+                    if let chosen = archive.filter.model, !options.models.contains(where: { $0.id == chosen }) {
+                        Text(verbatim: "\(chosen) (0)").tag(Optional(chosen))
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+            .disabled(archive.facetsUnavailable || (options.models.isEmpty && archive.filter.model == nil))
+            Menu("Updated") {
+                Picker(HistoryFilter.periodScope, selection: $archive.filter.period) {
+                    Text(HistoryFilter.Period.any.label).tag(HistoryFilter.Period.any)
+                    ForEach(options.recent, id: \.self) { item in
+                        Text(verbatim: "\(item.value.label) (\(item.count))").tag(item.value)
+                    }
+                    ForEach(options.years, id: \.self) { year in
+                        Text(verbatim: "\(String(year.value)) (\(year.count))").tag(HistoryFilter.Period.year(year.value))
+                    }
+                    if case .year(let chosen) = archive.filter.period, !options.years.contains(where: { $0.value == chosen }) {
+                        Text(verbatim: "\(String(chosen)) (0)").tag(HistoryFilter.Period.year(chosen))
+                    }
+                }
+                .pickerStyle(.inline)
+                if options.undated > 0 {
+                    Text(verbatim: "\(options.undated.formatted()) without an update time (only in \u{201C}Any time\u{201D})")
+                }
+            }
+            Divider()
+            Button("Clear Filters") { archive.filter = HistoryFilter() }.disabled(!archive.filter.isActive)
+        } label: {
+            Label("Filter History", systemImage: archive.filter.isActive
+                ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.arenaIcon(width: 26, height: 22))
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Filter the history and search by mode, votes, claimed model or update time")
+    }
+
+    private func modeBinding(_ mode: String?) -> Binding<Bool> {
+        let archive = archive
+        return Binding(
+            get: { archive.filter.modes.contains(mode) },
+            set: { on in
+                if on { archive.filter.modes.insert(mode) } else { archive.filter.modes.remove(mode) }
+            })
+    }
+
+    private var chips: some View {
+        let filter = archive.filter
+        let names = Dictionary(archive.filterOptions.models.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        return FlowLayout(spacing: 4) {
+            ForEach(filter.modes.sorted { HistoryFilter.modeOrder(($0, 0), ($1, 0)) }, id: \.self) { mode in
+                chip(HistoryFilter.label(mode: mode), help: "Mode") { archive.filter.modes.remove(mode) }
+            }
+            if filter.votes != .any {
+                chip(filter.votes.label, help: "Votes between two responses in the latest snapshot") {
+                    archive.filter.votes = .any
+                }
+            }
+            if let model = filter.model {
+                chip(((names[model] ?? nil) ?? model), help: "Claimed model \(model) (a claim, not verified identity)") {
+                    archive.filter.model = nil
+                }
+            }
+            if filter.period != .any {
+                chip(filter.period.label, help: HistoryFilter.periodScope) { archive.filter.period = .any }
+            }
+        }
+    }
+
+    private func chip(_ text: String, help: String, remove: @escaping () -> Void) -> some View {
+        Button(action: remove) {
+            HStack(spacing: 4) {
+                Text(text).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "xmark").imageScale(.small).foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.arenaPill)
+        .help("\(help). Click to remove.")
+        .accessibilityLabel("Remove filter \(text)")
+    }
+}
+
+/// Lays its children out in rows, wrapping to the next row when one is full.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, width: proposal.width ?? .infinity)
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                let width = min(size.width, bounds.width)
+                subviews[index].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: ProposedViewSize(width: width, height: size.height))
+                x += width + spacing
+            }
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var y: CGFloat = 0
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let itemWidth = min(size.width, width)
+            if !row.indices.isEmpty, row.width + spacing + itemWidth > width {
+                let y = row.y + row.height + spacing
+                rows.append(row)
+                row = Row(y: y)
+            }
+            row.width += (row.indices.isEmpty ? 0 : spacing) + itemWidth
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+        }
+        if !row.indices.isEmpty { rows.append(row) }
+        return rows
+    }
+}
+
 // MARK: - Search results
 
 private struct SearchResultsList: View {
@@ -669,17 +874,24 @@ private struct SearchResultsList: View {
     let open: (SearchHit) -> Void
 
     var body: some View {
+        let visible = archive.visibleHits
+        let summary = SearchSummary.lines(
+            read: archive.hits.count, visible: visible.count, limit: ArchiveModel.searchLimit, shown: ArchiveModel.shownHits)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
-                if !archive.hits.isEmpty {
-                    Text(archive.hits.count == 200 ? "First 200 matches" : "\(archive.hits.count) match(es)")
+                if !summary.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(summary.enumerated()), id: \.offset) { index, line in
+                            Text(line).foregroundStyle(index == 0 ? .secondary : .tertiary)
+                        }
+                    }
                     .font(Theme.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
-                        .padding(.top, 12)
-                        .padding(.bottom, 4)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
                 }
-                ForEach(archive.hits, id: \.self) { hit in
+                ForEach(visible.prefix(ArchiveModel.shownHits), id: \.self) { hit in
                     Button { open(hit) } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(hit.title ?? "Untitled").lineLimit(1)
@@ -695,8 +907,9 @@ private struct SearchResultsList: View {
         }
         .frame(maxHeight: .infinity)
         .overlay {
-            if archive.hits.isEmpty {
-                Text("No matches for “\(archive.searchText)”").foregroundStyle(.secondary).multilineTextAlignment(.center).padding(20)
+            if visible.isEmpty {
+                Text(archive.hits.isEmpty ? "No matches for “\(archive.searchText)”" : "No matches in the filtered history")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center).padding(20)
             }
         }
     }
