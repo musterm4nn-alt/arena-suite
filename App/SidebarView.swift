@@ -121,6 +121,7 @@ struct SidebarView: View {
                 siteRow
                 searchRow
                 syncRow
+                insightsRow
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -214,6 +215,19 @@ struct SidebarView: View {
         .help(scope.syncable.isEmpty && !syncing ? "Sign an account in under Manage Accounts to archive it" : scope.syncHelp)
     }
 
+    private var insightsRow: some View {
+        Button { destination = .insights } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "chart.bar.xaxis").frame(width: 18)
+                Text("Insights")
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(.arenaRow(selected: destination == .insights))
+        .help("Your archive at a glance: activity, modes and your votes")
+        .accessibilityAddTraits(destination == .insights ? .isSelected : [])
+    }
+
     private var searchField: some View {
         VStack(alignment: .leading, spacing: 6) {
             ArenaField(symbol: "magnifyingglass") {
@@ -269,6 +283,12 @@ struct SidebarRail: View {
             .keyboardShortcut("f", modifiers: .command)
             .help("Search the archive (⌘F)")
             syncIcon
+            Button { destination = .insights } label: {
+                Label("Insights", systemImage: "chart.bar.xaxis")
+            }
+            .buttonStyle(.arenaIcon(width: 36, height: 32, selected: destination == .insights))
+            .help("Insights: activity, modes and your votes")
+            .accessibilityAddTraits(destination == .insights ? .isSelected : [])
             Spacer()
             // The full sidebar's message line, which the rail has no room for.
             if let message = scope.firstMessage {

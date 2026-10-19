@@ -10,6 +10,15 @@ import SuiteDomain
 // such input; the journal keeps the exact bytes. Every unknown key is counted by JSON path so protocol drift is visible, and
 // `metadata` subtrees (anti-abuse telemetry, plan v3 §12) are never projected nor reported.
 
+/// The recorded `pairwiseFeedbacks[].value` strings and what they are taken to mean. N-016 observed
+/// exactly these four values; the meanings are an assumption from their names (the site's vote
+/// buttons), recorded in the ledger. Any other value stays uninterpreted.
+extension ArenaArchiveDecoder {
+    public static let voteVocabulary = VoteVocabulary(
+        outcomes: ["model_a": .preferA, "model_b": .preferB, "tie": .tie, "both_bad": .bothBad],
+        evidence: "assumed from the recorded value names (protocol ledger N-016)")
+}
+
 public struct ArenaArchiveDecoder: ArchiveDecoding {
     /// /2: structured payloads (tool args and results, sources, reasoning, opaque blocks) mask
     /// `metadata` and drop `providerOptions` at any depth. A version change rebuilds the index.

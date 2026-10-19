@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushed).
+Updated 2026-10-19, after the app icon and the Insights page (both committed locally, not pushed).
 
 ## Where things stand
 
@@ -42,7 +42,7 @@ Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushe
 - **Full-review fixes** (`Docs/review-fixes-2026-10-18.md`): the 11 defects of the user-supplied
   review of `c731c85` are fixed with regression tests, plus its two UI priorities. A second model
   reviewed it ("ready", `Docs/reviews/2026-10-18-full-review-fixes.md`) and its findings are fixed.
-  **Committed locally, not pushed; awaiting the user.**
+  Pushed as `add9b4b` at the user's request.
   - `ArchiveService.rebuild(accounts:)` is gone: a rebuild always replays every journal.
   - `VerificationService`'s account closure throws; a failure sets `inventoryProblem`.
   - The decoder is `arena-decoder/2`: the first launch of the new build rebuilds the index once.
@@ -50,6 +50,16 @@ Updated 2026-10-18, after the app-wide UI rework (approved by the user and pushe
     Exports always render the frozen view of one sequence.
   - Sync failures set the account's state through `SyncManifest.sessionState` (guarded by the
     credential generation).
+- **New features (user request 2026-10-19: "design, develop, implement new features and
+  improvements").** Each is a milestone with a doc, tests and a second-model review, committed
+  locally; pushing needs the user's OK.
+  - **App icon:** done, chosen by the user (see the code map).
+  - **Insights** (`Docs/insights-2026-10-19.md`): a sidebar and rail entry opening a read-only
+    summary of the archive. `ArchiveIndex.insightsSource` (one read), `ArchiveInsights.build`
+    (pure), `InsightsService`, `App/InsightsView.swift`. The vote vocabulary lives in the adapter
+    (`ArenaArchiveDecoder.voteVocabulary`, N-016) and reaches the service through composition.
+  - **Next, as announced to the user:** history filters (mode, voted, model, date; plan §11),
+    bulk export of the filtered history, then a clearer Maintenance page.
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -158,6 +168,8 @@ ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive"
   swift test --package-path Packages/ArenaProtocol --filter realArchive    # rebuild, exports, verify+backup on real data
 ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
   swift test --package-path Packages/ArenaProtocol --filter realArchiveDataset   # dataset counts only
+ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
+  swift test --package-path Packages/ArenaProtocol --filter realArchiveInsights  # insights counts only
 ARENA_SUITE_SCALE_TEST=1 swift test --package-path Packages/ArenaProtocol --filter scale   # 10× synthetic history
 ARENA_SUITE_KEYCHAIN_TESTS=1 swift test --package-path Packages/ArenaProtocol --filter Session       # real Keychain test
 python3 Tools/FixtureHarness/audit_archive_journals.py                     # live journal audit (counts only)
@@ -171,6 +183,7 @@ Debug-only app flags:
 - `--preview-maintenance` (opens the Maintenance page and runs Verify)
 - `--validate-dataset` (opens Maintenance and runs Validate Dataset)
 - `--preview-accounts` (opens the Accounts page)
+- `--preview-insights` (opens the Insights page)
 - `--preview-site-closed`, `--preview-site-header` (the first account's site pane without opening
   its session; the second draws the open page's header with no web view)
 
@@ -197,7 +210,9 @@ To test a clean install with the Release binary, point it at an empty home folde
 - **`App/`:** SwiftUI. `ArenaWebPane.swift` is the only file that may import WebKit (ADR 0006).
   `Theme.swift` holds the font, the arena.ai-matched palette and the shared controls (`HeaderBar`,
   icon, row and pill styles). `MainView.swift` lays out the window; `SidebarView.swift` and
-  `ArchivePane.swift` hold the sidebar and the archive.
+  `ArchivePane.swift` hold the sidebar and the archive; `InsightsView.swift` the Insights page
+  (charts drawn with SwiftUI shapes: the app does not link Charts). `ArchiveModel.revision`
+  changes on every reload, so pages built from the index reload after a sync, rebuild or restore.
   - `AppComposition.swift` is the only file allowed to import `ArenaAdapter`.
   - Also: the Accounts, Archive and Maintenance models and views, and `Theme`.
   - The Xcode project is hand-written. When adding a file, add both a `PBXFileReference` and a

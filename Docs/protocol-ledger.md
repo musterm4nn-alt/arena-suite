@@ -43,6 +43,19 @@ no battle `history_list` claim); all 148 vote-scoped claims agree with the messa
 are in the revealed set; every assistant message has one parent, a user prompt, and in multi-turn battles that prompt's
 parent is one lane's response (113 `a`, 111 `b`). Which history each lane's model received is not observable.
 
+N-016 (2026-10-19, `verified_observation`, counts only): in the live index (`arena-decoder/1`, 3 accounts),
+the latest snapshots hold 74 `pairwiseFeedbacks[].value` strings, all from this vocabulary: `model_a` 35,
+`model_b` 36, `tie` 1, `both_bad` 2. Each vote carries `modelAId`/`modelBId` (148 vote-scoped claims, two per
+vote). Conversation modes: `battle` 43, `side-by-side` 7, `direct-battle` 4, none or other 6 (the `agentic`
+entries). Claim sources: `message_model_id` 217, `pairwise_feedback` 148, `detail_revealed` 134,
+`history_list` 107; 36 conversations carry a revealed set. **`assumption`:** the values mean "A is
+better", "B is better", "tie" and "both are bad" (the site's vote buttons). The names support this,
+but no response states it. Insights interprets only these four values and shows any other value as
+unrecognized, uninterpreted. Also counted (2026-10-19, journals re-projected with
+`arena-decoder/2`): no unknown field path under `pointwiseFeedbacks`, so no single-response feedback with
+content is recorded. An empty element would carry no path and would not be counted. Insights shows pairwise
+votes only and says so.
+
 N-013: [phase4-index-2026-09-24.md](phase4-index-2026-09-24.md) records that every field in the 51 archived
 detail and 7 list responses is recognized by `arena-decoder/1` (0 unknown paths, 0 warnings), content-block kinds
 `text`/`reasoning`/`tool-call`/`tool-result`, lanes `a`/`b`, and that `JSONSerialization` keeps the first duplicate key.

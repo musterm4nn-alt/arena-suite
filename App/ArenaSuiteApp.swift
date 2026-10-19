@@ -12,6 +12,7 @@ struct ArenaSuiteApp: App {
     @State private var accounts: AccountsModel
     @State private var archive: ArchiveModel
     @State private var maintenance: MaintenanceModel
+    @State private var insights: InsightsModel
     @State private var profiles: ArenaWebProfiles
 
     init() {
@@ -29,6 +30,7 @@ struct ArenaSuiteApp: App {
         _profiles = State(initialValue: profiles)
         _accounts = State(initialValue: accounts)
         _archive = State(initialValue: archive)
+        _insights = State(initialValue: InsightsModel(service: services.insights))
         let index = services.archive
         _maintenance = State(
             initialValue: MaintenanceModel(
@@ -41,7 +43,7 @@ struct ArenaSuiteApp: App {
 
     var body: some Scene {
         WindowGroup("Arena Suite") {
-            MainView(accounts: accounts, archive: archive, maintenance: maintenance, profiles: profiles)
+            MainView(accounts: accounts, archive: archive, maintenance: maintenance, insights: insights, profiles: profiles)
                 .frame(minWidth: 1040, minHeight: 600)
         }
         // No title bar or toolbar: the panes draw their own header bars (Theme.barHeight).

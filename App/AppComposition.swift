@@ -11,6 +11,8 @@ enum AppComposition {
         /// nil when the index could not be opened; `archiveUnavailable` says why.
         let archive: ArchiveService?
         let archiveUnavailable: String?
+        /// nil when the index could not be opened. Votes are read with the adapter's vocabulary (N-016).
+        let insights: InsightsService?
         let maintenance: Maintenance
         /// Where the embedded site window may go (ADR 0006).
         let website: WebSitePolicy
@@ -80,7 +82,9 @@ enum AppComposition {
             datasets: archive.map(DatasetService.init(archive:)),
             sync: sync)
         return Services(
-            accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable, maintenance: maintenance,
+            accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable,
+            insights: archive.map { InsightsService(archive: $0, vocabulary: ArenaArchiveDecoder.voteVocabulary) },
+            maintenance: maintenance,
             website: ArenaWebsite.policy)
     }
 }

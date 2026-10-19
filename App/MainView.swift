@@ -12,6 +12,8 @@ enum MainDestination: Hashable {
     case site(AccountID)
     /// Accounts: add, sign in, verify, sync, remove.
     case accounts
+    /// A summary of the archive: activity, modes, votes and each model's record in them.
+    case insights
     /// Verify, back up, restore, diagnostics and datasets.
     case maintenance
 
@@ -26,6 +28,7 @@ struct MainView: View {
     @Bindable var accounts: AccountsModel
     @Bindable var archive: ArchiveModel
     let maintenance: MaintenanceModel
+    let insights: InsightsModel
     let profiles: ArenaWebProfiles
     @State private var destination = MainDestination.archive
     /// The sidebar as an icon rail (like the site's collapsed sidebar). The archive remembers the
@@ -51,6 +54,8 @@ struct MainView: View {
                     ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite).id(account)
                 case .accounts:
                     AccountsView(model: accounts)
+                case .insights:
+                    InsightsView(model: insights, archive: archive, accounts: accounts, destination: $destination)
                 case .maintenance:
                     MaintenanceView(model: maintenance, accounts: accounts)
                 }
@@ -100,6 +105,7 @@ struct MainView: View {
                 destination = .site(first.id)
             }
             if arguments.contains("--preview-accounts") { destination = .accounts }
+            if arguments.contains("--preview-insights") { destination = .insights }
             if arguments.contains("--preview-maintenance") {
                 destination = .maintenance
                 await maintenance.verify()

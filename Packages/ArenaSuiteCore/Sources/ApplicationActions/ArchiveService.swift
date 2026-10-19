@@ -225,6 +225,10 @@ public actor ArchiveService {
         try index.datasetSource(accounts: accounts)
     }
 
+    public nonisolated func insightsSource(accounts: Set<AccountID>? = nil) throws -> InsightsSource {
+        try index.insightsSource(accounts: accounts)
+    }
+
     public nonisolated func counts() throws -> [String: Int] {
         try index.counts()
     }

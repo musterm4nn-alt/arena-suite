@@ -37,6 +37,9 @@ final class ArchiveModel {
     private(set) var scrollRequest = 0
     private(set) var exporting = false
     private(set) var lastExport: ExportResult?
+    /// Changes on every reload (after a sync, rebuild, restore or a new account choice), so pages
+    /// built from the index (Insights) know to read it again.
+    private(set) var revision = 0
     var message: String?
 
     var accountFilter: AccountID? { didSet { if oldValue != accountFilter { reload() } } }
@@ -75,6 +78,7 @@ final class ArchiveModel {
     /// Re-reads the list, the search and the open conversation (after a sync, rebuild or restore).
     func reload() {
         guard let archive else { return }
+        revision += 1
         refreshDetail()
         listGeneration += 1
         let generation = listGeneration

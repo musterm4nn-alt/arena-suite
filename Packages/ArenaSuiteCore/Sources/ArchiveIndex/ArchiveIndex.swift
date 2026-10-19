@@ -1023,6 +1023,96 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    // MARK: Insights source (Docs/insights-2026-10-19.md)
+
+    /// The latest snapshot of each conversation, without message bodies, with its votes and claims,
+    /// in one read transaction. `accounts` limits everything to those accounts (nil = all). Rows are
+    /// matched to a conversation by its latest snapshot's sequence and, where the table records it,
+    /// its conversation ID as well.
+    public func insightsSource(accounts: Set<AccountID>? = nil) throws -> InsightsSource {
+        let wanted = accounts.map { Set($0.map(\.rawValue.uuidString)) }
+        return try pool.read { db in
+            let decoderVersion = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'decoder_version'")
+            func included(_ text: String) -> AccountID? {
+                guard wanted?.contains(text) ?? true else { return nil }
+                return Self.accountID(text)
+            }
+            func sequence(_ value: Int64) -> UInt64 { UInt64(max(0, value)) }
+            let conversations = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT account_id, remote_id, kind, mode, updated_order, latest_snapshot_seq FROM conversations
+                    ORDER BY account_id, remote_id
+                    """
+            ).compactMap { row -> InsightsConversation? in
+                guard let account = included(row["account_id"]) else { return nil }
+                let latest: Int64? = row["latest_snapshot_seq"]
+                return InsightsConversation(
+                    account: account, remoteID: row["remote_id"], kind: row["kind"], mode: row["mode"],
+                    updatedOrder: row["updated_order"], latestSnapshotSequence: latest.map(sequence))
+            }
+            let messages = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT m.account_id AS account_id, m.snapshot_seq AS snapshot_seq, m.remote_id AS remote_id,
+                           m.role AS role, m.model_remote_id AS model_remote_id
+                    FROM messages m
+                    JOIN conversations c ON c.account_id = m.account_id AND c.latest_snapshot_seq = m.snapshot_seq
+                      AND c.remote_id = m.conversation_id
+                    ORDER BY m.account_id, m.snapshot_seq, m.ordinal
+                    """
+            ).compactMap { row -> InsightsMessage? in
+                guard let account = included(row["account_id"]) else { return nil }
+                return InsightsMessage(
+                    account: account, sequence: sequence(row["snapshot_seq"]), remoteID: row["remote_id"],
+                    role: row["role"], modelRemoteID: row["model_remote_id"])
+            }
+            let votes = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT f.account_id AS account_id, f.snapshot_seq AS snapshot_seq, c.remote_id AS conversation_id,
+                           f.remote_id AS remote_id, f.value AS value, f.message_a AS message_a, f.message_b AS message_b
+                    FROM feedback f
+                    JOIN conversations c ON c.account_id = f.account_id AND c.latest_snapshot_seq = f.snapshot_seq
+                    ORDER BY f.account_id, f.snapshot_seq, f.remote_id
+                    """
+            ).compactMap { row -> SequencedFeedback? in
+                guard let account = included(row["account_id"]) else { return nil }
+                return SequencedFeedback(
+                    account: account, sequence: sequence(row["snapshot_seq"]), conversationID: row["conversation_id"],
+                    feedback: ArchivedFeedback(
+                        remoteID: row["remote_id"], value: row["value"], messageA: row["message_a"], messageB: row["message_b"]))
+            }
+            let claimColumns = """
+                SELECT mc.account_id AS account_id, mc.seq AS seq, mc.conversation_id AS conversation_id,
+                       mc.subject AS subject, mc.subject_id AS subject_id, mc.role AS role, mc.model_id AS model_id,
+                       mc.display_name AS display_name, mc.organization AS organization, mc.provider AS provider,
+                       mc.source AS source
+                FROM model_claims mc
+                """
+            let claimOrder = " ORDER BY mc.account_id, mc.seq, mc.subject, mc.subject_id, mc.role, mc.source, mc.model_id"
+            func claims(_ sql: String) throws -> [SequencedClaim] {
+                try Row.fetchAll(db, sql: claimColumns + sql + claimOrder).compactMap { row -> SequencedClaim? in
+                    guard let account = included(row["account_id"]) else { return nil }
+                    let role: String = row["role"]
+                    return SequencedClaim(
+                        account: account, sequence: sequence(row["seq"]), conversationID: row["conversation_id"],
+                        claim: ModelClaim(
+                            subject: ModelClaim.Subject(rawValue: row["subject"]), subjectID: row["subject_id"],
+                            role: role.isEmpty ? nil : role, modelID: row["model_id"], displayName: row["display_name"],
+                            organization: row["organization"], provider: row["provider"], source: row["source"]))
+                }
+            }
+            return InsightsSource(
+                decoderVersion: decoderVersion, conversations: conversations, messages: messages, votes: votes,
+                claims: try claims("""
+                     JOIN conversations c ON c.account_id = mc.account_id AND c.latest_snapshot_seq = mc.seq
+                      AND c.remote_id = mc.conversation_id
+                    """),
+                namedClaims: try claims(" WHERE mc.display_name IS NOT NULL"))
+        }
+    }
+
     private static let datasetConversationSelect = """
         SELECT c.account_id AS account_id, c.remote_id AS remote_id, c.kind AS kind, c.title AS title,
                c.mode AS mode, c.modality AS modality, c.updated_at AS updated_at, c.updated_order AS updated_order,
