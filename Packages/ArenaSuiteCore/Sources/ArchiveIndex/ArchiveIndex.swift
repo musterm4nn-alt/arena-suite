@@ -102,10 +102,15 @@ public struct ConversationDetail: Sendable, Equatable {
     public let messages: [DetailMessage]
     public let claims: [ModelClaim]
     public let feedback: [ArchivedFeedback]
+    /// The messages Arena lists as the conversation's last in this snapshot (`lastMessageIds`), as
+    /// recorded; empty when it listed none or the response had no list. nil when not known: the
+    /// index could not read the stored list (a damaged index; rebuilding it from the journal
+    /// restores the list), or the detail was built without one.
+    public let lastMessageIDs: [String]?
 
     public init(
         summary: ConversationSummary, snapshotSequences: [UInt64], messages: [DetailMessage], claims: [ModelClaim],
-        feedback: [ArchivedFeedback], snapshotSequence: UInt64? = nil, isFrozen: Bool = false
+        feedback: [ArchivedFeedback], snapshotSequence: UInt64? = nil, isFrozen: Bool = false, lastMessageIDs: [String]? = nil
     ) {
         self.summary = summary
         self.snapshotSequences = snapshotSequences
@@ -114,6 +119,7 @@ public struct ConversationDetail: Sendable, Equatable {
         self.messages = messages
         self.claims = claims
         self.feedback = feedback
+        self.lastMessageIDs = lastMessageIDs
     }
 }
 
@@ -807,6 +813,16 @@ public final class ArchiveIndex: Sendable {
                     provider: row["provider"], source: row["source"], recordSequence: UInt64(exactly: seq))
             }
 
+            var lastMessageIDs: [String]? = []
+            if let target {
+                // Written by `insertSnapshot` as a JSON array of strings, never NULL. Anything else
+                // is unreadable (nil), not an empty list.
+                let stored = try String.fetchOne(
+                    db, sql: "SELECT last_message_ids FROM snapshots WHERE account_id = ? AND seq = ?",
+                    arguments: [accountID, Int64(target)])
+                lastMessageIDs = stored.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) }
+            }
+
             var feedback: [ArchivedFeedback] = []
             if let target {
                 let feedbackRows = try Row.fetchAll(
@@ -825,7 +841,7 @@ public final class ArchiveIndex: Sendable {
 
             return ConversationDetail(
                 summary: summary, snapshotSequences: sequences, messages: messages, claims: claims, feedback: feedback,
-                snapshotSequence: target, isFrozen: snapshot != nil)
+                snapshotSequence: target, isFrozen: snapshot != nil, lastMessageIDs: lastMessageIDs)
         }
     }
 

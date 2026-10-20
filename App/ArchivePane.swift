@@ -13,6 +13,7 @@ struct ArchivePane: View {
     @Binding var showingInspector: Bool
     @Binding var destination: MainDestination
     @State private var confirmExactRaw = false
+    @State private var showingExport = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -31,10 +32,18 @@ struct ArchivePane: View {
         }
         .background(Theme.background)
         .navigationTitle(archive.detail?.summary.title ?? "Arena Suite")
-        .confirmationDialog("Export raw bodies exactly?", isPresented: $confirmExactRaw) {
-            Button("Export Exact Raw JSON to Downloads") { Task { await archive.export(.rawJSON, exactRawBodies: true, to: nil) } }
+        #if DEBUG
+        // `--preview-export-popover` (with `--preview-conversation`) opens the export popover.
+        .task(id: archive.detail?.snapshotSequence) {
+            if archive.detail != nil, CommandLine.arguments.contains("--preview-export-popover") { showingExport = true }
+        }
+        #endif
+        .confirmationDialog("Export the whole conversation's raw bodies exactly?", isPresented: $confirmExactRaw) {
+            Button("Export Exact Raw JSON to Downloads") {
+                Task { await archive.export(.rawJSON, scope: .wholeConversation, exactRawBodies: true, to: nil) }
+            }
         } message: {
-            Text("Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
+            Text("Raw JSON is the recorded response, so it holds the whole conversation of the snapshot shown. Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
         }
     }
 
@@ -93,30 +102,21 @@ struct ArchivePane: View {
     }
 
     private func exportMenu(_ detail: ConversationDetail) -> some View {
-        Menu {
-            Section("Export to Downloads") {
-                ForEach(ExportFormat.allCases, id: \.rawValue) { format in
-                    Button(format.label) { Task { await archive.export(format, exactRawBodies: false, to: nil) } }
-                }
-            }
-            Menu("Export to Folder") {
-                ForEach(ExportFormat.allCases, id: \.rawValue) { format in
-                    Button("\(format.label)…") {
-                        if let folder = Self.chooseFolder() { Task { await archive.export(format, exactRawBodies: false, to: folder) } }
-                    }
-                }
-            }
-            Divider()
-            Button("Raw JSON with Exact Bodies (includes Arena telemetry)…") { confirmExactRaw = true }
-        } label: {
+        Button { showingExport.toggle() } label: {
             Label("Export", systemImage: "square.and.arrow.up")
         }
-        .menuStyle(.button)
-        .buttonStyle(.arenaIcon)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(archive.exporting || detail.summary.latestSnapshotSequence == nil)
-        .help("Export this snapshot")
+        .buttonStyle(.arenaIcon(width: 28, height: 24, selected: showingExport))
+        .keyboardShortcut("e", modifiers: [.shift, .command])
+        .disabled(!archive.canExport)
+        .help("Export or copy this snapshot (⇧⌘E)")
+        .popover(isPresented: $showingExport, arrowEdge: .bottom) {
+            ExportPopover(archive: archive) {
+                showingExport = false
+                confirmExactRaw = true
+            } close: {
+                showingExport = false
+            }
+        }
     }
 
     static func chooseFolder() -> URL? {
@@ -201,14 +201,23 @@ struct ArchivePane: View {
     }
 
     @ViewBuilder private var exportNotice: some View {
-        if let result = archive.lastExport {
+        if let outcome = archive.exportOutcome {
             HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle")
-                Text("Exported \(result.url.lastPathComponent) · \(result.byteCount) bytes · SHA-256 \(result.sha256.prefix(12))…")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
-                    .buttonStyle(.arenaPill)
+                switch outcome {
+                case .copied(let text):
+                    Image(systemName: "doc.on.clipboard")
+                    Text(text).lineLimit(1).truncationMode(.middle)
+                case .refused(let reason):
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Text(reason).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                case .saved(let result):
+                    Image(systemName: "checkmark.circle")
+                    Text("Exported \(result.url.lastPathComponent) · \(result.byteCount) bytes · SHA-256 \(result.sha256.prefix(12))…")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
+                        .buttonStyle(.arenaPill)
+                }
                 Button { archive.dismissExport() } label: { Label("Dismiss", systemImage: "xmark") }
                     .buttonStyle(.arenaIcon(width: 20, height: 20))
             }
@@ -220,6 +229,98 @@ struct ArchivePane: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
             .padding(16)
         }
+    }
+}
+
+// MARK: - Export
+
+/// What and how to export, like arena-exporter's popup: a scope, a format, then copy or save. The
+/// choices are remembered between launches. Exact raw bodies stay behind their own confirmation.
+private struct ExportPopover: View {
+    @Bindable var archive: ArchiveModel
+    let confirmExactRaw: () -> Void
+    let close: () -> Void
+    @AppStorage("exportScope") private var scopeChoice = ExportScope.wholeConversation.rawValue
+    @AppStorage("exportFormat") private var formatChoice = ExportFormat.markdown.rawValue
+
+    private var scope: ExportScope { ExportScope(rawValue: scopeChoice) ?? .wholeConversation }
+    private var format: ExportFormat { ExportFormat(rawValue: formatChoice) ?? .markdown }
+    /// Raw JSON is one recorded response: it has no last answer.
+    private var available: Bool { scope == .wholeConversation || format.supportsLastAnswer }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Scope", selection: $scopeChoice) {
+                ForEach(ExportScope.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+            }
+            .pickerStyle(.radioGroup)
+            Picker("Format", selection: $formatChoice) {
+                ForEach(ExportFormat.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            Text(hint)
+                .font(Theme.caption)
+                .foregroundStyle(available ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button("Copy", action: copy).help("Copy the export to the clipboard; no file is written")
+                Button("Save to Downloads") { save(to: nil) }
+                Button("Save to Folder…") {
+                    close()
+                    if let folder = ArchivePane.chooseFolder() { save(to: folder) }
+                }
+            }
+            .buttonStyle(.arenaPill)
+            .disabled(!available || !archive.canExport)
+            Divider()
+            // Raw JSON always holds the whole conversation, whatever scope is chosen above.
+            Button("Whole conversation as Raw JSON with exact bodies (includes Arena telemetry)…", action: confirmExactRaw)
+                .buttonStyle(.plain)
+                .font(Theme.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .disabled(!archive.canExport)
+        }
+        .padding(14)
+        .frame(width: 370, alignment: .leading)
+        .departureMono()
+        .arenaPalette()
+    }
+
+    private var hint: String {
+        guard available else { return "Raw JSON is one recorded response, so it always holds the whole conversation." }
+        let what: String = switch format {
+        case .markdown: "A readable transcript. Lossy: no raw bytes, timing or telemetry."
+        case .normalizedJSON: "Messages, model claims and feedback, with provenance. Telemetry masked."
+        case .jsonl: "The records of Normalized JSON, one per line, for streaming tools."
+        case .rawJSON: "The recorded response, base64-encoded, with Arena's telemetry masked."
+        }
+        return scope == .lastAnswer ? "The messages Arena lists as last, and the prompts they reply to. " + what : what
+    }
+
+    private func copy() {
+        let (format, scope) = (format, scope)
+        close()
+        Task {
+            await archive.copy(format, scope: scope) { text in
+                let pasteboard = NSPasteboard.general
+                let previous = pasteboard.string(forType: .string)
+                pasteboard.clearContents()
+                if pasteboard.setString(text, forType: .string) { return .written }
+                // A failed copy puts back the text the clipboard held (other kinds of content are not kept).
+                guard let previous else { return .refused(previousTextRestored: false) }
+                pasteboard.clearContents()
+                return .refused(previousTextRestored: pasteboard.setString(previous, forType: .string))
+            }
+        }
+    }
+
+    private func save(to folder: URL?) {
+        let (format, scope) = (format, scope)
+        close()
+        Task { await archive.export(format, scope: scope, exactRawBodies: false, to: folder) }
     }
 }
 

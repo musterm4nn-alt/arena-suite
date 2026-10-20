@@ -3,7 +3,7 @@
 Single source of truth for where the project stands (plan v3 §17). Dated observation files in
 `Docs/` are the evidence behind it; this page is replaced, not appended to.
 
-Updated 2026-10-19.
+Updated 2026-10-20.
 
 | Phase | State | Notes |
 |---|---|---|
@@ -25,6 +25,7 @@ Updated 2026-10-19.
 | App icon (2026-10-19) | **Done, chosen by the user; pushed** | A miniature of the transcript in the app's palette (prompt bubble over the A and B cards, Departure Mono letters), an Icon Composer document with glass layers. The user rejected a coloured arch first. `App/Resources/AppIcon.icon`, generator `Tools/Dev/make_app_icon.py` |
 | Insights (2026-10-19) | **Done, reviewed (opencode: ready, findings fixed); pushed** | A read-only page summarizing the user's own archive from the latest snapshot of each conversation: totals, activity by month, modes and kinds, accounts, "your votes" by outcome, and each model's record in those votes. Models are claims, not identity; records are the user's votes, not Arena's ranking; conflicting or missing claims are excluded and counted by reason. Only votes between two responses are decoded (the real archive has no other kind). Vote meanings are an assumption (N-016). `Docs/insights-2026-10-19.md`, review `Docs/reviews/2026-10-19-insights.md` |
 | History filters (2026-10-19) | **Done, reviewed twice (opencode: ready; findings fixed, the last fix pass not re-reviewed); pushed** | Filters for the sidebar history and search: mode (including "not stated"), votes between two responses (with a vote, or no vote in the transcript; conversations known only from the list match neither), a claimed model, and update time as Arena reports it (past 7 or 30 days, past 12 months, a year). Menu counts are what each choice shows under the other filters. Active filters show as removable chips with "N of M shown". If the facets cannot be read, the vote and model filters are off and the bar says so. Insights' mode bars and model rows open the filtered history. Plan §11's mode and date filters. Shared model names across accounts: ledger N-017. `Docs/history-filters-2026-10-19.md`, review `Docs/reviews/2026-10-19-history-filters.md` |
+| Export options (2026-10-20) | **Done, reviewed** | Item 8 of the user's arena-exporter gap analysis (`Docs/arena-exporter-gaps-2026-10-19.md`): a "Last answer, with its prompt" scope (Arena's recorded `lastMessageIds` and the prompts they reply to; ledger N-018), copy to the clipboard, and JSONL per conversation. An empty, dangling or unreadable list is refused, never guessed; parents a last message replies to that are missing or have no stated role are named, not guessed. An export popover (⇧⌘E) replaces the Export menu; its notice always concerns the snapshot shown. Whole-conversation Normalized JSON and Markdown are pinned to their bytes before this change. MCP unchanged. `Docs/export-options-2026-10-20.md`; review `Docs/reviews/2026-10-20-export-options.md` (three runs; final verdict "ready", all findings fixed) |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next

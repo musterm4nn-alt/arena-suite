@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-19, after the app icon, the Insights page and the history filters (all pushed at the user's request).
+Updated 2026-10-20, after the export options (committed locally, not pushed). The app icon, the Insights page and the history filters were pushed at the user's request on 2026-10-19.
 
 ## Where things stand
 
@@ -67,8 +67,33 @@ Updated 2026-10-19, after the app icon, the Insights page and the history filter
     - Semantics to keep: list-only conversations match neither vote choice; unreadable facets turn
       the vote and model filters off (never guessed); menu counts are taken under the other active
       filters. Filters are not saved.
-  - **Next, as announced to the user:** bulk export of the filtered history, then a clearer
-    Maintenance page.
+  - **Export options** (`Docs/export-options-2026-10-20.md`): "Last answer, with its prompt"
+    (`ExportService.lastAnswer(of:)`, from Arena's recorded `lastMessageIds`), copy to the
+    clipboard, and JSONL. `ExportPopover` in `ArchivePane.swift` (⇧⌘E). MCP is unchanged.
+    Review: `Docs/reviews/2026-10-20-export-options.md`.
+    - Semantics to keep:
+      - a listed message's parent that the snapshot lacks is named (`parents_not_in_snapshot`),
+        never dropped silently;
+      - an empty, dangling or unreadable list is refused, each with its own error;
+      - ordinals stay whole-snapshot positions;
+      - claims of unknown subject kinds are kept;
+      - JSONL escapes U+0085, U+2028 and U+2029;
+      - the app's notice (`exportOutcome`) concerns the snapshot shown. It is cleared when that
+        changes; a late copy or refusal is dropped, and a saved file's notice names its file;
+      - export is offered only once the chosen snapshot (or Latest) is the one on screen.
+    - `wholeConversationExportsAreUnchanged` pins whole-conversation Normalized JSON and Markdown.
+      Update its hashes only for a deliberate format change.
+  - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
+    gaps", in order):
+    1. archive encryption and import of arena-exporter folders (GitHub backup is a separate
+       decision: it sends private conversations off the Mac);
+    2. vote correction as a local note beside Arena's recorded vote, never sent to Arena (plan §1);
+    3. attachments (observe whether their URLs can be fetched natively first, then plan §9.4);
+    4. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
+
+    Items 3–5 of the analysis (failed requests, stream evidence, requested model) need the page
+    read live, which ADR 0006 rules out. Still pending from the earlier announcement: bulk export
+    of the filtered history and a clearer Maintenance page.
 - §14 datasets is done and reviewed: `DatasetService` (preview, validate, build) with recipes, evidence-tier labels,
   grouping before splits and a split audit. Spec and evidence: `Docs/datasets-2026-09-27.md`; review
   `Docs/reviews/2026-10-18-datasets.md`.
@@ -194,6 +219,8 @@ Debug-only app flags:
 - `--preview-accounts` (opens the Accounts page)
 - `--preview-insights` (opens the Insights page)
 - `--preview-filter "<mode>"` (filters the history to that mode and to conversations with a vote)
+- `--preview-export-popover` with `--preview-conversation` (opens the export popover; preset its
+  choices with `-exportScope last-answer -exportFormat jsonl`)
 - `--preview-site-closed`, `--preview-site-header` (the first account's site pane without opening
   its session; the second draws the open page's header with no web view)
 

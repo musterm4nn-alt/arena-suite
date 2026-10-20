@@ -56,6 +56,14 @@ unrecognized, uninterpreted. Also counted (2026-10-19, journals re-projected wit
 content is recorded. An empty element would carry no path and would not be counted. Insights shows pairwise
 votes only and says so.
 
+N-018 (2026-10-20, `verified_observation` + `assumption`, counts only): in the live index, all 54
+latest snapshots record a `lastMessageIds` list (49 with two IDs, 5 with one). Every listed ID is a message
+of the same snapshot. In 52 the list is exactly the responses after the last prompt. In the other 2 it is
+the last prompt itself (status `flagged`), which has no response. No response after the last prompt is ever
+left out. **`assumption`:** the list names the conversation's last messages, so they and the `user`
+messages they reply to are its "last answer" (the export scope, `Docs/export-options-2026-10-20.md`).
+Nothing in a response states this. An empty, dangling or unreadable list is refused, never filled in.
+
 N-017 (2026-10-19, `verified_observation` + `assumption`, counts only): in the live index (3 accounts), 18 of
 the 65 claimed model IDs are claimed in more than one account. All 18 carry a `detail_revealed` name in more
 than one account, and no model ID has more than one revealed name in any account or across accounts.

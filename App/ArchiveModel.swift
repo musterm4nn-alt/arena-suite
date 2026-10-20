@@ -32,15 +32,35 @@ final class ArchiveModel {
     private(set) var evidenceUnavailable = false
     private(set) var projecting = false
     private(set) var problems: (warnings: Int, unknownPaths: Int) = (0, 0)
-    private(set) var selection: ConversationKey?
+    /// A change of conversation or snapshot clears the export notice: it described the one shown.
+    private(set) var selection: ConversationKey? {
+        didSet { if selection != oldValue { exportOutcome = nil } }
+    }
     /// nil = latest snapshot.
-    private(set) var snapshotSequence: UInt64?
+    private(set) var snapshotSequence: UInt64? {
+        didSet { if snapshotSequence != oldValue { exportOutcome = nil } }
+    }
     private(set) var inspected: InspectTarget?
     private(set) var highlightedMessage: String?
     /// Changes whenever the transcript should scroll to `highlightedMessage`.
     private(set) var scrollRequest = 0
     private(set) var exporting = false
-    private(set) var lastExport: ExportResult?
+    /// The outcome of the latest export or copy, for the notice. Each attempt replaces it, so a notice
+    /// never describes an earlier attempt.
+    enum ExportOutcome: Equatable {
+        case saved(ExportResult)
+        /// What was copied.
+        case copied(String)
+        /// Why nothing was saved or copied.
+        case refused(String)
+    }
+    private(set) var exportOutcome: ExportOutcome?
+    /// What a clipboard writer reports back to `copy`.
+    enum ClipboardWrite {
+        case written
+        /// The clipboard refused the text; whether it holds its previous text again.
+        case refused(previousTextRestored: Bool)
+    }
     /// Changes on every reload (after a sync, rebuild, restore or a new account choice), so pages
     /// built from the index (Insights) know to read it again.
     private(set) var revision = 0
@@ -236,6 +256,7 @@ final class ArchiveModel {
                 evidence = nil
                 evidenceUnavailable = false
                 highlightedMessage = nil
+                exportOutcome = nil
             }
             detail = loaded
             layout = loaded.map(TranscriptLayout.init)
@@ -281,27 +302,94 @@ final class ArchiveModel {
     // MARK: Export
 
     /// Exports the displayed snapshot (never whatever is latest by the time the export runs).
-    /// `directory` nil = Downloads.
-    func export(_ format: ExportFormat, exactRawBodies: Bool, to directory: URL?) async {
-        guard let archive, let key = selection, let detail, detail.summary.account == key.account,
-            detail.summary.remoteID == key.remoteID, let displayed = detail.snapshotSequence
-        else { return }
+    /// `directory` nil = Downloads. A written file's notice names the file, so it is shown even if
+    /// another conversation is open by then; a refusal is shown only if the same snapshot still is.
+    func export(_ format: ExportFormat, scope: ExportScope = .wholeConversation, exactRawBodies: Bool, to directory: URL?) async {
+        guard let begun = beginExport() else { return }
+        let (archive, key, displayed) = begun
         let destination = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         exporting = true
         defer { exporting = false }
         do {
-            lastExport = try await ExportService(archive: archive).export(
+            let result = try await ExportService(archive: archive).export(
                 account: key.account, remoteID: key.remoteID, snapshot: displayed,
-                options: ExportOptions(format: format, includeExactRawBodies: exactRawBodies), to: destination)
-            message = nil
+                options: ExportOptions(format: format, scope: scope, includeExactRawBodies: exactRawBodies), to: destination)
+            exportOutcome = .saved(result)
         } catch {
-            lastExport = nil
-            message = "The export could not be written (\(error)). Nothing was left behind."
+            if stillShown(key, displayed) { exportOutcome = .refused(Self.describe(error, writing: true)) }
         }
     }
 
-    /// Hides the notice for the last export (the file stays where it was written).
-    func dismissExport() { lastExport = nil }
+    /// Renders the displayed snapshot and hands the text to `write` (the clipboard); nothing is
+    /// written to disk. Exact raw bodies are never offered here. The notice says what was copied
+    /// only when `write` reports success. If the conversation or snapshot shown changed meanwhile,
+    /// nothing is copied and no notice is shown: the notice describes the snapshot on screen.
+    func copy(_ format: ExportFormat, scope: ExportScope, with write: (String) -> ClipboardWrite) async {
+        guard let begun = beginExport() else { return }
+        let (archive, key, displayed) = begun
+        exporting = true
+        defer { exporting = false }
+        do {
+            let rendered = try await ExportService(archive: archive).render(
+                account: key.account, remoteID: key.remoteID, snapshot: displayed, options: ExportOptions(format: format, scope: scope))
+            guard stillShown(key, displayed) else { return }
+            let text = String(decoding: rendered.data, as: UTF8.self)
+            if case .refused(let restored) = write(text) {
+                exportOutcome = .refused(
+                    "The clipboard did not accept the export, so nothing was copied. "
+                        + (restored ? "It holds its previous text again." : "Its previous contents could not be kept."))
+                return
+            }
+            let what = scope == .lastAnswer ? "the last answer" : "the conversation"
+            exportOutcome = .copied("Copied \(what) as \(format.label) · \(text.utf8.count.formatted()) bytes")
+        } catch {
+            if stillShown(key, displayed) { exportOutcome = .refused(Self.describe(error, writing: false)) }
+        }
+    }
+
+    /// Whether the detail on screen is the selection's, so there is a snapshot to export.
+    var canExport: Bool { displayedSnapshot != nil && !exporting }
+
+    /// Clears the previous outcome and returns what to export, or records why there is nothing.
+    private func beginExport() -> (ArchiveService, ConversationKey, UInt64)? {
+        exportOutcome = nil
+        // The export controls are disabled while one runs, so a second attempt is simply ignored.
+        guard let archive, !exporting else { return nil }
+        guard let shown = displayedSnapshot else {
+            exportOutcome = .refused("The conversation is still loading. Export it once it is shown.")
+            return nil
+        }
+        return (archive, shown.key, shown.sequence)
+    }
+
+    private func stillShown(_ key: ConversationKey, _ sequence: UInt64) -> Bool {
+        displayedSnapshot.map { $0.key == key && $0.sequence == sequence } ?? false
+    }
+
+    /// The open conversation and the snapshot shown, when the detail on screen is the selection's,
+    /// and is the chosen snapshot (not the previous one while a chosen record loads).
+    private var displayedSnapshot: (key: ConversationKey, sequence: UInt64)? {
+        guard let key = selection, let detail, detail.summary.account == key.account, detail.summary.remoteID == key.remoteID,
+            let displayed = detail.snapshotSequence, snapshotSequence == nil ? !detail.isFrozen : snapshotSequence == displayed
+        else { return nil }
+        return (key, displayed)
+    }
+
+    private static func describe(_ error: Error, writing: Bool) -> String {
+        switch error as? ExportError {
+        case .noLastAnswer?: "Arena's last-message list for this snapshot is empty or was not in its response, so there is no last answer to export."
+        case .lastMessageNotInSnapshot?: "Arena lists a last message that this snapshot does not hold, so no last answer is exported rather than a guessed one."
+        case .lastMessagesUnreadable?: "The index could not read this snapshot's last-message list. Rebuilding the index (Maintenance) restores it from the journal."
+        case .scopeNotAvailable?: "Raw JSON is one recorded response, so it always holds the whole conversation."
+        case .rawRecordUnavailable?: "The raw record behind this snapshot could not be read or failed its digest check."
+        default: writing ? "The export could not be written (\(error)). Nothing was left behind." : "The export could not be made (\(error))."
+        }
+    }
+
+    /// Hides the notice for the last export or copy (a written file stays where it was written).
+    func dismissExport() {
+        exportOutcome = nil
+    }
 
     /// Display names from `revealedModels`, keyed by model ID (claims keep their source). Claims
     /// come in record order, so the latest name observed wins.

@@ -9,25 +9,56 @@ public enum ExportFormat: String, CaseIterable, Sendable {
     case rawJSON = "raw-json"
     case normalizedJSON = "normalized-json"
     case markdown
+    /// One JSON record per line: a header, the messages, model claims and feedback of Normalized
+    /// JSON, then a footer with counts (Docs/export-options-2026-10-20.md).
+    case jsonl
 
-    public var fileExtension: String { self == .markdown ? "md" : "json" }
+    public var fileExtension: String {
+        switch self {
+        case .markdown: "md"
+        case .jsonl: "jsonl"
+        case .rawJSON, .normalizedJSON: "json"
+        }
+    }
+
     public var label: String {
         switch self {
         case .rawJSON: "Raw JSON"
         case .normalizedJSON: "Normalized JSON"
         case .markdown: "Markdown"
+        case .jsonl: "JSONL"
+        }
+    }
+
+    /// Raw JSON is one recorded response body, so it is always the whole conversation.
+    public var supportsLastAnswer: Bool { self != .rawJSON }
+}
+
+/// How much of the snapshot an export holds.
+public enum ExportScope: String, CaseIterable, Sendable {
+    case wholeConversation = "whole-conversation"
+    /// The messages Arena lists as the conversation's last (`lastMessageIds`) and the prompts they
+    /// reply to, with the votes and claims about them.
+    case lastAnswer = "last-answer"
+
+    public var label: String {
+        switch self {
+        case .wholeConversation: "Whole conversation"
+        case .lastAnswer: "Last answer, with its prompt"
         }
     }
 }
 
 public struct ExportOptions: Sendable, Equatable {
     public var format: ExportFormat
+    public var scope: ExportScope
     /// Raw JSON only: keep response bodies byte-exact, including Arena's per-message `metadata`
     /// telemetry. Off by default: those subtrees are masked and the change is declared.
     public var includeExactRawBodies: Bool
 
-    public init(format: ExportFormat, includeExactRawBodies: Bool = false) {
+    public init(format: ExportFormat, scope: ExportScope = .wholeConversation, includeExactRawBodies: Bool = false) {
         self.format = format
+        self.scope = scope
         self.includeExactRawBodies = includeExactRawBodies
     }
 }
@@ -44,6 +75,15 @@ public enum ExportError: Error, Equatable, Sendable {
     case snapshotNotInConversation(UInt64)
     case noSnapshot
     case rawRecordUnavailable
+    /// The scope does not apply to the format (the last answer of a raw record).
+    case scopeNotAvailable
+    /// Arena's last-message list (`lastMessageIds`) for this snapshot is empty or was not in the
+    /// response.
+    case noLastAnswer
+    /// Arena lists a last message that this snapshot does not hold.
+    case lastMessageNotInSnapshot
+    /// The index could not read the snapshot's stored last-message list (a damaged index).
+    case lastMessagesUnreadable
     case cancelled
     case writeFailed(String)
 }
@@ -94,15 +134,102 @@ public struct ExportService: Sendable {
         } catch ArchiveIndex.QueryError.snapshotNotInConversation(let foreign) {
             throw ExportError.snapshotNotInConversation(foreign)
         }
+        var answer: LastAnswer?
+        var base = Self.baseName(title: detail.summary.title, remoteID: remoteID, sequence: sequence)
+        if options.scope == .lastAnswer {
+            guard options.format.supportsLastAnswer else { throw ExportError.scopeNotAvailable }
+            answer = try Self.lastAnswer(of: detail)
+            base += " last answer"
+        }
         guard let evidence = try await archive.rawEvidence(account: account, snapshotSequence: sequence) else {
             throw ExportError.rawRecordUnavailable
         }
-        let base = Self.baseName(title: detail.summary.title, remoteID: remoteID, sequence: sequence)
         switch options.format {
         case .rawJSON: return (try Self.rawJSON(detail: detail, evidence: evidence, exact: options.includeExactRawBodies), base)
-        case .normalizedJSON: return (try Self.normalizedJSON(detail: detail, evidence: evidence), base)
-        case .markdown: return (Data(Self.markdown(detail: detail, evidence: evidence).utf8), base)
+        case .normalizedJSON: return (try Self.normalizedJSON(detail: detail, evidence: evidence, lastAnswer: answer), base)
+        case .markdown: return (Data(Self.markdown(detail: detail, evidence: evidence, lastAnswer: answer).utf8), base)
+        case .jsonl: return (try Self.jsonl(detail: detail, evidence: evidence, lastAnswer: answer), base)
         }
+    }
+
+    // MARK: Last answer
+
+    /// A last-answer excerpt of one snapshot, and what an export says about how it was chosen.
+    public struct LastAnswer: Sendable {
+        /// The excerpt: the kept messages in snapshot order, with their votes and claims.
+        public let detail: ConversationDetail
+        /// Each kept message's position in the whole snapshot, in `detail.messages` order.
+        public let ordinals: [Int]
+        /// Arena's list, as recorded.
+        public let lastMessageIDs: [String]
+        /// Messages a listed message replies to that this snapshot does not hold, sorted. Their role
+        /// is unknown, so the export names them rather than claim or deny a missing prompt.
+        public let parentsNotInSnapshot: [String]
+        /// Messages a listed message replies to that the snapshot holds without a stated role,
+        /// sorted. Not included (they may not be prompts) and named, not guessed about.
+        public let parentsWithUnknownRole: [String]
+    }
+
+    /// The part of `detail` an export of its last answer holds: the messages Arena lists as last
+    /// (`lastMessageIds`), the `user` messages they reply to, the votes that reference only those
+    /// messages, and the claims about them, about the whole conversation, or about a subject this
+    /// version does not know (kept, not guessed). Message order is the snapshot's. Nothing is
+    /// inferred: an empty, unreadable or dangling list is refused.
+    public static func lastAnswer(of detail: ConversationDetail) throws -> LastAnswer {
+        guard let listed = detail.lastMessageIDs else { throw ExportError.lastMessagesUnreadable }
+        let byID = Dictionary(detail.messages.map { ($0.remoteID, $0) }, uniquingKeysWith: { first, _ in first })
+        let last = Set(listed)
+        guard !last.isEmpty else { throw ExportError.noLastAnswer }
+        guard last.allSatisfy({ byID[$0] != nil }) else { throw ExportError.lastMessageNotInSnapshot }
+        var kept = last
+        var missing = Set<String>()
+        var unknownRole = Set<String>()
+        for id in last {
+            for parent in byID[id]?.parentIDs ?? [] {
+                guard let message = byID[parent] else {
+                    missing.insert(parent)
+                    continue
+                }
+                switch message.role {
+                case "user"?: kept.insert(parent)
+                case nil: unknownRole.insert(parent)
+                default: break  // A stated other role: not a prompt.
+                }
+            }
+        }
+        unknownRole.subtract(kept)
+        let votes = detail.feedback.filter { vote in
+            let referenced = [vote.messageA, vote.messageB].compactMap { $0 }
+            return !referenced.isEmpty && referenced.allSatisfy(kept.contains)
+        }
+        let voteIDs = Set(votes.map(\.remoteID))
+        let claims = detail.claims.filter { claim in
+            if claim.subject == .message { return kept.contains(claim.subjectID) }
+            if claim.subject == .feedback { return voteIDs.contains(claim.subjectID) }
+            return true
+        }
+        let ordinals = detail.messages.indices.filter { kept.contains(detail.messages[$0].remoteID) }
+        let part = ConversationDetail(
+            summary: detail.summary, snapshotSequences: detail.snapshotSequences, messages: ordinals.map { detail.messages[$0] },
+            claims: claims, feedback: votes, snapshotSequence: detail.snapshotSequence, isFrozen: detail.isFrozen,
+            lastMessageIDs: detail.lastMessageIDs)
+        return LastAnswer(
+            detail: part, ordinals: ordinals, lastMessageIDs: listed, parentsNotInSnapshot: missing.sorted(),
+            parentsWithUnknownRole: unknownRole.sorted())
+    }
+
+    /// What a last-answer export says about how it was chosen.
+    static func selection(_ answer: LastAnswer) -> [String: Any] {
+        [
+            "scope": ExportScope.lastAnswer.rawValue,
+            "basis": "the messages Arena lists as this conversation's last in this snapshot (lastMessageIds), and the user messages they reply to",
+            "feedback_basis": "votes whose referenced messages are all included",
+            "model_claim_basis": "claims about the included messages and votes, about the whole conversation, and claims whose subject kind this version does not know (kept, not guessed)",
+            "ordinal_basis": "a message's ordinal is its position in the whole snapshot",
+            "last_message_ids": answer.lastMessageIDs,
+            "parents_not_in_snapshot": answer.parentsNotInSnapshot,
+            "parents_with_unknown_role": answer.parentsWithUnknownRole,
+        ]
     }
 
     // MARK: Raw JSON
@@ -167,11 +294,85 @@ public struct ExportService: Sendable {
 
     // MARK: Normalized JSON
 
-    static func normalizedJSON(detail: ConversationDetail, evidence: RawEvidence) throws -> Data {
+    /// `lastAnswer`, an excerpt of `detail`, is rendered in its place, with its selection.
+    static func normalizedJSON(detail: ConversationDetail, evidence: RawEvidence, lastAnswer: LastAnswer? = nil) throws -> Data {
+        let parts = normalizedParts(detail: lastAnswer?.detail ?? detail, ordinals: lastAnswer?.ordinals, evidence: evidence)
+        var root: [String: Any] = [
+            "schema": "arena-suite.normalized/1",
+            "scope": parts.scope,
+            "conversation": parts.conversation,
+            "messages": parts.messages,
+            "model_claims": parts.claims,
+            "feedback": parts.feedback,
+            "excluded": parts.excluded,
+        ]
+        if let lastAnswer { root["selection"] = selection(lastAnswer) }
+        return try canonical(root)
+    }
+
+    // MARK: JSONL
+
+    /// One canonical JSON object per line (sorted keys, no line breaks inside a record): a header with
+    /// the scope, conversation and exclusions; one line per message in snapshot order; one per model
+    /// claim and per feedback item, in Normalized JSON's order; a footer with the counts.
+    /// `lastAnswer`, an excerpt of `detail`, is rendered in its place, with its selection.
+    static func jsonl(detail: ConversationDetail, evidence: RawEvidence, lastAnswer: LastAnswer? = nil) throws -> Data {
+        let parts = normalizedParts(detail: lastAnswer?.detail ?? detail, ordinals: lastAnswer?.ordinals, evidence: evidence)
+        var header: [String: Any] = [
+            "type": "header", "schema": "arena-suite.jsonl/1", "scope": parts.scope, "conversation": parts.conversation,
+            "excluded": parts.excluded,
+        ]
+        if let lastAnswer { header["selection"] = selection(lastAnswer) }
+        var records: [[String: Any]] = [header]
+        records += parts.messages.map { ["type": "message", "message": $0] }
+        records += parts.claims.map { ["type": "model_claim", "model_claim": $0] }
+        records += parts.feedback.map { ["type": "feedback", "feedback": $0] }
+        records.append([
+            "type": "footer",
+            "counts": ["messages": parts.messages.count, "model_claims": parts.claims.count, "feedback": parts.feedback.count],
+        ])
+        var data = Data()
+        for record in records {
+            data.append(lineSafe(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .withoutEscapingSlashes])))
+            data.append(0x0A)
+        }
+        return data
+    }
+
+    /// Writes U+0085, U+2028 and U+2029 as `\u` escapes. JSON allows them raw inside strings, and
+    /// Foundation leaves them raw, but some line readers end a line there. They occur only inside
+    /// strings (JSON's structure is ASCII), so the parsed value is unchanged.
+    static func lineSafe(_ json: Data) -> Data {
+        guard json.contains(0xC2) || json.contains(0xE2) else { return json }
+        var out = Data()
+        out.reserveCapacity(json.count)
+        let bytes = [UInt8](json)
+        var index = 0
+        while index < bytes.count {
+            if bytes[index] == 0xC2, index + 1 < bytes.count, bytes[index + 1] == 0x85 {
+                out.append(contentsOf: Array("\\u0085".utf8))
+                index += 2
+            } else if bytes[index] == 0xE2, index + 2 < bytes.count, bytes[index + 1] == 0x80, bytes[index + 2] == 0xA8 || bytes[index + 2] == 0xA9 {
+                out.append(contentsOf: Array((bytes[index + 2] == 0xA8 ? "\\u2028" : "\\u2029").utf8))
+                index += 3
+            } else {
+                out.append(bytes[index])
+                index += 1
+            }
+        }
+        return out
+    }
+
+    /// The entities Normalized JSON and JSONL share. `ordinals` are the messages' positions in the
+    /// whole snapshot when `detail` is an excerpt of it.
+    private static func normalizedParts(detail: ConversationDetail, ordinals: [Int]?, evidence: RawEvidence) -> (
+        scope: [String: Any], conversation: [String: Any], messages: [[String: Any]], claims: [[String: Any]],
+        feedback: [[String: Any]], excluded: [String]
+    ) {
         func value(_ string: String?) -> Any { string ?? NSNull() }
         let messages: [[String: Any]] = detail.messages.enumerated().map { index, message in
             [
-                "ordinal": index, "id": message.remoteID, "role": value(message.role), "status": value(message.status),
+                "ordinal": ordinals?[index] ?? index, "id": message.remoteID, "role": value(message.role), "status": value(message.status),
                 "lane": value(message.lane), "parent_ids": message.parentIDs, "model_id": value(message.modelRemoteID),
                 "created_at": value(message.createdAt),
                 "blocks": message.blocks.enumerated().map { blockIndex, block -> [String: Any] in
@@ -184,16 +385,15 @@ public struct ExportService: Sendable {
                 "attachments": message.attachments.map { ["name": value($0.name), "content_type": value($0.contentType), "has_url": $0.hasURL] },
             ]
         }
-        let root: [String: Any] = [
-            "schema": "arena-suite.normalized/1",
-            "scope": scope(detail: detail, evidence: evidence),
-            "conversation": [
+        return (
+            scope: scope(detail: detail, evidence: evidence),
+            conversation: [
                 "remote_id": detail.summary.remoteID, "kind": detail.summary.kind, "title": value(detail.summary.title),
                 "mode": value(detail.summary.mode), "modality": value(detail.summary.modality),
                 "updated_at": value(detail.summary.updatedAt), "absent_on_server": detail.summary.isAbsent,
             ],
-            "messages": messages,
-            "model_claims": detail.claims.map {
+            messages: messages,
+            claims: detail.claims.map {
                 [
                     "subject": $0.subject.rawValue, "subject_id": $0.subjectID, "role": value($0.role), "model_id": $0.modelID,
                     "display_name": value($0.displayName), "organization": value($0.organization), "provider": value($0.provider),
@@ -201,20 +401,21 @@ public struct ExportService: Sendable {
                     "record_sequence": $0.recordSequence.map { String($0) } ?? NSNull(),
                 ] as [String: Any]
             }.sorted { canonicalString($0) < canonicalString($1) },
-            "feedback": detail.feedback.map {
+            feedback: detail.feedback.map {
                 ["id": $0.remoteID, "value": value($0.value), "message_a": value($0.messageA), "message_b": value($0.messageB)] as [String: Any]
             }.sorted { canonicalString($0) < canonicalString($1) },
-            "excluded": [
+            excluded: [
                 "metadata telemetry at any depth (masked as [omitted: telemetry])", "encrypted reasoning (providerOptions, any depth)",
                 "attachment URLs", "raw bytes (see raw export)",
-            ],
-        ]
-        return try canonical(root)
+            ])
     }
 
     // MARK: Markdown
 
-    static func markdown(detail: ConversationDetail, evidence: RawEvidence) -> String {
+    /// `lastAnswer`, an excerpt of `detail`, is rendered in its place, with a line saying how it was
+    /// chosen and no turn numbers.
+    static func markdown(detail whole: ConversationDetail, evidence: RawEvidence, lastAnswer: LastAnswer? = nil) -> String {
+        let detail = lastAnswer?.detail ?? whole
         let layout = TranscriptLayout(detail)
         // Claims come in record order: the latest name observed (up to this snapshot) wins.
         let names = Dictionary(
@@ -222,8 +423,18 @@ public struct ExportService: Sendable {
             uniquingKeysWith: { _, latest in latest })
         var out = "# \(inline(detail.summary.title ?? "Untitled"))\n\n"
         out += "_\(inline([detail.summary.kind, detail.summary.mode, detail.summary.modality].compactMap { $0 }.joined(separator: " · ")))_\n\n"
+        if let lastAnswer {
+            out += "_Last answer, with its prompt: the messages Arena lists as this conversation's last, and the prompts they reply to._\n\n"
+            if !lastAnswer.parentsNotInSnapshot.isEmpty {
+                out += "_Not in this snapshot, so not included: \(inline(lastAnswer.parentsNotInSnapshot.joined(separator: ", "))), which a last message replies to._\n\n"
+            }
+            if !lastAnswer.parentsWithUnknownRole.isEmpty {
+                out += "_Role not stated, so not included: \(inline(lastAnswer.parentsWithUnknownRole.joined(separator: ", "))), which a last message replies to._\n\n"
+            }
+        }
         for (index, turn) in layout.turns.enumerated() {
-            out += "## Turn \(index + 1)\n\n"
+            // An excerpt does not number its turns: they are not the conversation's first.
+            if lastAnswer == nil { out += "## Turn \(index + 1)\n\n" }
             if let prompt = turn.prompt { out += "### You\n\n" + body(prompt) }
             for lane in turn.lanes {
                 for entry in lane.messages {
