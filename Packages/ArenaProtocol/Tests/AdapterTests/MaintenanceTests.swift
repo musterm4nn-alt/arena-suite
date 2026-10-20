@@ -19,7 +19,10 @@ private func detail(_ id: String, _ text: String) -> Data {
     """#.utf8)
 }
 
-private struct Archive {
+/// Shared with the encrypted-backup tests.
+private typealias Archive = MaintenanceArchive
+
+struct MaintenanceArchive {
     let root: URL
     let accounts: [AccountID]
     let journals: JournalStore

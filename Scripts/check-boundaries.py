@@ -8,7 +8,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 allowed = {
     "App": {"AppKit", "SwiftUI", "ApplicationActions", "SuiteDomain", "Observation", "Foundation", "ArchiveIndex", "CoreText"},
     "Packages/ArenaSuiteCore/Sources/SuiteDomain": {"Foundation"},
-    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {"Foundation", "SuiteDomain", "CaptureJournal", "ArchiveIndex", "CryptoKit"},
+    # AppleArchive and System: Apple system frameworks for encrypted backups (AEA), not dependencies.
+    "Packages/ArenaSuiteCore/Sources/ApplicationActions": {
+        "Foundation", "SuiteDomain", "CaptureJournal", "ArchiveIndex", "CryptoKit", "AppleArchive", "System",
+    },
     "Packages/ArenaSuiteCore/Sources/CaptureJournal": {"Foundation", "Darwin", "CryptoKit"},
     "Packages/ArenaSuiteCore/Sources/ArchiveIndex": {"Foundation", "SuiteDomain", "GRDB", "CryptoKit"},
     "Packages/ArenaProtocol/Sources/ArenaAdapter": {

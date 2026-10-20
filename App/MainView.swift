@@ -115,6 +115,17 @@ struct MainView: View {
                 destination = .maintenance
                 await maintenance.verify()
             }
+            // `--preview-passphrase` (with `--preview-maintenance`) shows the new-backup passphrase sheet;
+            // nothing is written unless it is submitted. Followed by an `.aea` path, it shows the sheet
+            // that checks that file.
+            if let index = arguments.firstIndex(of: "--preview-passphrase") {
+                let next = arguments.index(after: index)
+                if next < arguments.endIndex, arguments[next].hasSuffix(".aea") {
+                    maintenance.passphraseRequest = .check(URL(fileURLWithPath: arguments[next]))
+                } else {
+                    maintenance.passphraseRequest = .encrypt(into: FileManager.default.temporaryDirectory)
+                }
+            }
             if arguments.contains("--validate-dataset") {
                 destination = .maintenance
                 await maintenance.validateDataset()

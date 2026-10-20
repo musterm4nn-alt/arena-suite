@@ -47,6 +47,9 @@ enum AppComposition {
     }
 
     static func makeServices() -> Services {
+        // A restore interrupted between its renames leaves the account list set aside: put it back
+        // before anything reads it.
+        BackupService.recoverSetAsideAccounts(in: archiveRoot)
         let sessions = ArenaAccountSessions()
         let registry = AccountRegistryStore(url: archiveRoot.appendingPathComponent("accounts/registry.json"))
         let accounts = AccountService(registry: registry, sessions: sessions)

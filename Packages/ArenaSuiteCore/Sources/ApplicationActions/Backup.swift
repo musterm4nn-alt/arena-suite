@@ -59,6 +59,19 @@ public enum BackupError: Error, Equatable, Sendable {
     case archiveChanged
     case cancelled
     case io(String)
+    /// An encrypted backup's passphrase has fewer than `BackupService.minimumPassphraseLength`
+    /// characters.
+    case passphraseTooShort
+    /// An encrypted backup's passphrase is longer than `BackupService.maximumPassphraseBytes` in UTF-8.
+    case passphraseTooLong
+    /// Decryption could not start: the passphrase is wrong, or the file's header is damaged. AEA
+    /// cannot tell these apart.
+    case wrongPassphraseOrDamaged
+    /// Decryption started, so the passphrase is right, but the content is damaged, truncated or
+    /// altered, or holds an entry Apple Archive refuses.
+    case encryptedContentDamaged
+    /// An encrypted backup holds an entry that is not a plain file or folder at a safe relative path.
+    case unsafeEntry(String)
 }
 
 /// Result of checking a backup folder end to end.
@@ -79,7 +92,7 @@ public struct BackupCheck: Sendable, Equatable {
 /// SHA-256) and an index replayed from the restored journals with the same content digest as one
 /// replayed at backup time.
 public struct BackupService: Sendable {
-    private let archiveRoot: URL
+    let archiveRoot: URL
     private let decoder: any ArchiveDecoding
     private let appVersion: String
 
@@ -217,6 +230,7 @@ public struct BackupService: Sendable {
     public func restore(from backup: URL) async throws -> BackupCheck {
         let check = try await self.check(backup)
         let accounts = archiveRoot.appendingPathComponent("accounts", isDirectory: true)
+        Self.recoverSetAsideAccounts(in: archiveRoot)
         guard canRestore else { throw BackupError.targetNotEmpty }
 
         try PrivateFile.prepareDirectory(archiveRoot)
@@ -250,29 +264,84 @@ public struct BackupService: Sendable {
             try PrivateFile.write(data, to: staged)
             guard try JournalCopy.sha256(of: staged) == digest else { throw BackupError.fileMismatch("changed accounts/registry.json") }
         }
-        // Install with one rename. An existing `accounts` folder may only hold an empty account list
-        // (all accounts removed, no journals kept; checked above), so it is removed first. A crash
-        // in between leaves an empty archive, never a partial one; the staging folder is swept on
-        // the next restore.
-        if FileManager.default.fileExists(atPath: accounts.path) {
-            let names = try FileManager.default.contentsOfDirectory(atPath: accounts.path)
-            guard names.allSatisfy(Self.disposableAccountFiles.contains) else { throw BackupError.targetNotEmpty }
-            try FileManager.default.removeItem(at: accounts)
-        }
-        guard renamex_np(stagedAccounts.path, accounts.path, UInt32(RENAME_EXCL)) == 0 else {
-            throw BackupError.io("install restored accounts (\(errno))")
-        }
+        try Self.install(stagedAccounts, at: accounts)
         return check
     }
 
-    /// True while the archive has no accounts and no journals: the only state a restore may target.
+    /// Installs `staged` as `accounts` with one rename. An existing `accounts` folder may only hold an
+    /// empty account list (all accounts removed, no journals kept). It is first moved aside in one
+    /// rename and only then checked, so an account added since `canRestore` was checked is never
+    /// removed: the folder is put back and the restore refused. A crash between the renames leaves
+    /// the list set aside; `recoverSetAsideAccounts` puts it back at the next launch or restore.
+    static func install(_ staged: URL, at accounts: URL) throws {
+        let fileManager = FileManager.default
+        var aside: URL?
+        if fileManager.fileExists(atPath: accounts.path) {
+            let moved = accounts.deletingLastPathComponent().appendingPathComponent("\(setAsidePrefix)\(UUID().uuidString)", isDirectory: true)
+            guard renamex_np(accounts.path, moved.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw BackupError.io("set aside the empty account list (\(errno))")
+            }
+            aside = moved
+            guard isEmptyAccountList(moved) else {
+                // Put it back. If something made a new `accounts` meanwhile, both are kept.
+                _ = renamex_np(moved.path, accounts.path, UInt32(RENAME_EXCL))
+                throw BackupError.targetNotEmpty
+            }
+        }
+        guard renamex_np(staged.path, accounts.path, UInt32(RENAME_EXCL)) == 0 else {
+            let code = errno
+            if let aside { _ = renamex_np(aside.path, accounts.path, UInt32(RENAME_EXCL)) }
+            throw BackupError.io("install restored accounts (\(code))")
+        }
+        if let aside { try? fileManager.removeItem(at: aside) }
+    }
+
+    /// Account lists a restore set aside and a crash left behind. When there is no `accounts` folder,
+    /// one is put back, a list that holds something before an empty one. Empty lists are then
+    /// removed. Anything else is kept and named by `keptAccountLists`, and restore is refused while
+    /// it exists. Only real folders are put back. Never removes a list that holds an account or a
+    /// journal.
+    public static func recoverSetAsideAccounts(in archiveRoot: URL) {
+        let fileManager = FileManager.default
+        let accounts = archiveRoot.appendingPathComponent("accounts", isDirectory: true)
+        let folders = setAsideNames(in: archiveRoot).map { archiveRoot.appendingPathComponent($0, isDirectory: true) }.filter { url in
+            var info = stat()
+            return lstat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR
+        }
+        let ordered = folders.filter { !isEmptyAccountList($0) } + folders.filter(isEmptyAccountList)
+        for aside in ordered {
+            if !fileManager.fileExists(atPath: accounts.path), renamex_np(aside.path, accounts.path, UInt32(RENAME_EXCL)) == 0 { continue }
+            if isEmptyAccountList(aside) { try? fileManager.removeItem(at: aside) }
+        }
+    }
+
+    /// What an interrupted restore left set aside in the archive folder and recovery kept, because it
+    /// may hold accounts or journals. Restore is unavailable while there is any.
+    public func keptAccountLists() -> [String] { Self.setAsideNames(in: archiveRoot) }
+
+    static func setAsideNames(in archiveRoot: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: archiveRoot.path)) ?? []).filter { $0.hasPrefix(setAsidePrefix) }.sorted()
+    }
+
+    /// A folder holding at most an empty account list: nothing a restore could lose.
+    static func isEmptyAccountList(_ folder: URL) -> Bool {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return false }
+        let registry = AccountRegistryStore(url: folder.appendingPathComponent("registry.json"))
+        return names.allSatisfy(disposableAccountFiles.contains) && (try? registry.load())?.isEmpty == true
+    }
+
+    /// True while the archive has no accounts and no journals, and no account list is set aside: the
+    /// only state a restore may target.
     public var canRestore: Bool {
         let accounts = archiveRoot.appendingPathComponent("accounts", isDirectory: true)
         let registry = AccountRegistryStore(url: accounts.appendingPathComponent("registry.json"))
-        return ((try? registry.load())?.isEmpty ?? false) && JournalStore(archiveRoot: archiveRoot).accountsOnDisk().isEmpty
+        return keptAccountLists().isEmpty && ((try? registry.load())?.isEmpty ?? false)
+            && JournalStore(archiveRoot: archiveRoot).accountsOnDisk().isEmpty
     }
 
     static let disposableAccountFiles: Set<String> = ["registry.json", "registry.json.tmp", ".DS_Store"]
+    static let replayPrefix = "arena-suite-replay-"
+    static let setAsidePrefix = ".previous-accounts-"
 
     // MARK: Helpers
 
@@ -280,8 +349,11 @@ public struct BackupService: Sendable {
         -> String
     {
         let accounts = journals.compactMap { UUID(uuidString: $0.account) }.map { AccountID(rawValue: $0) }
-        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "arena-suite-replay-\(UUID().uuidString)", isDirectory: true)
+        // The replay holds the archive's text in a private index. It is removed afterwards; ones a
+        // crash left behind (older than an hour) are removed here.
+        let temporary = FileManager.default.temporaryDirectory
+        sweepStale(in: temporary, now: Date()) { $0.hasPrefix(replayPrefix) }
+        let scratch = temporary.appendingPathComponent("\(replayPrefix)\(UUID().uuidString)", isDirectory: true)
         return try await ArchiveService.replay(
             journals: JournalStore(archiveRoot: root), accounts: accounts, decoder: decoder, scratch: scratch
         ).digest

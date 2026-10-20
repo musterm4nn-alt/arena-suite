@@ -83,10 +83,44 @@ Updated 2026-10-20, after the export options (committed locally, not pushed). Th
       - export is offered only once the chosen snapshot (or Latest) is the one on screen.
     - `wholeConversationExportsAreUnchanged` pins whole-conversation Normalized JSON and Markdown.
       Update its hashes only for a deliberate format change.
+  - **Encrypted backup** (`Docs/encrypted-backup-2026-10-20.md`, review
+    `Docs/reviews/2026-10-20-encrypted-backup.md`): the plain backup folder sealed into one Apple
+    Encrypted Archive (`.aea`, scrypt + AES-CTR + HMAC-SHA256 via Apple's AppleArchive framework),
+    keyed by a passphrase the user chooses and that is never stored. The user chose the passphrase
+    on 2026-10-20. macOS's `aea` and `aa` open it without the app (the doc has the commands).
+    - Code: `EncryptedBackup.swift` (an extension of `BackupService`); the Maintenance row
+      "Encrypted Backup…" and `PassphraseSheet` in `MaintenanceView.swift`. Check Backup and
+      Restore accept a folder or an `.aea` file.
+    - Semantics to keep:
+      - the passphrase is NFC-normalized, 20 characters to 256 UTF-8 bytes (AEA's own limits);
+      - plaintext outside the archive exists only in the user's private temporary directory: the
+        plain copy (`arena-suite-plain-backup-*`) and the replay folder every backup check uses
+        (`arena-suite-replay-*`). They are removed on success, failure and cancellation; a crash
+        can leave them until the next backup (or check or restore, for replay folders) sweeps
+        them, once older than an hour;
+      - restore sets an existing empty account list aside in one rename before checking it
+        (`BackupService.install`), so an account added meanwhile is never removed. A crash
+        between the renames leaves `.previous-accounts-*`. `recoverSetAsideAccounts` runs at
+        launch (`AppComposition.makeServices`) and before a restore: with no `accounts`, it puts
+        one back (one holding accounts first), removes empty ones, and keeps anything else.
+        Maintenance names what is kept (`keptAccountLists`), and `canRestore` is false while
+        any remains;
+      - the recovery recipe in the doc normalizes the passphrase to NFC with Perl.
+        `macOSToolsOpenAnEncryptedBackup` reads the block from the doc and runs it, so editing
+        the block changes the test;
+      - the file appears only when complete (staging, full sync, `RENAME_EXCL`);
+      - `wrongPassphraseOrDamaged` means decryption could not start; once it starts the passphrase
+        is right, and a later decoding failure is `encryptedContentDamaged` unless the file cannot
+        be read again to its end, or writing on this Mac failed (both `io`);
+      - only directories and regular files with safe relative paths are written, each new and
+        owner-only.
+    - The boundary check allows `AppleArchive` and `System` in ApplicationActions (Apple system
+      frameworks, not dependencies).
   - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
     gaps", in order):
-    1. archive encryption and import of arena-exporter folders (GitHub backup is a separate
-       decision: it sends private conversations off the Mac);
+    1. import of arena-exporter folders (the second half of item 7; it needs arena-exporter
+       2.2.2's format from `musterm4nn-alt/arena-exporter`). GitHub backup is a separate decision:
+       it sends private conversations off the Mac;
     2. vote correction as a local note beside Arena's recorded vote, never sent to Arena (plan §1);
     3. attachments (observe whether their URLs can be fetched natively first, then plan §9.4);
     4. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
@@ -215,6 +249,9 @@ Debug-only app flags:
 - `--preview-conversation "<title prefix>"`, optionally with `--preview-export`
 - `--preview-search <text>`
 - `--preview-maintenance` (opens the Maintenance page and runs Verify)
+- `--preview-passphrase [<file>.aea]` with `--preview-maintenance` (opens the new-backup passphrase
+  sheet, which writes into the temporary directory if submitted; with a file, the sheet that
+  checks it)
 - `--validate-dataset` (opens Maintenance and runs Validate Dataset)
 - `--preview-accounts` (opens the Accounts page)
 - `--preview-insights` (opens the Insights page)

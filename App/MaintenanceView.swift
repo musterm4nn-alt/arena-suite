@@ -14,6 +14,25 @@ final class MaintenanceModel {
     private(set) var failed = false
     private(set) var lastVerification: VerificationReport?
     private(set) var revealURL: URL?
+    /// An action waiting for a passphrase, shown as a sheet. The passphrase itself stays in the
+    /// sheet's fields and the action it starts; it is never stored.
+    var passphraseRequest: PassphraseRequest?
+
+    enum PassphraseRequest: Identifiable {
+        case encrypt(into: URL)
+        case check(URL)
+        case restore(URL)
+
+        var id: String {
+            switch self {
+            case .encrypt(let folder): "encrypt \(folder.path)"
+            case .check(let file): "check \(file.path)"
+            case .restore(let file): "restore \(file.path)"
+            }
+        }
+
+        var isNew: Bool { if case .encrypt = self { true } else { false } }
+    }
 
     private let services: AppComposition.Maintenance
     private let accounts: AccountsModel
@@ -32,6 +51,8 @@ final class MaintenanceModel {
     var hasAccounts: Bool { !accounts.accounts.isEmpty }
     /// No accounts and no kept journals: the only state a restore may target.
     var canRestore: Bool { !hasAccounts && services.backups.canRestore }
+    /// What an interrupted restore set aside and recovery kept, because it may hold accounts.
+    var keptAccountLists: [String] { services.backups.keptAccountLists() }
 
     func verify() async {
         await run("Verifying the archive…", exclusive: true) {
@@ -72,38 +93,99 @@ final class MaintenanceModel {
             let url = try await services.backups.create(in: folder)
             let check = try await services.backups.check(url)
             revealURL = url
-            let tails = check.manifest.journals.compactMap(\.incompleteTail)
             return ([
                 "Backup written and checked: \(check.accounts) journal(s), \(check.records) record(s).",
                 url.lastPathComponent,
                 "It holds your journals and account list, not passwords or sessions.",
-            ] + tails.map {
-                "One journal ended in an incomplete record (\($0.length) bytes, never acknowledged). It was left out; the journal itself was not changed."
-            }, false)
+            ] + Self.tailNotes(check), false)
         }
     }
 
-    func checkBackup() async {
-        guard let folder = Self.chooseFolder(prompt: "Check Backup", message: "Choose an “Arena Suite Backup” folder") else { return }
-        await run("Checking the backup…") {
-            let check = try await services.backups.check(folder)
-            return (["Backup is intact: \(check.accounts) journal(s), \(check.records) record(s), created \(check.manifest.createdAt)."], false)
+    /// Asks for a folder, then (in a sheet) for the passphrase; `encrypt(_:)` writes the file.
+    func backUpEncrypted() async {
+        guard !accounts.isSyncing else { return note("Wait for the running sync to finish, then back up.") }
+        guard let folder = Self.chooseFolder(prompt: "Back Up Here") else { return }
+        passphraseRequest = .encrypt(into: folder)
+    }
+
+    /// Continues the action waiting for a passphrase.
+    func proceed(with passphrase: String) async {
+        guard let request = passphraseRequest else { return }
+        passphraseRequest = nil
+        switch request {
+        case .encrypt(let folder):
+            guard !accounts.isSyncing else { return note("Wait for the running sync to finish, then back up.") }
+            await run("Encrypting the backup…", exclusive: true) {
+                let url = try await services.backups.createEncrypted(in: folder, passphrase: passphrase)
+                revealURL = url
+                // Opens what was written with the same passphrase, so a typo in both entries is caught now.
+                let check: BackupCheck
+                do { check = try await services.backups.checkEncrypted(url, passphrase: passphrase) } catch {
+                    return ([
+                        "Written as “\(url.lastPathComponent)”, but opening it again failed, so do not rely on it. Delete it and back up again.",
+                        "Why: \(Self.describe(error))",
+                    ], true)
+                }
+                return ([
+                    "Encrypted backup written and checked: \(check.accounts) journal(s), \(check.records) record(s).",
+                    url.lastPathComponent,
+                    "It holds your journals and account list, not passwords or sessions. Without the passphrase it cannot be opened.",
+                ] + Self.tailNotes(check), false)
+            }
+        case .check(let file):
+            await run("Checking the encrypted backup…") {
+                Self.intact(try await services.backups.checkEncrypted(file, passphrase: passphrase))
+            }
+        case .restore(let file):
+            guard canRestore else { return note("Restore only works into an empty archive (no accounts and no kept journals).") }
+            await run("Restoring…", exclusive: true) {
+                try await restoring { try await services.backups.restoreEncrypted(from: file, passphrase: passphrase) }
+            }
         }
+    }
+
+    /// A backup folder, or an encrypted backup file (which asks for its passphrase).
+    func checkBackup() async {
+        guard let chosen = Self.chooseBackup(prompt: "Check Backup") else { return }
+        guard Self.isFolder(chosen) else { return passphraseRequest = .check(chosen) }
+        await run("Checking the backup…") { Self.intact(try await services.backups.check(chosen)) }
     }
 
     /// Only offered while there are no accounts (a new Mac or a fresh install).
     func restore() async {
         guard canRestore else { return note("Restore only works into an empty archive (no accounts and no kept journals).") }
-        guard let folder = Self.chooseFolder(prompt: "Restore", message: "Choose an “Arena Suite Backup” folder") else { return }
+        guard let chosen = Self.chooseBackup(prompt: "Restore") else { return }
+        guard Self.isFolder(chosen) else { return passphraseRequest = .restore(chosen) }
         await run("Restoring…", exclusive: true) {
-            let check = try await services.backups.restore(from: folder)
-            try await rebuildIndex()
+            try await restoring { try await services.backups.restore(from: chosen) }
+        }
+    }
+
+    /// A refused restore may still have put back an account list an interrupted one set aside, so
+    /// accounts are reloaded either way.
+    private func restoring(_ work: () async throws -> BackupCheck) async throws -> ([String], Bool) {
+        let check: BackupCheck
+        do { check = try await work() } catch {
             await accounts.reloadAccounts()
             archive.reload()
-            return ([
-                "Restored \(check.accounts) journal(s), \(check.records) record(s); the index was rebuilt from them.",
-                "Accounts whose sessions are not in this Mac's Keychain need “Sign In Again”.",
-            ], false)
+            throw error
+        }
+        try await rebuildIndex()
+        await accounts.reloadAccounts()
+        archive.reload()
+        return ([
+            "Restored \(check.accounts) journal(s), \(check.records) record(s); the index was rebuilt from them.",
+            "Accounts whose sessions are not in this Mac's Keychain need “Sign In Again”.",
+        ], false)
+    }
+
+    private static func intact(_ check: BackupCheck) -> ([String], Bool) {
+        (["Backup is intact: \(check.accounts) journal(s), \(check.records) record(s), created \(check.manifest.createdAt)."], false)
+    }
+
+    private static func tailNotes(_ check: BackupCheck) -> [String] {
+        check.manifest.journals.compactMap(\.incompleteTail).map {
+            "One journal ended in an incomplete record (\($0.length) bytes, never acknowledged). It was left out; the journal itself was not changed."
         }
     }
 
@@ -235,7 +317,7 @@ final class MaintenanceModel {
         default: break
         }
         return switch error as? BackupError {
-        case .notABackup: "That folder is not an Arena Suite backup."
+        case .notABackup: "That is not an Arena Suite backup folder or encrypted backup file."
         case .unsupportedFormat(let format): "This backup format (\(format)) is not supported by this version."
         case .fileMismatch(let what): "The backup does not match its manifest (\(what)). Do not rely on it."
         case .journalDamaged(_, let issue): "A journal could not be copied or verified (\(issue))."
@@ -244,6 +326,11 @@ final class MaintenanceModel {
         case .archiveChanged: "Accounts changed while the backup ran. Nothing was written; try again."
         case .cancelled: "Cancelled. Nothing was written."
         case .io(let what): "A file operation failed (\(what)). Nothing partial was left behind."
+        case .passphraseTooShort: "The passphrase needs at least \(BackupService.minimumPassphraseLength) characters. Nothing was written."
+        case .passphraseTooLong: "The passphrase is longer than \(BackupService.maximumPassphraseBytes) bytes. Nothing was written."
+        case .wrongPassphraseOrDamaged: "The passphrase is wrong, or the start of the backup file is damaged. Nothing was changed."
+        case .encryptedContentDamaged: "The passphrase is right, but the backup file is damaged, truncated or altered. Do not rely on it. Nothing was changed."
+        case .unsafeEntry(let path): "The backup file holds an entry that is not a plain file or folder at a safe place (\(path)). Nothing was changed."
         case .none: "The action failed (\((error as NSError).domain) \((error as NSError).code))."
         }
     }
@@ -255,6 +342,21 @@ final class MaintenanceModel {
         panel.allowsMultipleSelection = false
         panel.prompt = prompt
         panel.message = message
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    static func isFolder(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    /// A backup folder or an encrypted backup file.
+    static func chooseBackup(prompt: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = prompt
+        panel.message = "Choose an “Arena Suite Backup” folder or encrypted .\(BackupService.encryptedExtension) file"
         return panel.runModal() == .OK ? panel.url : nil
     }
 
@@ -287,6 +389,13 @@ struct MaintenanceView: View {
         }
         .background(Theme.background)
         .navigationTitle("Maintenance")
+        .sheet(item: $model.passphraseRequest) { request in
+            PassphraseSheet(request: request) { passphrase in
+                Task { await model.proceed(with: passphrase) }
+            } cancel: {
+                model.passphraseRequest = nil
+            }
+        }
     }
 
     private var page: some View {
@@ -300,11 +409,18 @@ struct MaintenanceView: View {
                 row("Back Up…", "Copy journals and account list into a new folder, then check the copy.") {
                     await model.backUp()
                 }
-                row("Check Backup…", "Confirm a backup folder is complete and unchanged.") { await model.checkBackup() }
+                row("Encrypted Backup…", "The same, as one file locked with a passphrase you choose.") {
+                    await model.backUpEncrypted()
+                }
+                row("Check Backup…", "Confirm a backup folder or encrypted file is complete and unchanged.") { await model.checkBackup() }
                 if model.canRestore {
                     row("Restore from Backup…", "Only while there are no accounts, e.g. on a new Mac.") {
                         await model.restore()
                     }
+                }
+                if !model.keptAccountLists.isEmpty {
+                    Text("An interrupted restore left \(model.keptAccountLists.joined(separator: ", ")) in the archive folder. It may hold accounts or journals, so it was kept, not removed. Restore is unavailable while it is there.")
+                        .font(Theme.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
                 row("Save Diagnostics…", "A content-free report for troubleshooting.") { await model.saveDiagnostics() }
             }
@@ -373,5 +489,77 @@ struct MaintenanceView: View {
                 .disabled(model.busy)
             Text(detail).font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+/// Asks for an encrypted backup's passphrase: twice, with its rules, for a new backup; once to open
+/// one. The fields are cleared when the sheet closes.
+private struct PassphraseSheet: View {
+    let request: MaintenanceModel.PassphraseRequest
+    let submit: (String) -> Void
+    let cancel: () -> Void
+    @State private var passphrase = ""
+    @State private var confirmation = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(request.isNew ? "Encrypt the Backup" : "Open the Encrypted Backup").font(Theme.heading)
+            Text(request.isNew
+                ? "Choose a passphrase of at least \(BackupService.minimumPassphraseLength) characters. Arena Suite does not keep it: without it, this backup cannot be opened, by this app or anyone else. macOS’s aea tool can also open it."
+                : "Enter the passphrase chosen when this backup was made.")
+                .font(Theme.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ArenaField(symbol: "key") { SecureField("Passphrase", text: $passphrase) }
+            if request.isNew {
+                ArenaField(symbol: "key") { SecureField("Passphrase again", text: $confirmation) }
+            }
+            if let problem {
+                Text(problem).font(Theme.caption).foregroundStyle(.orange)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") {
+                    clear()
+                    cancel()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(request.isNew ? "Encrypt" : "Open") {
+                    let chosen = passphrase
+                    clear()
+                    submit(chosen)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!ready)
+            }
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(width: 440)
+        .buttonStyle(.arenaPill)
+        .departureMono()
+        .arenaPalette()
+        .onDisappear(perform: clear)
+    }
+
+    /// What keeps a new passphrase from being used, once something was typed.
+    private var problem: String? {
+        guard request.isNew, !passphrase.isEmpty else { return nil }
+        if case .failure(let error) = BackupService.usablePassphrase(passphrase) {
+            return error == .passphraseTooLong
+                ? "At most \(BackupService.maximumPassphraseBytes) bytes."
+                : "\(passphrase.precomposedStringWithCanonicalMapping.count) of at least \(BackupService.minimumPassphraseLength) characters."
+        }
+        if !confirmation.isEmpty, confirmation != passphrase { return "The two entries differ." }
+        return nil
+    }
+
+    private var ready: Bool {
+        guard request.isNew else { return !passphrase.isEmpty }
+        guard case .success = BackupService.usablePassphrase(passphrase) else { return false }
+        return confirmation == passphrase
+    }
+
+    private func clear() {
+        passphrase = ""
+        confirmation = ""
     }
 }
