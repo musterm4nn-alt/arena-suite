@@ -261,6 +261,8 @@ private func object(_ data: Data) throws -> [String: Any] {
 
 /// Whole-conversation output is what it was before the last-answer scope and JSONL: SHA-256 of the
 /// rendering with the record digest and account ID masked, taken from 6da813d on this fixture.
+/// The output names the decoder; the digests were taken under `arena-decoder/2`, so the current
+/// version is put back to that name (Docs/attachments-2026-10-20.md changed only the version).
 /// Update only for a deliberate format change (and say so in its milestone).
 @Test func wholeConversationExportsAreUnchanged() async throws {
     let h = try await Harness()
@@ -269,10 +271,12 @@ private func object(_ data: Data) throws -> [String: Any] {
         .normalizedJSON: "ae6e90f0906231377f5be3ac22edefcda2314c18566c2b85854fe2ada7f60279",
         .markdown: "72df1b2738c901ee4c9992d4edc61beda5d64443ceaa25bf515757aadfe707d7",
     ]
+    #expect(evidence.decoderVersion == "arena-decoder/3")
     for (format, expected) in golden {
         let text = String(decoding: try await h.render(format), as: UTF8.self)
             .replacingOccurrences(of: evidence.digest, with: "<record digest>")
             .replacingOccurrences(of: h.account.rawValue.uuidString, with: "<account>")
+            .replacingOccurrences(of: evidence.decoderVersion, with: "arena-decoder/2")
         #expect(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() == expected, "\(format)")
     }
 }

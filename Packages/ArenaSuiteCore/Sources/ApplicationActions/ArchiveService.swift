@@ -235,6 +235,19 @@ public actor ArchiveService {
             digest: record.digest.map { String(format: "%02x", $0) }.joined(), decoderVersion: decoderVersion)
     }
 
+    /// A stored attachment file's bytes, read from the account's object store and checked against
+    /// their SHA-256 (Docs/attachments-2026-10-20.md). Throws `AttachmentFileError` when the file is
+    /// missing, damaged or unreadable.
+    public nonisolated func attachmentData(account: AccountID, sha256: String) throws -> Data {
+        do { return try journals.objects(for: account).read(sha256) } catch let error as ObjectStoreError {
+            switch error {
+            case .missing: throw AttachmentFileError.missing
+            case .damaged: throw AttachmentFileError.damaged
+            case .unreadable: throw AttachmentFileError.unreadable
+            }
+        }
+    }
+
     /// One frozen view of the projection for dataset building (plan v3 §14).
     public nonisolated func datasetSource(accounts: Set<AccountID>? = nil) throws -> DatasetSource {
         try index.datasetSource(accounts: accounts)
@@ -257,6 +270,14 @@ public actor ArchiveService {
     public nonisolated func contentDigest() throws -> String {
         try index.contentDigest()
     }
+}
+
+/// Why a stored attachment file could not be read.
+public enum AttachmentFileError: Error, Equatable, Sendable {
+    case missing
+    /// Its bytes no longer hash to its name.
+    case damaged
+    case unreadable
 }
 
 public enum ArchiveServiceError: Error, Equatable, Sendable {

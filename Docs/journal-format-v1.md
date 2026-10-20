@@ -122,6 +122,24 @@ A sealed segment is immutable. Its file hash must match `sha256`.
 The recovery report also lists **unterminated jobs**: `job_id`s with a `job.started` record and
 no later `job.finished` record. Higher layers treat them as `interrupted`.
 
+## Records whose body is a separate file
+
+A record may keep its body outside the journal, in the account's content-addressed object store
+beside it (`<account>/objects/sha256/<hex>` next to `<account>/journal`; folders `0700`, files
+`0600`, each file named by the lowercase hex SHA-256 of its bytes; `CaptureJournal.ObjectStore`).
+Such a record:
+
+- declares `payload_representation` `object_reference` and has an empty payload;
+- names the file in its metadata: `object_sha256` (64 lowercase hex characters) and `object_size`
+  (integer, bytes).
+
+The file is written (temporary file, sync, rename, directory sync) before the record is appended,
+so a record never names a file that was not durably in place. A file without a record (the writer
+stopped in between) is ignored: nothing names it. The record's digest covers the name and size,
+not the file. `JournalVerifier` doesn't read the store; the app's Verify checks each named file
+against its name and size, and backups (`arena-suite-backup/2`) copy and check every named file.
+First user: `attachment.download` records (`Docs/attachments-2026-10-20.md`).
+
 ## Verification
 
 `JournalVerifier` is read-only. It checks every record's structure and digest, sequence

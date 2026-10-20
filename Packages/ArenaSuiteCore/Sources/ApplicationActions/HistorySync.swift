@@ -81,6 +81,17 @@ public struct SyncManifest: Sendable, Codable, Equatable {
     /// snapshots in a row, not fetched by this job (also when it stopped before the details).
     /// Refresh fetches one. Sync jobs only.
     public var unfinishedLeft = 0
+    /// Attachment files downloaded after this job's details (Docs/attachments-2026-10-20.md). They
+    /// never change `outcome`, which names the history covered.
+    public var attachmentsStored = 0
+    /// Not requested: this account already stores the file for the same object key.
+    public var attachmentsAlreadyStored = 0
+    /// Requested and answered with anything but a stored file (denied or unavailable).
+    public var attachmentsFailed = 0
+    /// Not requested: the link's signed lifetime had passed.
+    public var attachmentsExpired = 0
+    /// Not requested: not a link downloads accept.
+    public var attachmentsNotRecognized = 0
     public var listOnlyEntries = 0
     /// "Complete" always names its scope: listing ended on `hasMore == false`, or caught up early.
     public var listingEnd: String?
@@ -114,22 +125,25 @@ public struct SyncProgress: Sendable, Equatable {
 }
 
 /// Implemented by the Arena adapter: runs one read-only sync job for one account, recording every
-/// response in `journal` before interpreting it.
+/// response in `journal` before interpreting it. Attachment files go to `objects`, each named by a
+/// record (Docs/attachments-2026-10-20.md).
 public protocol HistorySyncing: Sendable {
     func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
+        objects: ObjectStore, options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
     ) async -> SyncManifest
 
-    /// One conversation's detail again, without listing: identity check, then one detail request,
-    /// each recorded before it is interpreted (Docs/sync-refresh-2026-10-20.md).
+    /// One conversation's detail again, without listing: identity check, then one detail request
+    /// (and its attachments' files), each recorded before it is interpreted
+    /// (Docs/sync-refresh-2026-10-20.md).
     func refresh(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        conversationID: String, options: SyncOptions
+        objects: ObjectStore, conversationID: String, options: SyncOptions
     ) async -> SyncManifest
 }
 
-/// One journal per account under `Archive/accounts/<uuid>/journal`, opened once and kept open.
+/// One journal per account under `Archive/accounts/<uuid>/journal`, opened once and kept open, and
+/// beside it the account's object store, `Archive/accounts/<uuid>/objects`.
 public actor JournalStore {
     private let accountsRoot: URL
     private var writers: [AccountID: JournalWriter] = [:]
@@ -139,6 +153,13 @@ public actor JournalStore {
     public nonisolated func root(for account: AccountID) -> URL {
         accountsRoot.appendingPathComponent(account.rawValue.uuidString, isDirectory: true)
             .appendingPathComponent("journal", isDirectory: true)
+    }
+
+    /// The account's content-addressed files (attachment downloads), beside its journal.
+    public nonisolated func objects(for account: AccountID) -> ObjectStore {
+        ObjectStore(
+            root: accountsRoot.appendingPathComponent(account.rawValue.uuidString, isDirectory: true)
+                .appendingPathComponent("objects", isDirectory: true))
     }
 
     /// Accounts with a journal directory on disk, including removed accounts whose evidence is kept.
@@ -197,9 +218,10 @@ public actor HistorySyncService {
     public func sync(_ account: AccountID, options: SyncOptions = SyncOptions()) async throws -> SyncManifest {
         let engine = self.engine
         let progress = self.progress
-        return try await runJob(account, isSync: true) { context, principal, writer, root in
+        return try await runJob(account, isSync: true) { context, principal, writer, root, objects in
             await engine.sync(
-                account: context, principal: principal, journal: writer, journalRoot: root, options: options
+                account: context, principal: principal, journal: writer, journalRoot: root, objects: objects,
+                options: options
             ) { update in progress[account] = update }
         }
     }
@@ -209,16 +231,16 @@ public actor HistorySyncService {
     /// maintenance excludes both. It is not the account's last sync.
     public func refresh(_ account: AccountID, conversationID: String) async throws -> SyncManifest {
         let engine = self.engine
-        return try await runJob(account, isSync: false) { context, principal, writer, root in
+        return try await runJob(account, isSync: false) { context, principal, writer, root, objects in
             await engine.refresh(
-                account: context, principal: principal, journal: writer, journalRoot: root,
+                account: context, principal: principal, journal: writer, journalRoot: root, objects: objects,
                 conversationID: conversationID, options: SyncOptions())
         }
     }
 
     private func runJob(
         _ account: AccountID, isSync: Bool,
-        _ job: @escaping @Sendable (AccountContext, PrincipalIdentity, JournalWriter, URL) async -> SyncManifest
+        _ job: @escaping @Sendable (AccountContext, PrincipalIdentity, JournalWriter, URL, ObjectStore) async -> SyncManifest
     ) async throws -> SyncManifest {
         // Reserved before the first suspension, so neither a second job nor maintenance can slip in.
         guard running[account] == nil, !starting.contains(account), !maintaining else { throw AccountError.busy }
@@ -228,7 +250,8 @@ public actor HistorySyncService {
         let principal = try await accounts.principal(for: account)
         let writer = try await journals.writer(for: account)
         let root = journals.root(for: account)
-        let task = Task { await job(context, principal, writer, root) }
+        let objects = journals.objects(for: account)
+        let task = Task { await job(context, principal, writer, root, objects) }
         running[account] = task
         let manifest = await task.value
         running[account] = nil
@@ -252,8 +275,9 @@ public actor HistorySyncService {
     private var maintaining = false
     private var starting: Set<AccountID> = []
 
-    /// Verify, backup, restore and rebuild need journals that are not being appended to. Refuses
-    /// while any sync runs; while held, new syncs are refused with `AccountError.busy`.
+    /// Verify, backup, restore and rebuild need journals and object stores that are not being
+    /// written to. Refuses while any sync runs; while held, new syncs are refused with
+    /// `AccountError.busy`.
     public func beginMaintenance() throws {
         guard running.isEmpty, starting.isEmpty, localWrites == 0, !maintaining else { throw AccountError.busy }
         maintaining = true

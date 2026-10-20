@@ -44,7 +44,7 @@ private actor HeldSync: HistorySyncing {
 
     nonisolated func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
+        objects: ObjectStore, options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
     ) async -> SyncManifest {
         let job = UUID()
         _ = try? journal.append(JournalDraft(kind: JournalKind.jobStarted, accountID: account.accountID.rawValue, jobID: job))
@@ -56,7 +56,7 @@ private actor HeldSync: HistorySyncing {
 
     nonisolated func refresh(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        conversationID: String, options: SyncOptions
+        objects: ObjectStore, conversationID: String, options: SyncOptions
     ) async -> SyncManifest {
         await noteRefresh(conversationID)
         return SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: .completed)

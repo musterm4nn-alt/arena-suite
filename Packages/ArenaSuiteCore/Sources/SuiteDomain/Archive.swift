@@ -81,13 +81,76 @@ public struct ArchivedBlock: Equatable, Sendable {
 public struct ArchivedAttachment: Equatable, Sendable {
     public var name: String?
     public var contentType: String?
-    /// Attachment URLs may be signed; the index keeps only whether one exists. The journal has the rest.
+    /// Attachment URLs may be signed; the index keeps whether one exists and, for a link the
+    /// provider's downloads accept, its object key. The journal has the rest.
     public var hasURL: Bool
+    /// The link without its query (scheme, host and path) when downloads accept it; nil otherwise.
+    public var objectKey: String?
+    /// When the link stops working by its own signed terms (ISO 8601, UTC), if it states them.
+    public var linkExpiresAt: String?
+    /// Set by the index: what the archive holds for this attachment's file. nil: nothing recorded.
+    public var file: AttachmentFile?
 
-    public init(name: String?, contentType: String?, hasURL: Bool) {
+    public init(
+        name: String?, contentType: String?, hasURL: Bool, objectKey: String? = nil, linkExpiresAt: String? = nil,
+        file: AttachmentFile? = nil
+    ) {
         self.name = name
         self.contentType = contentType
         self.hasURL = hasURL
+        self.objectKey = objectKey
+        self.linkExpiresAt = linkExpiresAt
+        self.file = file
+    }
+}
+
+/// How one attempt to download an attachment's file ended (Docs/attachments-2026-10-20.md).
+public enum AttachmentOutcome: String, Codable, Sendable, CaseIterable {
+    /// HTTP 200, complete: the bytes are in the account's object store.
+    case stored
+    /// 401 or 403.
+    case denied
+    /// Any other status, an interrupted transfer, or a body over the capture limit.
+    case unavailable
+    /// HTTP 200, complete, but the object store could not take the bytes: they are the record's
+    /// payload instead, and the job stopped.
+    case notStored = "not_stored"
+}
+
+/// One recorded download attempt (an `attachment.download` record).
+public struct AttachmentDownload: Equatable, Sendable {
+    public var objectKey: String
+    public var outcome: AttachmentOutcome
+    public var status: Int?
+    /// Set when stored: the object's name and size.
+    public var sha256: String?
+    public var size: Int64?
+    /// The response's `Content-Type`, as received.
+    public var contentType: String?
+
+    public init(
+        objectKey: String, outcome: AttachmentOutcome, status: Int?, sha256: String? = nil, size: Int64? = nil,
+        contentType: String? = nil
+    ) {
+        self.objectKey = objectKey
+        self.outcome = outcome
+        self.status = status
+        self.sha256 = sha256
+        self.size = size
+        self.contentType = contentType
+    }
+}
+
+/// What the index holds for an attachment's file: a stored object if any attempt stored one for its
+/// object key, otherwise the latest attempt.
+public struct AttachmentFile: Equatable, Sendable {
+    public var download: AttachmentDownload
+    /// Journal sequence of the `attachment.download` record.
+    public var recordSequence: UInt64
+
+    public init(download: AttachmentDownload, recordSequence: UInt64) {
+        self.download = download
+        self.recordSequence = recordSequence
     }
 }
 
@@ -207,6 +270,8 @@ public enum ArchiveEvent: Equatable, Sendable {
     case warning(code: String, detail: String)
     /// A local note beside a recorded vote (a `local.control` record); the latest for a pair wins.
     case voteNote(VoteNote)
+    /// One attempt to download an attachment's file.
+    case attachmentDownload(AttachmentDownload)
 }
 
 /// Decoder output for one record: events plus every key path the decoder did not recognize.

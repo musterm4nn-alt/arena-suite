@@ -158,6 +158,8 @@ struct AccountsView: View {
         let counts = "\(manifest.entriesListed) listed, \(manifest.detailsFetched) archived, \(manifest.detailsUnchanged) unchanged"
             + (manifest.detailsAbsent > 0 ? ", \(manifest.detailsAbsent) no longer on Arena" : "")
             + (manifest.detailsFailed > 0 ? ", \(manifest.detailsFailed) failed" : "")
+            + (manifest.attachmentsStored > 0 ? ", \(manifest.attachmentsStored) attachment file(s) downloaded" : "")
+            + (manifest.attachmentsFailed > 0 ? ", \(manifest.attachmentsFailed) attachment file(s) not downloaded" : "")
         switch manifest.outcome {
         case .completed: return "Last sync complete (observed pagination): " + counts
         case .partial: return "Last sync not complete (\(manifest.reason ?? "unknown")); syncing again continues. " + counts

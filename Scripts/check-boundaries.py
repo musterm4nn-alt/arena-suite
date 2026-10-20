@@ -34,7 +34,10 @@ mcp_forbidden = re.compile(
     # Local vote notes (Docs/vote-notes-2026-10-20.md) are the app's alone: MCP neither reads nor writes them.
     r"[Vv]oteNote|vote_notes|LocalControl|local\.control|appendLocal|"
     # Refresh and sync go to Arena (Docs/sync-refresh-2026-10-20.md): never from MCP.
-    r"ConversationRefresh|RefreshError|HistorySyncing|ArenaHistorySync|conversation_refresh",
+    r"ConversationRefresh|RefreshError|HistorySyncing|ArenaHistorySync|conversation_refresh|"
+    # Attachment files (Docs/attachments-2026-10-20.md): stored and read by the app only; MCP sees
+    # what the index says about them, never the files or the store.
+    r"ObjectStore|attachmentData|\.objects\(for:",
 )
 # The deny-list must keep catching these (self-test on every run).
 for probe in [
@@ -48,6 +51,7 @@ for probe in [
     "try await sync.appendLocal(d, account: a)",
     "ConversationRefreshService(sync: s, archive: a)", "catch RefreshError.notRefreshable",
     "ArenaHistorySync(sessions: s)", "let e: any HistorySyncing", "job_kind == \"conversation_refresh\"",
+    "try archive.attachmentData(account: a, sha256: h)", "ObjectStore(root: u)", "journals.objects(for: a)",
 ]:
     assert mcp_forbidden.search(probe), f"MCP deny-list self-test missed: {probe}"
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:

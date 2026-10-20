@@ -71,3 +71,13 @@ private func cookie(_ name: String, _ value: String, domain: String = "arena.ai"
     let atLimit = Array(many.prefix(CookieCodec.maximumCookies))
     #expect(try CookieCodec.decode(try CookieCodec.encode(atLimit)).count == CookieCodec.maximumCookies)
 }
+
+/// Attachment files (Docs/attachments-2026-10-20.md) go through a session with no cookie jar.
+@Test func aSessionWithoutCookiesHasNoJar() throws {
+    let session = AccountHTTPSession(cookies: false)
+    #expect(throws: TransportError.cookieStorageUnavailable) { _ = try session.exportCookies(domains: ["arena.ai"]) }
+    let data = try CookieCodec.encode([cookie("auth", "secret")])
+    #expect(throws: TransportError.cookieStorageUnavailable) { try session.importCookies(data, domains: ["arena.ai"]) }
+    #expect(session.cookieFingerprint(domains: ["arena.ai"]) == CookieCodec.fingerprint([]))
+    #expect(HTTPCookieStorage.shared.cookies?.contains { $0.value == "secret" } != true)
+}

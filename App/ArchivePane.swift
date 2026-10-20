@@ -402,6 +402,9 @@ private struct TranscriptView: View {
                 .frame(maxWidth: 1080)
                 .frame(maxWidth: .infinity)
                 .textSelection(.enabled)
+                .environment(\.attachmentReader, AttachmentReader(revision: archive.revision) { [archive, account = detail.summary.account] in
+                    await archive.attachmentData(account: account, sha256: $0)
+                })
             }
             // Runs when the transcript first appears too: a search hit that opens a conversation
             // requests the scroll in the same update that delivers the transcript.
@@ -692,9 +695,171 @@ private struct MessageBody: View {
             BlockView(block: block)
         }
         ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-            Label("\(attachment.name ?? "unnamed") \(attachment.contentType.map { "(\($0))" } ?? "")", systemImage: "paperclip")
-                .font(Theme.caption).foregroundStyle(.secondary)
+            AttachmentView(attachment: attachment)
         }
+    }
+}
+
+/// Reads a stored attachment file of the open conversation's account (from the archive, never
+/// from the network).
+struct AttachmentReader {
+    /// The archive's reload count: files are read again after a sync, Refresh or restore.
+    let revision: Int
+    let read: @MainActor (String) async -> Result<Data, AttachmentFileError>
+}
+
+private struct AttachmentReaderKey: EnvironmentKey {
+    static let defaultValue: AttachmentReader? = nil
+}
+
+extension EnvironmentValues {
+    var attachmentReader: AttachmentReader? {
+        get { self[AttachmentReaderKey.self] }
+        set { self[AttachmentReaderKey.self] = newValue }
+    }
+}
+
+/// One attachment (Docs/attachments-2026-10-20.md): a stored image shown inline, another stored
+/// file as a row, each with Save Copy…; otherwise why the archive has no file for it.
+private struct AttachmentView: View {
+    let attachment: ArchivedAttachment
+    @Environment(\.attachmentReader) private var reader
+    @State private var loaded: Result<Data, AttachmentFileError>?
+    @State private var image: NSImage?
+    @State private var saveProblem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: min(image.size.width, 480), maxHeight: min(image.size.height, 360), alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel(attachment.name ?? "Attached image")
+            }
+            HStack(spacing: 8) {
+                Label(attachment.name ?? "unnamed", systemImage: image == nil ? "paperclip" : "photo")
+                    .lineLimit(1)
+                Text(state).foregroundStyle(stateIsProblem ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                if case .success(let data) = loaded {
+                    Button("Save Copy…") { save(data) }.buttonStyle(.arenaPill)
+                }
+            }
+            .font(Theme.caption)
+            .foregroundStyle(.secondary)
+            if let saveProblem { Text(saveProblem).font(Theme.caption).foregroundStyle(.orange) }
+        }
+        .task(id: "\(storedName ?? "") \(reader?.revision ?? -1)") { await load() }
+    }
+
+    /// The object name when the archive holds this attachment's file.
+    private var storedName: String? {
+        guard let download = attachment.file?.download, download.outcome == .stored else { return nil }
+        return download.sha256
+    }
+
+    private var contentType: String? { attachment.file?.download.contentType ?? attachment.contentType }
+
+    private func load() async {
+        loaded = nil
+        image = nil
+        guard let storedName else { return }
+        guard let reader else { return loaded = .failure(.unreadable) }
+        let result = await reader.read(storedName)
+        loaded = result
+        guard case .success(let data) = result else { return }
+        if let preview = await Task.detached(operation: { Self.preview(data) }).value {
+            image = NSImage(cgImage: preview, size: NSSize(width: preview.width, height: preview.height))
+        }
+    }
+
+    /// Types shown inline, decided by the bytes, never by the stated type. SVG, PDF and anything
+    /// else stay files.
+    nonisolated static let rasterTypes: Set<String> = [
+        "public.png", "public.jpeg", "com.compuserve.gif", "org.webmproject.webp", "public.heic", "public.heif",
+        "public.tiff", "com.microsoft.bmp",
+    ]
+
+    /// A raster image scaled to at most 1 600 pixels on its longer side; nil for anything else and
+    /// for an image over 100 megapixels.
+    nonisolated static func preview(_ data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+            let type = CGImageSourceGetType(source) as String?, rasterTypes.contains(type),
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
+            width > 0, height > 0, width <= 100_000_000 / height
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1_600, kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private var stateIsProblem: Bool {
+        if case .failure = loaded { return true }
+        return false
+    }
+
+    private var state: String {
+        let type = contentType.map { " · \($0)" } ?? ""
+        switch loaded {
+        case .success(let data):
+            return ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file) + type
+        case .failure(.missing):
+            return "The file is missing from the archive. Verify Archive lists every missing file; Refresh downloads it again."
+        case .failure(.damaged):
+            return "The file in the archive is damaged (its bytes changed). Refresh downloads it again."
+        case .failure(.unreadable):
+            return "The file could not be read from the archive."
+        case nil: break
+        }
+        if storedName != nil { return "Reading…" }
+        if let download = attachment.file?.download {
+            let status = download.status.map { "HTTP \($0)" }
+            switch download.outcome {
+            case .denied: return "Not downloaded: the file host refused it (\(status ?? "no status")). Refresh tries again."
+            case .unavailable: return "Not downloaded (\(status ?? "no complete response")). Refresh tries again."
+            case .notStored:
+                return "Downloaded, but the file could not be written to the archive (its bytes are kept in the journal). Refresh tries again."
+            case .stored: break
+            }
+        }
+        guard attachment.hasURL else { return "No link was recorded for this file." + type }
+        guard attachment.objectKey != nil else { return "Not downloaded: the link is not one this app downloads from." + type }
+        if let expires = attachment.linkExpiresAt.flatMap({ try? Date($0, strategy: .iso8601) }), expires <= Date() {
+            return "Not downloaded; its link has expired. Refresh gets a new link and downloads it." + type
+        }
+        return "Not downloaded yet. Refresh downloads it." + type
+    }
+
+    private func save(_ data: Data) {
+        saveProblem = nil
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = Self.fileName(attachment.name)
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do { try data.write(to: url, options: .atomic) } catch {
+                saveProblem = "The copy could not be saved (\((error as NSError).domain) \((error as NSError).code))."
+            }
+        }
+    }
+
+    /// The attachment's name as a single file name (it comes from Arena): no path separators,
+    /// control or format characters (such as bidirectional overrides), no leading dot, and at most
+    /// 240 bytes.
+    static func fileName(_ name: String?) -> String {
+        let cleaned = String((name ?? "").map { character -> Character in
+            let hidden = character.unicodeScalars.contains {
+                [.control, .format, .lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory)
+            }
+            return character == "/" || character == ":" || character.isNewline || hidden ? "-" : character
+        })
+        var trimmed = String(cleaned.trimmingCharacters(in: .whitespaces).drop { $0 == "." })
+        while trimmed.utf8.count > 240 { trimmed.removeLast() }
+        return trimmed.isEmpty ? "attachment" : trimmed
     }
 }
 

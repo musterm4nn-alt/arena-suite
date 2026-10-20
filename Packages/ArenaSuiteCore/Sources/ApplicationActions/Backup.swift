@@ -12,20 +12,28 @@ public struct BackupManifest: Codable, Sendable, Equatable {
         /// was never acknowledged (an append still running, or one a crash interrupted). Absent when
         /// the source ended in a complete record.
         public let incompleteTail: JournalLocation?
+        /// Every file in the account's object store (`accounts/<uuid>/objects/sha256/<hex>`), by
+        /// name, which is its SHA-256 (Docs/attachments-2026-10-20.md). nil in `/1` backups.
+        public let objects: [BackupObject]?
 
-        public init(account: String, segments: [CopiedSegment], incompleteTail: JournalLocation? = nil) {
+        public init(
+            account: String, segments: [CopiedSegment], incompleteTail: JournalLocation? = nil, objects: [BackupObject]? = nil
+        ) {
             self.account = account
             self.segments = segments
             self.incompleteTail = incompleteTail
+            self.objects = objects
         }
 
         private enum CodingKeys: String, CodingKey {
-            case account, segments
+            case account, segments, objects
             case incompleteTail = "incomplete_tail"
         }
     }
 
-    public static let currentFormat = "arena-suite-backup/1"
+    /// `/2` adds each account's object store; `/1` backups are still checked and restored.
+    public static let currentFormat = "arena-suite-backup/2"
+    public static let readableFormats: Set<String> = ["arena-suite-backup/1", currentFormat]
     public let format: String
     public let createdAt: String
     public let appVersion: String
@@ -46,12 +54,26 @@ public struct BackupManifest: Codable, Sendable, Equatable {
     }
 }
 
+/// One object-store file in a backup.
+public struct BackupObject: Codable, Sendable, Equatable {
+    public let sha256: String
+    public let size: Int
+
+    public init(sha256: String, size: Int) {
+        self.sha256 = sha256
+        self.size = size
+    }
+}
+
 public enum BackupError: Error, Equatable, Sendable {
     case notABackup
     case unsupportedFormat(String)
     /// A file is missing, extra, or differs from the manifest.
     case fileMismatch(String)
     case journalDamaged(account: String, issue: String)
+    /// A file in the account's object store doesn't match its name, or a record names one that
+    /// isn't there. The backup is refused, never made without it.
+    case objectDamaged(account: String, issue: String)
     case replayMismatch
     /// Restore only goes into an archive with no accounts and no journals.
     case targetNotEmpty
@@ -80,17 +102,24 @@ public struct BackupCheck: Sendable, Equatable {
     public let accounts: Int
     public let records: Int
     public let replayDigest: String
+    /// Object-store files, each re-hashed against its name.
+    public var objects = 0
+    /// False when the backup was made with another decoder version: an index replayed now differs
+    /// by design, so its digest can't be compared. The files' hashes and the journal check still
+    /// prove the backup holds the bytes it was made from.
+    public var digestCompared = true
 }
 
 /// Backups (plan v3 §13, Phase 7): a folder holding a copy of every account journal (sealed segments
-/// byte for byte with their seal manifests, the active segment up to its last complete record), the
-/// account registry, and a manifest. A damaged journal is refused, never copied in part; only an
-/// incomplete final record is left out, and the manifest names it (`incomplete_tail`). No Keychain items, no index, no diagnostics: after restoring on
-/// another Mac each account signs in again, and the index is rebuilt from the journals.
+/// byte for byte with their seal manifests, the active segment up to its last complete record) and
+/// object store, the account registry, and a manifest. A damaged journal or object is refused, never
+/// copied in part; only an incomplete final record is left out, and the manifest names it
+/// (`incomplete_tail`). No Keychain items, no index, no diagnostics: after restoring on another Mac
+/// each account signs in again, and the index is rebuilt from the journals.
 ///
 /// "Equal archive" means: identical journal bytes through the last complete record (per-segment
-/// SHA-256) and an index replayed from the restored journals with the same content digest as one
-/// replayed at backup time.
+/// SHA-256), identical object files, and an index replayed from the restored journals with the same
+/// content digest as one replayed at backup time (when the decoder is the same version).
 public struct BackupService: Sendable {
     let archiveRoot: URL
     private let decoder: any ArchiveDecoding
@@ -136,14 +165,20 @@ public struct BackupService: Sendable {
             guard !Task.isCancelled else { throw BackupError.cancelled }
             let target = staging.appendingPathComponent("accounts/\(account.rawValue.uuidString)/journal", isDirectory: true)
             try PrivateFile.prepareDirectory(target)
+            let copy: JournalCopy.Result
             do {
-                let copy = try JournalCopy.copy(from: source.root(for: account), to: target)
-                journals.append(
-                    .init(account: account.rawValue.uuidString, segments: copy.segments, incompleteTail: copy.incompleteTail))
+                copy = try JournalCopy.copy(from: source.root(for: account), to: target)
             } catch {
                 throw BackupError.journalDamaged(
                     account: account.rawValue.uuidString, issue: VerificationService.describe(error))
             }
+            let objects = try Self.copyObjects(
+                account: account.rawValue.uuidString, from: source.objects(for: account), named: target,
+                to: staging.appendingPathComponent("accounts/\(account.rawValue.uuidString)/objects", isDirectory: true))
+            journals.append(
+                .init(
+                    account: account.rawValue.uuidString, segments: copy.segments, incompleteTail: copy.incompleteTail,
+                    objects: objects))
         }
         guard try PrivateFile.read(registry) == registryBefore, source.accountsOnDisk() == accountsBefore else {
             throw BackupError.archiveChanged
@@ -183,7 +218,7 @@ public struct BackupService: Sendable {
     /// journal, and replays the journals to the manifest's digest. Read-only.
     public func check(_ backup: URL) async throws -> BackupCheck {
         let manifest = try Self.loadManifest(backup)
-        guard manifest.format == BackupManifest.currentFormat else { throw BackupError.unsupportedFormat(manifest.format) }
+        guard BackupManifest.readableFormats.contains(manifest.format) else { throw BackupError.unsupportedFormat(manifest.format) }
         var expected: [String: String] = [:]
         for journal in manifest.journals {
             guard let uuid = UUID(uuidString: journal.account), uuid.uuidString == journal.account else {
@@ -193,6 +228,14 @@ public struct BackupService: Sendable {
                 let name = String(format: "%06d", segment.segment)
                 expected["accounts/\(journal.account)/journal/segments/\(name).asj"] = segment.sha256
                 if segment.sealed { expected["accounts/\(journal.account)/journal/segments/\(name).seal.json"] = "" }
+            }
+            // An object's name is its SHA-256, so the hash check below also checks its bytes.
+            if journal.objects != nil, manifest.format != BackupManifest.currentFormat {
+                throw BackupError.fileMismatch("objects in a \(manifest.format) backup")
+            }
+            for object in journal.objects ?? [] {
+                guard ObjectStore.isObjectName(object.sha256) else { throw BackupError.fileMismatch("object name in \(journal.account)") }
+                expected["accounts/\(journal.account)/objects/sha256/\(object.sha256)"] = object.sha256
             }
         }
         if let registry = manifest.registrySHA256 { expected["accounts/registry.json"] = registry }
@@ -207,6 +250,7 @@ public struct BackupService: Sendable {
             }
         }
         var records = 0
+        var objects = 0
         for journal in manifest.journals {
             let root = backup.appendingPathComponent("accounts/\(journal.account)/journal", isDirectory: true)
             let check = VerificationService.checkJournal(
@@ -215,11 +259,37 @@ public struct BackupService: Sendable {
             guard UInt64(check.records) == journal.segments.reduce(0, { $0 + $1.recordCount }) else {
                 throw BackupError.fileMismatch("record count of \(journal.account)")
             }
+            // Each listed file has the size the manifest states (restore checks it again).
+            for object in journal.objects ?? [] {
+                let path = "accounts/\(journal.account)/objects/sha256/\(object.sha256)"
+                let size = (try? FileManager.default.attributesOfItem(atPath: backup.appendingPathComponent(path).path))?[.size] as? Int
+                guard size == object.size else { throw BackupError.fileMismatch("size of \(path)") }
+            }
+            // Every file a record names is in the backup, with the size the record states, and the
+            // backup holds no file that no record names (a backup copies only named files).
+            let store = ObjectStore(root: backup.appendingPathComponent("accounts/\(journal.account)/objects", isDirectory: true))
+            let references: [ObjectReference]
+            do { references = try ObjectStore.references(inJournalAt: root) } catch {
+                throw BackupError.journalDamaged(account: journal.account, issue: VerificationService.describe(error))
+            }
+            if let issue = VerificationService.checkObjects(references, objects: store).issues.first {
+                throw BackupError.objectDamaged(account: journal.account, issue: issue)
+            }
+            let named = Set(references.compactMap(\.sha256))
+            if let unnamed = (journal.objects ?? []).map(\.sha256).filter({ !named.contains($0) }).sorted().first {
+                throw BackupError.fileMismatch("unnamed accounts/\(journal.account)/objects/sha256/\(unnamed)")
+            }
             records += check.records
+            objects += journal.objects?.count ?? 0
         }
         let replay = try await Self.replayDigest(root: backup, journals: manifest.journals, decoder: decoder)
-        guard replay == manifest.replayDigest else { throw BackupError.replayMismatch }
-        return BackupCheck(manifest: manifest, accounts: manifest.journals.count, records: records, replayDigest: replay)
+        // Another decoder projects the same journals differently by design (`digestCompared`).
+        let comparable = manifest.decoderVersion == decoder.version
+        guard !comparable || replay == manifest.replayDigest else { throw BackupError.replayMismatch }
+        var result = BackupCheck(manifest: manifest, accounts: manifest.journals.count, records: records, replayDigest: replay)
+        result.objects = objects
+        result.digestCompared = comparable
+        return result
     }
 
     // MARK: Restore
@@ -253,6 +323,14 @@ public struct BackupService: Sendable {
                 throw BackupError.journalDamaged(account: journal.account, issue: VerificationService.describe(error))
             }
             guard copied == journal.segments else { throw BackupError.fileMismatch("restored journal \(journal.account)") }
+            // Stored again under their hash, so a file changed since the check is refused.
+            let objects = ObjectStore(root: stagedAccounts.appendingPathComponent("\(journal.account)/objects", isDirectory: true))
+            for object in journal.objects ?? [] {
+                let path = "accounts/\(journal.account)/objects/sha256/\(object.sha256)"
+                guard let data = try? Data(contentsOf: backup.appendingPathComponent(path)),
+                    let stored = try? objects.put(data), stored == ObjectStore.Stored(sha256: object.sha256, size: object.size)
+                else { throw BackupError.fileMismatch("changed \(path)") }
+            }
         }
         if let digest = check.manifest.registrySHA256 {
             // Re-read and re-hash: the backup folder may have changed since it was checked.
@@ -345,6 +423,46 @@ public struct BackupService: Sendable {
 
     // MARK: Helpers
 
+    /// Copies every file the copied journal at `journal` names from `source` into `destination`,
+    /// each read back against its name, and refuses the backup if one is missing, damaged or not the
+    /// size its record states. Files no record names (a store interrupted before its record) are
+    /// left out: nothing refers to them.
+    static func copyObjects(account: String, from source: ObjectStore, named journal: URL, to destination: URL) throws
+        -> [BackupObject]
+    {
+        let references: [ObjectReference]
+        do { references = try ObjectStore.references(inJournalAt: journal) } catch {
+            throw BackupError.journalDamaged(account: account, issue: VerificationService.describe(error))
+        }
+        let target = ObjectStore(root: destination)
+        var copied: [String: Int] = [:]
+        for reference in references {
+            guard !Task.isCancelled else { throw BackupError.cancelled }
+            guard let sha256 = reference.sha256, let size = reference.size else {
+                throw BackupError.objectDamaged(
+                    account: account, issue: "record \(reference.sequence) names a file without a valid name or size")
+            }
+            if let known = copied[sha256] {
+                guard known == size else { throw Self.differs(account, reference) }
+                continue
+            }
+            let data: Data
+            do { data = try source.read(sha256) } catch ObjectStoreError.missing {
+                throw BackupError.objectDamaged(account: account, issue: "record \(reference.sequence) names a file that is missing")
+            } catch {
+                throw Self.differs(account, reference)
+            }
+            guard data.count == size else { throw Self.differs(account, reference) }
+            do { _ = try target.put(data) } catch { throw BackupError.io("copy a file (\(VerificationService.describe(error)))") }
+            copied[sha256] = size
+        }
+        return copied.keys.sorted().map { BackupObject(sha256: $0, size: copied[$0]!) }
+    }
+
+    private static func differs(_ account: String, _ reference: ObjectReference) -> BackupError {
+        .objectDamaged(account: account, issue: "record \(reference.sequence) names a file whose bytes differ")
+    }
+
     static func replayDigest(root: URL, journals: [BackupManifest.Journal], decoder: any ArchiveDecoding) async throws
         -> String
     {
@@ -384,6 +502,8 @@ public struct BackupService: Sendable {
         var paths: [String] = []
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+            // A link to a folder is refused, not skipped as a folder.
+            if values.isSymbolicLink == true { throw BackupError.fileMismatch("not a regular file: \(url.lastPathComponent)") }
             if values.isDirectory == true { continue }
             if url.lastPathComponent == ".DS_Store" { continue }  // Finder may add these when the folder is viewed
             guard values.isRegularFile == true, values.isSymbolicLink != true else {

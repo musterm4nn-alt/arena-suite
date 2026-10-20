@@ -64,14 +64,26 @@ public final class AccountHTTPSession: HTTPTransporting {
     private let session: URLSession
     private let delegate: CaptureDelegate
 
-    public init(maximumBodyBytes: Int = 32 << 20, requestTimeout: TimeInterval = 30, resourceTimeout: TimeInterval = 120) {
+    /// `cookies: false` makes a session with no cookie jar that never sends or accepts a cookie (for
+    /// attachment files, Docs/attachments-2026-10-20.md); its cookie methods then throw
+    /// `cookieStorageUnavailable`.
+    public init(
+        maximumBodyBytes: Int = 32 << 20, requestTimeout: TimeInterval = 30, resourceTimeout: TimeInterval = 120,
+        cookies: Bool = true
+    ) {
         precondition(maximumBodyBytes > 0)
         delegate = CaptureDelegate(maximumBodyBytes: maximumBodyBytes)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.urlCredentialStorage = nil
-        configuration.httpShouldSetCookies = true
-        configuration.httpCookieAcceptPolicy = .onlyFromMainDocumentDomain
+        if cookies {
+            configuration.httpShouldSetCookies = true
+            configuration.httpCookieAcceptPolicy = .onlyFromMainDocumentDomain
+        } else {
+            configuration.httpCookieStorage = nil
+            configuration.httpShouldSetCookies = false
+            configuration.httpCookieAcceptPolicy = .never
+        }
         configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = resourceTimeout
         let queue = OperationQueue()
@@ -203,7 +215,8 @@ private final class CaptureDelegate: NSObject, URLSessionDataDelegate, @unchecke
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
-        // Observed Arena routes do not redirect; a redirect is surfaced as the 3xx response itself.
+        // Observed Arena routes and attachment links do not redirect; a redirect is surfaced as the
+        // 3xx response itself.
         completionHandler(nil)
     }
 }

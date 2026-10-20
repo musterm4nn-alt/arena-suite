@@ -26,13 +26,16 @@ extension ArenaArchiveDecoder {
 
 public struct ArenaArchiveDecoder: ArchiveDecoding {
     /// /2: structured payloads (tool args and results, sources, reasoning, opaque blocks) mask
-    /// `metadata` and drop `providerOptions` at any depth. A version change rebuilds the index.
-    public let version = "arena-decoder/2"
+    /// `metadata` and drop `providerOptions` at any depth. /3: attachments carry their object key
+    /// and link lifetime, and `attachment.download` records are projected
+    /// (Docs/attachments-2026-10-20.md). A version change rebuilds the index.
+    public let version = "arena-decoder/3"
 
     public init() {}
 
     public func decode(_ record: JournalRecord, account: AccountID) -> DecodedRecord {
         let envelope = record.envelope
+        if envelope.kind == SyncJob.downloadKind { return Self.decodeDownload(envelope.metadata) }
         guard envelope.kind == "exchange" else { return DecodedRecord() }
         let role = envelope.metadata["role"]?.stringValue
         let status = envelope.metadata["status"]?.intValue
@@ -318,12 +321,37 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
             }
             f.checkKeys(object, known: attachmentKeys, path: path)
             let url = f.string(object, "url", path)
+            let link = url.flatMap(AttachmentLink.parse)
             attachments.append(
                 ArchivedAttachment(
                     name: f.string(object, "name", path), contentType: f.string(object, "contentType", path),
-                    hasURL: !(url ?? "").isEmpty))
+                    hasURL: !(url ?? "").isEmpty, objectKey: link?.objectKey,
+                    linkExpiresAt: link?.expiresAt.map(AttachmentLink.timestamp)))
         }
         return attachments
+    }
+
+    // MARK: Attachment downloads
+
+    /// An `attachment.download` record (written by this adapter's sync job). A stored file must name
+    /// its object; anything unexpected is a warning, never a guess.
+    private static func decodeDownload(_ metadata: [String: JournalValue]) -> DecodedRecord {
+        guard let key = metadata["object_key"]?.stringValue,
+            let outcome = metadata["outcome"]?.stringValue.flatMap(AttachmentOutcome.init(rawValue:))
+        else { return DecodedRecord(events: [.warning(code: "download_unrecognized", detail: "attachment.download")]) }
+        let status = metadata["status"]?.intValue
+        var download = AttachmentDownload(objectKey: key, outcome: outcome, status: status)
+        if case .object(let headers) = metadata["response_headers"] {
+            download.contentType = headers.first { $0.key.caseInsensitiveCompare("Content-Type") == .orderedSame }?.value.stringValue
+        }
+        if outcome == .stored {
+            guard let digest = metadata[ObjectStore.digestKey]?.stringValue, ObjectStore.isObjectName(digest),
+                let size = metadata[ObjectStore.sizeKey]?.intValue, size >= 0
+            else { return DecodedRecord(events: [.warning(code: "download_unrecognized", detail: "stored file not named")]) }
+            download.sha256 = digest
+            download.size = Int64(size)
+        }
+        return DecodedRecord(events: [.attachmentDownload(download)])
     }
 
     // MARK: Findings

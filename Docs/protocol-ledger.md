@@ -98,6 +98,15 @@ and no vote. Across the live index, the latest snapshots of 3 conversations hold
 entry, including `updatedAt`, does not change when responses finish or a vote is cast (server-side caching is not
 excluded). So a snapshot taken before either is never refreshed by the incremental sync.
 
+N-021 (2026-10-20, `design_decision` + `assumption`; no new live observation): attachment downloads
+(`Docs/attachments-2026-10-20.md`). Downloads accept only `https` links on a host ending in
+`.r2.cloudflarestorage.com` with no user, password or port (the only host N-019 observed); other links are kept
+and never requested. **`assumption`:** a link stops working `X-Amz-Expires` seconds after `X-Amz-Date` (the S3
+presigned-URL rule; what R2 answers to an expired link is not observed), so such a link is not requested.
+**`assumption`:** an object key (scheme, host and path, without the query) names the same bytes every time, so a key
+already stored with its file present is not requested again (N-019 saw no path in two snapshots). 401/403 and
+429/503 from the file host stop downloads for the rest of the job (plan §2 applied to the file host). Q18 stays open.
+
 N-013: [phase4-index-2026-09-24.md](phase4-index-2026-09-24.md) records that every field in the 51 archived
 detail and 7 list responses is recognized by `arena-decoder/1` (0 unknown paths, 0 warnings), content-block kinds
 `text`/`reasoning`/`tool-call`/`tool-result`, lanes `a`/`b`, and that `JSONSerialization` keeps the first duplicate key.

@@ -71,7 +71,7 @@ public struct DiagnosticsService: Sendable {
             verify["journals"] = verification.journals.map { check -> [String: Any] in
                 [
                     "account": ordinal[check.account] ?? "account-?", "segments": check.segments,
-                    "records": check.records, "issues": check.issues,
+                    "records": check.records, "objects": check.objects, "issues": check.issues,
                 ]
             }
             if let index = verification.index { verify["index_matches_journal"] = index.matches }

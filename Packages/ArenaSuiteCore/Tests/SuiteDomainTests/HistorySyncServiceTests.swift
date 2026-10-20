@@ -17,7 +17,7 @@ private actor SlowEngine: HistorySyncing {
 
     nonisolated func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
+        objects: ObjectStore, options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
     ) async -> SyncManifest {
         await record(account.accountID, principal)
         var manifest = SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: await result.0)
@@ -29,7 +29,7 @@ private actor SlowEngine: HistorySyncing {
 
     nonisolated func refresh(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        conversationID: String, options: SyncOptions
+        objects: ObjectStore, conversationID: String, options: SyncOptions
     ) async -> SyncManifest {
         await noteRefresh(conversationID)
         await record(account.accountID, principal)

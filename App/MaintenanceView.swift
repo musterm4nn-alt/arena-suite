@@ -94,9 +94,9 @@ final class MaintenanceModel {
             let check = try await services.backups.check(url)
             revealURL = url
             return ([
-                "Backup written and checked: \(check.accounts) journal(s), \(check.records) record(s).",
+                "Backup written and checked: \(Self.contents(check)).",
                 url.lastPathComponent,
-                "It holds your journals and account list, not passwords or sessions.",
+                "It holds your journals, attachment files and account list, not passwords or sessions.",
             ] + Self.tailNotes(check), false)
         }
     }
@@ -127,9 +127,9 @@ final class MaintenanceModel {
                     ], true)
                 }
                 return ([
-                    "Encrypted backup written and checked: \(check.accounts) journal(s), \(check.records) record(s).",
+                    "Encrypted backup written and checked: \(Self.contents(check)).",
                     url.lastPathComponent,
-                    "It holds your journals and account list, not passwords or sessions. Without the passphrase it cannot be opened.",
+                    "It holds your journals, attachment files and account list, not passwords or sessions. Without the passphrase it cannot be opened.",
                 ] + Self.tailNotes(check), false)
             }
         case .check(let file):
@@ -174,13 +174,25 @@ final class MaintenanceModel {
         await accounts.reloadAccounts()
         archive.reload()
         return ([
-            "Restored \(check.accounts) journal(s), \(check.records) record(s); the index was rebuilt from them.",
+            "Restored \(Self.contents(check)); the index was rebuilt from them.",
             "Accounts whose sessions are not in this Mac's Keychain need “Sign In Again”.",
-        ], false)
+        ] + Self.digestNote(check), false)
     }
 
     private static func intact(_ check: BackupCheck) -> ([String], Bool) {
-        (["Backup is intact: \(check.accounts) journal(s), \(check.records) record(s), created \(check.manifest.createdAt)."], false)
+        (["Backup is intact: \(contents(check)), created \(check.manifest.createdAt)."] + digestNote(check), false)
+    }
+
+    private static func contents(_ check: BackupCheck) -> String {
+        "\(check.accounts) journal(s), \(check.records) record(s), \(check.objects) attachment file(s)"
+    }
+
+    /// A backup made by another app version replays with another decoder, so its recorded index
+    /// digest is not comparable; the journals and files were still checked.
+    private static func digestNote(_ check: BackupCheck) -> [String] {
+        check.digestCompared ? [] : [
+            "It was made by another version (\(check.manifest.decoderVersion)), so its recorded index digest was not compared. Its journals and files were checked."
+        ]
     }
 
     private static func tailNotes(_ check: BackupCheck) -> [String] {
@@ -321,6 +333,8 @@ final class MaintenanceModel {
         case .unsupportedFormat(let format): "This backup format (\(format)) is not supported by this version."
         case .fileMismatch(let what): "The backup does not match its manifest (\(what)). Do not rely on it."
         case .journalDamaged(_, let issue): "A journal could not be copied or verified (\(issue))."
+        case .objectDamaged(_, let issue):
+            "An attachment file is missing or its bytes changed (\(issue)). Nothing was written or changed. In this archive, Verify Archive lists every such file and Refresh downloads a conversation's files again; a backup with this problem should not be relied on."
         case .replayMismatch: "The backup's journals do not replay to the recorded index digest."
         case .targetNotEmpty: "Restore only works into an empty archive (no accounts and no kept journals)."
         case .archiveChanged: "Accounts changed while the backup ran. Nothing was written; try again."

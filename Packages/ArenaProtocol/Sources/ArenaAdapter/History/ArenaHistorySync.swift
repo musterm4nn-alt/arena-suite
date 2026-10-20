@@ -14,33 +14,51 @@ public struct ArenaHistorySync: HistorySyncing {
     public static let refreshableKinds: Set<String> = ["evaluation"]
 
     private let sessions: ArenaAccountSessions
+    private let downloads: any HTTPTransporting
     private let sleep: Sleeper
+    private let now: @Sendable () -> Date
 
-    public init(sessions: ArenaAccountSessions, sleep: @escaping Sleeper = { try await Task.sleep(for: $0) }) {
+    /// `downloads` fetches attachment files (Docs/attachments-2026-10-20.md): a transport without
+    /// cookies or credentials, never an account's session. `now` decides whether a link's signed
+    /// lifetime has passed.
+    public init(
+        sessions: ArenaAccountSessions, downloads: any HTTPTransporting = AccountHTTPSession(cookies: false),
+        sleep: @escaping Sleeper = { try await Task.sleep(for: $0) }, now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.sessions = sessions
+        self.downloads = downloads
         self.sleep = sleep
+        self.now = now
     }
 
     public func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
+        objects: ObjectStore, options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
     ) async -> SyncManifest {
         let job = SyncJob(
             account: account.accountID, principal: principal, sessions: sessions, journal: journal,
-            journalRoot: journalRoot, options: options, sleep: sleep, progress: progress)
+            journalRoot: journalRoot, files: FileDownloads(objects: objects, transport: downloads, now: now),
+            options: options, sleep: sleep, progress: progress)
         return await job.run()
     }
 
     public func refresh(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
-        conversationID: String, options: SyncOptions
+        objects: ObjectStore, conversationID: String, options: SyncOptions
     ) async -> SyncManifest {
         let job = SyncJob(
             account: account.accountID, principal: principal, sessions: sessions, journal: journal,
-            journalRoot: journalRoot, options: options, sleep: sleep, progress: { _ in },
-            mode: .refresh(conversationID))
+            journalRoot: journalRoot, files: FileDownloads(objects: objects, transport: downloads, now: now),
+            options: options, sleep: sleep, progress: { _ in }, mode: .refresh(conversationID))
         return await job.run()
     }
+}
+
+/// Where a job's attachment files come from and go to.
+struct FileDownloads {
+    let objects: ObjectStore
+    let transport: any HTTPTransporting
+    let now: @Sendable () -> Date
 }
 
 /// Journal-derived state: what has already been archived for this account.
@@ -59,6 +77,8 @@ struct ArchivedState {
     var unfinished: [String: UnfinishedRun] = [:]
     /// Refresh jobs that never recorded `job.finished`; closed as `interrupted`, never resumed.
     var abandonedRefreshes: [UUID] = []
+    /// Object key → the file a recorded download stored for it (Docs/attachments-2026-10-20.md).
+    var storedFiles: [String: ObjectStore.Stored] = [:]
 
     struct UnfinishedRun: Equatable {
         let updatedAt: String
@@ -131,6 +151,12 @@ struct ArchivedState {
                 }
                 // Absent now: fetching it again for being unfinished would only repeat the 404.
                 state.unfinished[id] = nil
+            case SyncJob.downloadKind where envelope.metadata["outcome"] == .string(AttachmentOutcome.stored.rawValue):
+                guard case .string(let key) = envelope.metadata["object_key"],
+                    case .string(let digest) = envelope.metadata[ObjectStore.digestKey],
+                    case .integer(let size) = envelope.metadata[ObjectStore.sizeKey], size >= 0
+                else { return }
+                state.storedFiles[key] = ObjectStore.Stored(sha256: digest, size: Int(size))
             case "exchange" where role == "detail":
                 guard case .string(let id) = envelope.metadata["entry_id"],
                     envelope.metadata["status"] == .integer(200),
@@ -210,6 +236,8 @@ final class SyncJob {
     }
 
     static let refreshKind = "conversation_refresh"
+    /// One attachment file request and its response (Docs/attachments-2026-10-20.md).
+    static let downloadKind = "attachment.download"
 
     private let mode: Mode
     private var jobKind: String { mode == .history ? "history_sync" : Self.refreshKind }
@@ -218,6 +246,7 @@ final class SyncJob {
     private let sessions: ArenaAccountSessions
     private let journal: JournalWriter
     private let journalRoot: URL
+    private let files: FileDownloads
     private let options: SyncOptions
     private let sleep: ArenaHistorySync.Sleeper
     private let report: @Sendable (SyncProgress) -> Void
@@ -230,11 +259,19 @@ final class SyncJob {
     private var listingGaps: [String] = []
     /// What this job listed (entry ID → `updatedAt`), for `unfinishedLeft`.
     private var listedByJob: [String: String?] = [:]
+    /// Sequence of the record `record` appended last.
+    private var lastSequence: UInt64?
+    /// Object key → stored file, from the journal and from this job.
+    private var storedFiles: [String: ObjectStore.Stored] = [:]
+    private var objectsOpened = false
+    /// Why downloads stopped for the rest of this job (403, 429, …), and what was left unrequested.
+    private var downloadsStopped: String?
+    private var downloadsLeft = 0
     private lazy var recorder = ExchangeRecorder(journal: journal, account: account, jobID: jobID)
 
     init(
         account: AccountID, principal: PrincipalIdentity, sessions: ArenaAccountSessions, journal: JournalWriter,
-        journalRoot: URL, options: SyncOptions, sleep: @escaping ArenaHistorySync.Sleeper,
+        journalRoot: URL, files: FileDownloads, options: SyncOptions, sleep: @escaping ArenaHistorySync.Sleeper,
         progress: @escaping @Sendable (SyncProgress) -> Void, mode: Mode = .history
     ) {
         self.mode = mode
@@ -243,6 +280,7 @@ final class SyncJob {
         self.sessions = sessions
         self.journal = journal
         self.journalRoot = journalRoot
+        self.files = files
         self.options = options
         self.sleep = sleep
         self.report = progress
@@ -259,6 +297,7 @@ final class SyncJob {
         do { state = try ArchivedState.scan(journalRoot) } catch {
             return finishWithoutJournal(.storageFailed, "journal could not be read")
         }
+        storedFiles = state.storedFiles
         // Only a conversation listed as `evaluation` has an observed detail route; nothing is sent
         // or written for anything else.
         if case .refresh(let id) = mode, state.types[id].map(ArenaHistorySync.refreshableKinds.contains) != true {
@@ -297,12 +336,14 @@ final class SyncJob {
             case .refresh(let id):
                 try await refreshDetail(id, state: state)
             }
+            noteDownloadsLeft()
             var reasons: [String] = []
             if manifest.detailsFailed > 0 { reasons.append("\(manifest.detailsFailed) detail request(s) failed; resumable") }
             if !listingGaps.isEmpty { reasons.append("listing not proven complete (\(listingGaps.joined(separator: "; ")))") }
             manifest.outcome = reasons.isEmpty ? .completed : .partial
             manifest.reason = reasons.isEmpty ? nil : reasons.joined(separator: "; ")
         } catch Stop.outcome(let outcome, let reason) {
+            noteDownloadsLeft()
             manifest.outcome = outcome
             manifest.reason = reason
             // The account's state follows: a rejected session needs a new sign-in, a refusal stops
@@ -313,6 +354,7 @@ final class SyncJob {
             default: break
             }
         } catch {
+            noteDownloadsLeft()
             manifest.outcome = .storageFailed
             manifest.reason = "journal could not be written"
         }
@@ -513,13 +555,15 @@ final class SyncJob {
         return try await fetchDetail(request, id: id, extra: extra)
     }
 
-    /// True when a valid detail arrived (counted in `detailsFetched`).
+    /// True when a valid detail arrived (counted in `detailsFetched`). Its attachments' files are
+    /// downloaded before anything else is requested: their links are fresh only now (N-019).
     private func fetchDetail(_ request: URLRequest, id: String, extra: [String: JournalValue]) async throws -> Bool {
         let exchange = try await fetch(request, role: "detail", route: HistoryRoutes.detailTemplate, extra: extra, allowNotFound: true)
         if exchange.status == 404 {
             manifest.detailsAbsent += 1  // plan §9.5: an observation of absence; local evidence kept
-        } else if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: id) {
+        } else if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: id), let detail = lastSequence {
             manifest.detailsFetched += 1
+            try await downloadAttachments(exchange.body, conversation: id, detail: detail)
             return true
         } else if exchange.status == 200 && Self.looksLikeChallenge(exchange) {
             throw Stop.outcome(.blocked, "detail response not recognized")
@@ -528,6 +572,108 @@ final class SyncJob {
             manifest.warnings.append("detail HTTP \(exchange.status.map(String.init) ?? "none") or unrecognized body")
         }
         return false
+    }
+
+    // MARK: Attachment files (Docs/attachments-2026-10-20.md)
+
+    /// One request per attachment of this detail, in order, under the job's spacing. A stored body
+    /// goes to the object store, then a record names it; any other response is recorded with its
+    /// body. Never changes the job's outcome; storage failures stop the job (after recording the
+    /// body in the journal, if it still takes it).
+    private func downloadAttachments(_ body: Data, conversation: String, detail: UInt64) async throws {
+        for attachment in AttachmentLink.located(in: body) {
+            guard let link = attachment.link, !link.isEmpty else { continue }  // no link: nothing to fetch
+            guard let parsed = AttachmentLink.parse(link) else {
+                manifest.attachmentsNotRecognized += 1
+                continue
+            }
+            if let stored = storedFiles[parsed.objectKey], files.objects.state(stored.sha256, size: stored.size) == .present {
+                manifest.attachmentsAlreadyStored += 1
+                continue
+            }
+            if let expires = parsed.expiresAt, expires <= files.now() {
+                manifest.attachmentsExpired += 1
+                continue
+            }
+            guard downloadsStopped == nil else {
+                downloadsLeft += 1
+                continue
+            }
+            try await download(parsed, attachment: attachment, conversation: conversation, detail: detail)
+        }
+    }
+
+    private func download(
+        _ link: AttachmentLink.Parsed, attachment: AttachmentLink.Located, conversation: String, detail: UInt64
+    ) async throws {
+        if requestsSent > 0 {
+            do { try await sleep(options.requestSpacing) } catch { throw Stop.outcome(.cancelled, "cancelled") }
+        }
+        try checkContinue()
+        // The spacing may have outlived the link.
+        if let expires = link.expiresAt, expires <= files.now() {
+            manifest.attachmentsExpired += 1
+            return
+        }
+        var request = URLRequest(url: link.url)
+        request.httpMethod = "GET"
+        requestsSent += 1
+        let exchange: HTTPExchange
+        do { exchange = try await files.transport.perform(request) } catch {
+            if Task.isCancelled { throw Stop.outcome(.cancelled, "cancelled") }
+            manifest.attachmentsFailed += 1
+            manifest.warnings.append("attachment request failed before a response")
+            return
+        }
+        let outcome: AttachmentOutcome
+        var stored: ObjectStore.Stored?
+        switch (exchange.status ?? 0, exchange.transferEnd) {
+        case (200, .complete):
+            do {
+                if !objectsOpened {
+                    try files.objects.open()
+                    objectsOpened = true
+                }
+                stored = try files.objects.put(exchange.body)
+                outcome = .stored
+            } catch {
+                outcome = .notStored  // the body goes into the record instead; the job stops below
+            }
+        case (401, _), (403, _):
+            outcome = .denied
+            downloadsStopped = "HTTP \(exchange.status ?? 0)"
+        case (429, _), (503, _):
+            outcome = .unavailable
+            downloadsStopped = "HTTP \(exchange.status ?? 0)"
+        default:
+            outcome = .unavailable
+        }
+        var extra: [String: JournalValue] = [
+            "entry_id": .string(conversation), "detail_sequence": .string(String(detail)),
+            "message_id": .string(attachment.messageID), "attachment_ordinal": .integer(Int64(attachment.ordinal)),
+            "object_key": .string(link.objectKey), "outcome": .string(outcome.rawValue),
+        ]
+        if let stored {
+            extra[ObjectStore.digestKey] = .string(stored.sha256)
+            extra[ObjectStore.sizeKey] = .integer(Int64(stored.size))
+        }
+        try recorder.recordDownload(exchange, request: request, stored: stored != nil, extra: extra)
+        if let stored {
+            storedFiles[link.objectKey] = stored
+            manifest.attachmentsStored += 1
+        } else {
+            manifest.attachmentsFailed += 1
+            if outcome == .notStored { throw Stop.outcome(.storageFailed, "attachment file could not be stored") }
+            if exchange.transferEnd != .complete, Task.isCancelled { throw Stop.outcome(.cancelled, "cancelled") }
+        }
+    }
+
+    /// Names the attachments left unrequested after downloads stopped.
+    private func noteDownloadsLeft() {
+        guard let stopped = downloadsStopped else { return }
+        var warning = "attachment downloads stopped after \(stopped)"
+        if downloadsLeft > 0 { warning += "; \(downloadsLeft) attachment(s) not requested" }
+        if !manifest.warnings.contains(warning) { manifest.warnings.append(warning) }
     }
 
     // MARK: Requests
@@ -594,7 +740,7 @@ final class SyncJob {
     private func record(
         _ exchange: HTTPExchange, request: URLRequest, role: String, route: String, extra: [String: JournalValue]
     ) throws {
-        try recorder.record(exchange, request: request, role: role, route: route, extra: extra)
+        lastSequence = try recorder.record(exchange, request: request, role: role, route: route, extra: extra)
     }
 
     private func append(_ draft: JournalDraft) throws {
@@ -639,34 +785,74 @@ struct ExchangeRecorder: Sendable {
     let account: AccountID
     let jobID: UUID
 
+    /// The appended record's sequence.
+    @discardableResult
     func record(
         _ exchange: HTTPExchange, request: URLRequest, role: String, route: String, extra: [String: JournalValue]
-    ) throws {
-        var headers: [String: JournalValue] = [:]
-        for (name, value) in exchange.headers {
-            // Session material is never archived (plan v3 §5 invariant 7).
-            headers[name] = name.caseInsensitiveCompare("Set-Cookie") == .orderedSame ? .string("[omitted]") : .string(value)
-        }
-        var metadata = extra
+    ) throws -> UInt64 {
+        var metadata = Self.metadata(exchange, request: request, extra: extra)
         metadata["role"] = .string(role)
-        metadata["method"] = .string(request.httpMethod ?? "GET")
         metadata["route"] = .string(route)
         metadata["path"] = .string(request.url?.path ?? "")
         metadata["query"] = request.url?.query.map(JournalValue.string) ?? .null
+        return try append(
+            kind: "exchange", exchange, payload: exchange.body, representation: "foundation_decoded_entity",
+            transformations: ["credential_omitted"], metadata: metadata)
+    }
+
+    /// An attachment file request (`attachment.download`). A stored body is in the object store and
+    /// named by `extra` (`object_sha256`, `object_size`); the payload is then empty. The link's
+    /// signed query is not repeated: the detail record holds it.
+    func recordDownload(_ exchange: HTTPExchange, request: URLRequest, stored: Bool, extra: [String: JournalValue]) throws {
+        try append(
+            kind: SyncJob.downloadKind, exchange, payload: stored ? Data() : exchange.body,
+            representation: stored ? ObjectStore.representation : "foundation_decoded_entity",
+            transformations: ["credential_omitted", "signed_query_omitted"],
+            metadata: Self.metadata(exchange, request: request, extra: extra, omittingSignedQueries: true))
+    }
+
+    /// `omittingSignedQueries`: a redirect's `Location` (never followed) may carry a newly signed
+    /// link; its query is replaced by `[omitted]`.
+    private static func metadata(
+        _ exchange: HTTPExchange, request: URLRequest, extra: [String: JournalValue], omittingSignedQueries: Bool = false
+    ) -> [String: JournalValue] {
+        var headers: [String: JournalValue] = [:]
+        for (name, value) in exchange.headers {
+            // Session material is never archived (plan v3 §5 invariant 7).
+            if name.caseInsensitiveCompare("Set-Cookie") == .orderedSame {
+                headers[name] = .string("[omitted]")
+            } else if omittingSignedQueries, ["location", "content-location"].contains(name.lowercased()),
+                let query = value.firstIndex(of: "?")
+            {
+                headers[name] = .string(value[..<query] + "?[omitted]")
+            } else {
+                headers[name] = .string(value)
+            }
+        }
+        var metadata = extra
+        metadata["method"] = .string(request.httpMethod ?? "GET")
         metadata["status"] = exchange.status.map { .integer(Int64($0)) } ?? .null
         metadata["transfer_end"] = .string(exchange.transferEnd.rawValue)
         metadata["observed_bytes"] = .integer(Int64(exchange.observedByteCount))
         metadata["response_headers"] = .object(headers)
         metadata["request_header_names"] = .array((request.allHTTPHeaderFields ?? [:]).keys.sorted().map(JournalValue.string))
         metadata["end_ticks"] = .string(String(exchange.endTicks))
+        return metadata
+    }
+
+    @discardableResult
+    private func append(
+        kind: String, _ exchange: HTTPExchange, payload: Data, representation: String, transformations: [String],
+        metadata: [String: JournalValue]
+    ) throws -> UInt64 {
         let now = Int64((Date().timeIntervalSince1970 * 1000).rounded(.down))
-        _ = try journal.append(
+        let receipt = try journal.append(
             JournalDraft(
-                kind: "exchange", payload: exchange.body, accountID: account.rawValue, jobID: jobID,
+                kind: kind, payload: payload, accountID: account.rawValue, jobID: jobID,
                 timestamp: JournalTimestamp(wallMilliseconds: now, monotonicTicks: exchange.startTicks),
-                payloadRepresentation: "foundation_decoded_entity", transformations: ["credential_omitted"],
-                metadata: metadata))
+                payloadRepresentation: representation, transformations: transformations, metadata: metadata))
         try journal.synchronize()
+        return receipt.sequence
     }
 }
 

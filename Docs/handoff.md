@@ -161,11 +161,24 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
     as declared). Downloading must follow a detail fetch within the hour; whether an object keeps its
     path across fetches and whether the `ETag` is its MD5 are not yet observed. The probe scripts
     were scratch-only.
+  - **Attachment downloads** (2026-10-20, `Docs/attachments-2026-10-20.md`, ledger N-021): right
+    after each valid detail (sync and Refresh), `SyncJob.downloadAttachments` fetches that
+    snapshot's files through `ArenaHistorySync`'s `downloads` transport
+    (`AccountHTTPSession(cookies: false)`), one GET at a time with the job's spacing. The link rule
+    and expiry are `AttachmentLink` (adapter). Bytes go to `CaptureJournal.ObjectStore`
+    (`JournalStore.objects(for:)`), then an `attachment.download` record names them with
+    `object_sha256`/`object_size` (`Docs/journal-format-v1.md`). Index migration `v3`
+    (`attachments.object_key`, `link_expires_at`, table `attachment_files`); decoder
+    `arena-decoder/3`. Verify (`VerificationService.checkObjects`) and backups
+    (`arena-suite-backup/2`, `BackupCheck.objects`, `digestCompared`) use only the metadata
+    convention. The app reads files through `ArchiveService.attachmentData` (`AttachmentFileError`);
+    MCP may not (boundary deny-list). Not yet run against Arena. Review:
+    `Docs/reviews/2026-10-20-attachments.md`; every finding fixed and tested, but the re-review
+    of the fixes was cut off by opencode's rate limit (free models) and is still to be done:
+    rerun the prompt in that record's last section.
   - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
     gaps", in order):
-    1. attachment downloads (plan §9.4), on top of the refresh: download right after each detail
-       fetch, content-addressed under `objects/sha256/`, with expired/denied/unavailable states;
-    2. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
+    1. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
 
     Import of arena-exporter folders (the second half of item 7) is not to be built: the user
     chose "Skip import" on 2026-10-20. GitHub backup stays a separate decision: it sends private
@@ -316,7 +329,8 @@ To test a clean install with the Release binary, point it at an empty home folde
 
 - **`Packages/ArenaSuiteCore`:**
   - `SuiteDomain`: IDs, accounts, the archive vocabulary.
-  - `CaptureJournal`: the ASJ1 journal (writer, reader, verifier, recovery, `JournalCopy`).
+  - `CaptureJournal`: the ASJ1 journal (writer, reader, verifier, recovery, `JournalCopy`) and the
+    per-account content-addressed `ObjectStore` for attachment files.
   - `ArchiveIndex`: GRDB/FTS5, `contentDigest`, `digestAndCheckpoints`, `datasetSource` (one frozen
     read for dataset builds).
   - `ApplicationActions`: `AccountService`, `HistorySyncService` (holds the maintenance

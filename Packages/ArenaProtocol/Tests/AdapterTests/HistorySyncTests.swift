@@ -9,6 +9,11 @@ import Testing
 
 // MARK: - Fixtures
 
+/// An object store beside a test journal (Docs/attachments-2026-10-20.md).
+func testObjects(_ journalRoot: URL) -> ObjectStore {
+    ObjectStore(root: journalRoot.appendingPathExtension("objects"), durability: .fsync)
+}
+
 private func listReply(_ entries: [(String, String, String?)], hasMore: Bool, cursor: String?, headers: [String: String] = [:]) -> HTTPExchange {
     let items = entries.map { id, type, updated in
         #"{"id":"\#(id)","type":"\#(type)","title":"private title","unknownField":1"# + (updated.map { #","updatedAt":"\#($0)""# } ?? "") + "}"
@@ -69,7 +74,7 @@ private struct Harness {
         let sleeps = self.sleeps
         let engine = ArenaHistorySync(sessions: provider, sleep: { try await sleeps.sleep($0) })
         return await engine.sync(
-            account: record.context, principal: principalA, journal: journal, journalRoot: root, options: options,
+            account: record.context, principal: principalA, journal: journal, journalRoot: root, objects: testObjects(root), options: options,
             progress: { _ in })
     }
 
@@ -273,7 +278,7 @@ func identityOutcomesAtJobStart(
     _ = await provider.restore(account: account, expected: principalA)
     let record = AccountRecord(id: account, displayName: "A", principal: principalA, createdAt: Date(), credentialGeneration: 1)
     let manifest = await ArenaHistorySync(sessions: provider, sleep: { _ in }).sync(
-        account: record.context, principal: principalA, journal: journal, journalRoot: root, options: .testing(),
+        account: record.context, principal: principalA, journal: journal, journalRoot: root, objects: testObjects(root), options: .testing(),
         progress: { _ in })
     #expect(manifest.outcome == outcome)
     #expect(manifest.sessionState == sessionState, "the account's state follows (review 2026-10-18, finding 6)")
@@ -495,7 +500,7 @@ extension Harness {
         let sleeps = self.sleeps
         let engine = ArenaHistorySync(sessions: provider, sleep: { try await sleeps.sleep($0) })
         return await engine.refresh(
-            account: record.context, principal: principalA, journal: journal, journalRoot: root, conversationID: id,
+            account: record.context, principal: principalA, journal: journal, journalRoot: root, objects: testObjects(root), conversationID: id,
             options: .testing())
     }
 

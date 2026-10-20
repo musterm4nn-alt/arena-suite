@@ -305,6 +305,16 @@ final class ArchiveModel {
         }
     }
 
+    /// A stored attachment file's bytes, read off the main actor and checked against their SHA-256.
+    func attachmentData(account: AccountID, sha256: String) async -> Result<Data, AttachmentFileError> {
+        guard let archive else { return .failure(.unreadable) }
+        return await Task.detached {
+            do { return .success(try archive.attachmentData(account: account, sha256: sha256)) } catch {
+                return .failure(error as? AttachmentFileError ?? .unreadable)
+            }
+        }.value
+    }
+
     /// Whether notes can be written at all (the index opened).
     var canWriteNotes: Bool { notes != nil }
 

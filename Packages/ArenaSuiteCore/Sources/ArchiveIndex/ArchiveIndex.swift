@@ -254,6 +254,7 @@ public final class ArchiveIndex: Sendable {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in try createSchema(db) }
         migrator.registerMigration("v2") { db in try createVoteNotes(db) }
+        migrator.registerMigration("v3") { db in try createAttachmentFiles(db) }
         return migrator
     }()
 
@@ -267,7 +268,7 @@ public final class ArchiveIndex: Sendable {
     /// Tables added after the first schema, hashed after `digestTables` and only when they hold
     /// rows: an archive that never used one keeps the digest it had before, which older backups
     /// recorded as their replay digest.
-    private static let laterDigestTables = ["vote_notes"]
+    private static let laterDigestTables = ["vote_notes", "attachment_files"]
 
     /// Full primary key of each table; `search` (FTS5) has no primary key, so all its columns.
     private static let digestOrder: [String: String] = [
@@ -285,6 +286,7 @@ public final class ArchiveIndex: Sendable {
         "warnings": "account_id, seq, ordinal",
         "search": "text, account_id, conversation_id, snapshot_seq, message_id, kind",
         "vote_notes": "account_id, conversation_id, message_a, message_b",
+        "attachment_files": "account_id, seq",
     ]
 
     private static func createSchema(_ db: Database) throws {
@@ -424,6 +426,27 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// Attachment files (Docs/attachments-2026-10-20.md): each attachment's object key and link
+    /// lifetime, and every recorded download attempt.
+    private static func createAttachmentFiles(_ db: Database) throws {
+        try db.alter(table: "attachments") { t in
+            t.add(column: "object_key", .text)
+            t.add(column: "link_expires_at", .text)
+        }
+        try db.create(table: "attachment_files") { t in
+            t.column("account_id", .text).notNull()
+            t.column("seq", .integer).notNull()
+            t.column("object_key", .text).notNull()
+            t.column("outcome", .text).notNull()
+            t.column("status", .integer)
+            t.column("sha256", .text)
+            t.column("size", .integer)
+            t.column("content_type", .text)
+            t.primaryKey(["account_id", "seq"])
+        }
+        try db.create(index: "attachment_files_by_key", on: "attachment_files", columns: ["account_id", "object_key"])
+    }
+
     /// Local notes beside recorded votes (`local.control`, Docs/vote-notes-2026-10-20.md).
     private static func createVoteNotes(_ db: Database) throws {
         try db.create(table: "vote_notes") { t in
@@ -447,6 +470,7 @@ public final class ArchiveIndex: Sendable {
             }
             try Self.createSchema(db)
             try Self.createVoteNotes(db)
+            try Self.createAttachmentFiles(db)
         }
     }
 
@@ -587,6 +611,18 @@ public final class ArchiveIndex: Sendable {
                             """,
                         arguments: args(key))
                 }
+            case .attachmentDownload(let download):
+                try db.execute(
+                    sql: """
+                        INSERT OR IGNORE INTO attachment_files
+                          (account_id, seq, object_key, outcome, status, sha256, size, content_type)
+                        VALUES (:account, :seq, :key, :outcome, :status, :sha256, :size, :type)
+                        """,
+                    arguments: args([
+                        "account": accountID, "seq": seq, "key": download.objectKey, "outcome": download.outcome.rawValue,
+                        "status": download.status as Any, "sha256": download.sha256 as Any, "size": download.size as Any,
+                        "type": download.contentType as Any,
+                    ]))
             }
         }
         for (path, count) in decoded.unknownFields {
@@ -728,13 +764,15 @@ public final class ArchiveIndex: Sendable {
                 try db.execute(
                     sql: """
                         INSERT OR IGNORE INTO attachments
-                          (account_id, snapshot_seq, message_id, ordinal, name, content_type, has_url)
-                        VALUES (:account, :seq, :message, :ordinal, :name, :content_type, :has_url)
+                          (account_id, snapshot_seq, message_id, ordinal, name, content_type, has_url, object_key,
+                           link_expires_at)
+                        VALUES (:account, :seq, :message, :ordinal, :name, :content_type, :has_url, :key, :expires)
                         """,
                     arguments: args([
                         "account": accountID, "seq": seq, "message": message.remoteID, "ordinal": attachmentOrdinal,
                         "name": attachment.name as Any, "content_type": attachment.contentType as Any,
-                        "has_url": attachment.hasURL ? 1 : 0,
+                        "has_url": attachment.hasURL ? 1 : 0, "key": attachment.objectKey as Any,
+                        "expires": attachment.linkExpiresAt as Any,
                     ]))
             }
         }
@@ -1329,14 +1367,12 @@ public final class ArchiveIndex: Sendable {
         for row in try Row.fetchAll(
             db,
             sql: """
-                SELECT message_id, name, content_type, has_url FROM attachments
+                SELECT message_id, name, content_type, has_url, object_key, link_expires_at FROM attachments
                 WHERE account_id = ? AND snapshot_seq = ? ORDER BY message_id, ordinal
                 """,
             arguments: arguments)
         {
-            let hasURL: Int = row["has_url"]
-            attachments[row["message_id"], default: []].append(
-                ArchivedAttachment(name: row["name"], contentType: row["content_type"], hasURL: hasURL != 0))
+            attachments[row["message_id"], default: []].append(try attachment(db, accountID: accountID, row: row))
         }
         return try Row.fetchAll(
             db,
@@ -1477,14 +1513,40 @@ public final class ArchiveIndex: Sendable {
         try Row.fetchAll(
             db,
             sql: """
-                SELECT name, content_type, has_url FROM attachments
+                SELECT name, content_type, has_url, object_key, link_expires_at FROM attachments
                 WHERE account_id = :account AND snapshot_seq = :seq AND message_id = :message ORDER BY ordinal
                 """,
             arguments: args(["account": accountID, "seq": Int64(seq), "message": messageID])
-        ).map { row in
-            let hasURL: Int = row["has_url"]
-            return ArchivedAttachment(name: row["name"], contentType: row["content_type"], hasURL: hasURL != 0)
+        ).map { row in try attachment(db, accountID: accountID, row: row) }
+    }
+
+    /// An attachment row with what the archive holds for its file: the latest stored download for
+    /// its object key (from any snapshot), otherwise the latest attempt.
+    private static func attachment(_ db: Database, accountID: String, row: Row) throws -> ArchivedAttachment {
+        let hasURL: Int = row["has_url"]
+        let key: String? = row["object_key"]
+        var file: AttachmentFile?
+        if let key,
+            let found = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT seq, outcome, status, sha256, size, content_type FROM attachment_files
+                    WHERE account_id = :account AND object_key = :key
+                    ORDER BY (outcome = 'stored') DESC, seq DESC LIMIT 1
+                    """,
+                arguments: args(["account": accountID, "key": key])),
+            let outcome = AttachmentOutcome(rawValue: found["outcome"])
+        {
+            let sequence: Int64 = found["seq"]
+            file = AttachmentFile(
+                download: AttachmentDownload(
+                    objectKey: key, outcome: outcome, status: found["status"], sha256: found["sha256"],
+                    size: found["size"], contentType: found["content_type"]),
+                recordSequence: UInt64(sequence))
         }
+        return ArchivedAttachment(
+            name: row["name"], contentType: row["content_type"], hasURL: hasURL != 0, objectKey: key,
+            linkExpiresAt: row["link_expires_at"], file: file)
     }
 
     // MARK: Digest helpers
