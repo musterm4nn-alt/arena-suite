@@ -32,7 +32,8 @@ struct MainView: View {
     let profiles: ArenaWebProfiles
     @State private var destination = MainDestination.archive
     /// The sidebar as an icon rail (like the site's collapsed sidebar). The archive remembers the
-    /// user's choice; opening the site always starts with the rail, to give the page the room.
+    /// user's choice; opening the site from elsewhere starts with the rail, to give the page the
+    /// room, and switching between accounts on the site keeps the sidebar as it is.
     @AppStorage("sidebarRailInArchive") private var archiveRail = false
     @State private var siteRail = true
     @State private var searching = false
@@ -43,7 +44,13 @@ struct MainView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-            Theme.border.frame(width: 1)
+            // The window buttons are wider than the rail: with it, the line starts below their band.
+            VStack(spacing: 0) {
+                if rail { Color.clear.frame(height: Theme.barHeight) }
+                Theme.border
+            }
+            .frame(width: 1)
+            .allowsHitTesting(false)
             Group {
                 switch destination {
                 case .archive:
@@ -150,10 +157,11 @@ struct MainView: View {
         if destination.isSite { siteRail = value } else { archiveRail = value }
     }
 
-    /// The user's click on an account's site entry: shows the site with the sidebar as a rail.
+    /// The user's click on an account's site entry or tab: shows the site, with the sidebar as a
+    /// rail when coming from elsewhere (switching accounts on the site keeps the sidebar as it is).
     private func openSite(_ account: AccountID) {
         profiles.open(account)
-        siteRail = true
+        if !destination.isSite { siteRail = true }
         destination = .site(account)
     }
 

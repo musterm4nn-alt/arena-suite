@@ -170,6 +170,40 @@ extension ButtonStyle where Self == ArenaIconButtonStyle {
     }
 }
 
+/// A tab in a header bar (the site's account tabs): the selected one sunken and outlined, the others
+/// dimmer, lighter under the pointer.
+struct ArenaTabStyle: ButtonStyle {
+    var selected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        TabBody(configuration: configuration, selected: selected)
+    }
+
+    private struct TabBody: View {
+        let configuration: ButtonStyleConfiguration
+        let selected: Bool
+        @State private var hovering = false
+
+        var body: some View {
+            // As wide as the name, up to a limit; a longer name is shortened (its help has it whole).
+            configuration.label
+                .font(Theme.caption)
+                .lineLimit(1)
+                .frame(maxWidth: 200)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 9)
+                .frame(height: 22)
+                .foregroundStyle(Theme.primaryText.opacity(selected || hovering ? 1 : 0.7))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(selected || configuration.isPressed ? Theme.sunken : hovering ? Theme.hover : .clear))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Theme.border : .clear))
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
 /// A full-width row like the site's sidebar entries: darker when selected, lighter under the pointer.
 struct ArenaRowStyle: ButtonStyle {
     var selected = false

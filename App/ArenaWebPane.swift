@@ -14,10 +14,10 @@ import WebKit
 /// One persistent web profile per archiver account, separate from Safari, the other accounts and the
 /// native Keychain session, and the sessions the user opened.
 ///
-/// A session starts only from the user's Open click and keeps its page while the archive is shown,
-/// like a background browser tab: the app never acts on it, and dialogs, uploads and downloads it
-/// asks for then are declined. Nothing opens a session at launch; Close Session or removing the
-/// account ends it. Profiles are deleted only for accounts the user removed (`WebProfileLifecycle`);
+/// A session starts only from the user's click (Open, a site entry in the sidebar, or a tab) and
+/// keeps its page while the archive is shown, like a background browser tab: the app never acts on
+/// it, and dialogs, uploads and downloads it asks for then are declined. Nothing opens a session at
+/// launch; Close Session or removing the account ends it. Profiles are deleted only for accounts the user removed (`WebProfileLifecycle`);
 /// the pending list lives in this app's defaults, which have the same per-app scope as WebKit's
 /// profiles (not per archive root).
 @MainActor @Observable
@@ -48,7 +48,8 @@ final class ArenaWebProfiles {
     /// The site's host, for titles and button labels; the adapter owns the value.
     var siteName: String { policy.home.host(percentEncoded: false) ?? policy.home.absoluteString }
 
-    /// Opens the account's session (the user clicked Open), or returns the one already open.
+    /// Opens the account's session (the user clicked Open, a site entry or a tab), or returns the
+    /// one already open.
     @discardableResult
     func open(_ account: AccountID) -> ArenaWebSession {
         if let session = sessions[account] { return session }
@@ -159,7 +160,8 @@ struct ArenaWebPane: View {
     let accountID: AccountID
     @Bindable var accounts: AccountsModel
     let profiles: ArenaWebProfiles
-    /// The user's Open click; the main window opens the session and collapses its sidebar.
+    /// The user's click on Open or a tab: the main window opens the session, and collapses its
+    /// sidebar when coming from outside the site.
     let open: (AccountID) -> Void
     @State private var confirmingClear = false
 
@@ -185,18 +187,10 @@ struct ArenaWebPane: View {
                 if CommandLine.arguments.contains("--preview-site-header") {
                     header(account, page: ArenaWebPage())
                 } else {
-                    HeaderBar(divider: true) {
-                        Text(title(account)).foregroundStyle(.secondary).lineLimit(1)
-                    } trailing: {
-                        EmptyView()
-                    }
+                    HeaderBar(divider: true) { profileTabs } trailing: { EmptyView() }
                 }
                 #else
-                HeaderBar(divider: true) {
-                    Text(title(account)).foregroundStyle(.secondary).lineLimit(1)
-                } trailing: {
-                    EmptyView()
-                }
+                HeaderBar(divider: true) { profileTabs } trailing: { EmptyView() }
                 #endif
                 VStack(spacing: 10) {
                     Image(systemName: "globe").font(.system(size: 28)).foregroundStyle(.secondary)
@@ -226,6 +220,56 @@ struct ArenaWebPane: View {
 
     private func title(_ account: AccountSummary) -> String { "\(profiles.siteName) · web profile of \(account.displayName)" }
 
+    /// One tab per account in the app, each its own web profile. A click shows that account's
+    /// session, opening it if needed: the user's click, as from the sidebar's site entry. The app
+    /// never reads which Arena account a profile is signed in to (ADR 0006), so every account in
+    /// the app gets a tab, and a dot marks sessions open in the background. When the tabs don't
+    /// fit, they scroll, so the header's own controls keep their room.
+    private var profileTabs: some View {
+        ViewThatFits(in: .horizontal) {
+            tabRow
+            // The pane is rebuilt for each account, so the shown tab is scrolled into view.
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) { tabRow }
+                    .onAppear { proxy.scrollTo(accountID, anchor: .center) }
+            }
+            .frame(height: 24)
+        }
+    }
+
+    private var tabRow: some View {
+        HStack(spacing: 2) {
+            ForEach(accounts.accounts, id: \.id) { other in
+                let shown = other.id == accountID
+                let running = profiles.sessions[other.id] != nil
+                // A click shows another account's page, or opens a closed session (this one's too,
+                // like the Open button below it).
+                Button {
+                    if !shown || !running { open(other.id) }
+                } label: {
+                    // The dot sits in the tab's padding, so it doesn't change the tab's width.
+                    Text(other.displayName).truncationMode(.middle)
+                        .overlay(alignment: .leading) {
+                            if running && !shown {
+                                Circle().fill(Theme.primaryText.opacity(0.5)).frame(width: 5, height: 5)
+                                    .offset(x: -7).accessibilityHidden(true)
+                            }
+                        }
+                }
+                .buttonStyle(ArenaTabStyle(selected: shown))
+                .help(
+                    shown
+                        ? (running ? "Shown: \(title(other))" : "Open \(title(other))")
+                        : running ? "Show \(title(other)) (open in the background)" : "Open \(title(other))")
+                .accessibilityLabel(title(other))
+                .accessibilityValue(shown ? (running ? "Shown" : "Shown, closed") : running ? "Open in the background" : "Closed")
+                .accessibilityHint(shown && running ? "" : running ? "Shows its page" : "Opens its session")
+                .accessibilityAddTraits(shown ? .isSelected : [])
+                .id(other.id)
+            }
+        }
+    }
+
     /// The page's controls, in the window's top band like the archive's header.
     private func header(_ account: AccountSummary, page: ArenaWebPage) -> some View {
         HeaderBar(divider: true) {
@@ -245,17 +289,18 @@ struct ArenaWebPane: View {
                     .help("\(profiles.siteName) home")
             }
             .buttonStyle(.arenaIcon)
-            Text(title(account)).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 6)
+            profileTabs.padding(.leading, 6)
             if let host = page.host, host != profiles.siteName {
                 Text(host).foregroundStyle(.tertiary).lineLimit(1)
             }
         } trailing: {
             if let progress = accounts.syncing[account.id] {
                 Text(AccountsView.describe(progress)).font(Theme.caption).foregroundStyle(.secondary).lineLimit(1)
-                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }.buttonStyle(.arenaPill)
+                Button("Stop Sync") { Task { await accounts.cancelSync(account.id) } }.buttonStyle(.arenaPill).fixedSize()
             } else {
                 Button("Sync History") { Task { await accounts.syncHistory(account.id) } }
                     .buttonStyle(.arenaPill)
+                    .fixedSize()
                     .disabled(account.state != .signedIn)
                     .help(
                         account.state == .signedIn

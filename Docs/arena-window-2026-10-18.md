@@ -282,3 +282,60 @@ width set back to 1200 pt.
   by tooltip and order.
 - **The list's width resets after a visit to the site**, because the archive's split view is
   rebuilt when it comes back.
+
+## Fourth iteration: account tabs and the rail's border (2026-10-20)
+
+The user's notes (2026-10-20): the sidebar's border ran through the window buttons, and in the site
+there should be a tab for each signed-in profile next to the navigation buttons, to switch between
+them.
+
+### Acceptance criteria
+
+1. **Tabs.** The site's header shows one tab per account in the app, in the sidebar's order, after
+   Back, Forward, Reload and Home (and in the header of a closed site). They replace the profile
+   title there; the window title still names the profile.
+   - The shown account's tab is selected. A click on another tab shows that account's site through
+     `openSite`, the same path as its sidebar entry: its page if its session is open, otherwise it
+     opens the session. A click on the shown tab while its session is closed opens it, like the
+     Open button below it. That is the user's click, as before; a tab loads nothing by itself.
+   - A dot marks a session open in the background. It sits in the tab's padding, so it doesn't
+     change the tab's width.
+   - A tab names the account. Its accessibility label names the account's web profile, as the
+     title did. Its accessibility value says whether it is shown, open in the background or closed
+     (the dot itself is hidden from VoiceOver), and its help and accessibility hint say whether a
+     click shows its page or opens its session.
+   - Every account in the app gets a tab, not only signed-in ones: the app never reads which Arena
+     account a profile is signed in to (ADR 0006, criterion 1 above), so it can't tell.
+   - A tab is as wide as the account's name, up to 200 pt plus padding; a longer name is shortened
+     in the middle. When the tabs don't fit, they scroll sideways, and the header's Sync History
+     and More controls keep their size. The shown tab is scrolled into view.
+2. **Switching keeps the sidebar.** Going from one account's site to another's keeps the sidebar
+   as it is, full or rail. Coming from anywhere else still collapses it to the rail (third
+   iteration, criterion 3).
+3. **The border.** With the rail, the line between the sidebar and the content starts below the
+   window's top band, because the window buttons are wider than the rail. With the full sidebar it
+   is unchanged. The border takes no clicks.
+4. **Unchanged:** at most one session per account, no web view the user did not open, nothing read
+   from the page, and `App/ArenaWebPane.swift` remains the only file that uses WebKit.
+
+### What changed
+
+| Change | File |
+|---|---|
+| `profileTabs` in both headers of the site pane | `App/ArenaWebPane.swift` |
+| `ArenaTabStyle` (selected: sunken and outlined; others dimmer, lighter under the pointer) | `App/Theme.swift` |
+| `openSite` sets the rail only when coming from outside the site; the border starts below the top band with the rail | `App/MainView.swift` |
+
+### Checks
+
+- Debug build; `Scripts/check-boundaries.py`.
+- On a synthetic archive copy with two accounts, neither with a saved session, and without loading
+  the site (`--preview-site-header` and `--preview-site-closed`): both headers show the two tabs,
+  the shown one selected, each as wide as its name; the border starts below the window buttons. A
+  long name is shortened in the middle.
+- With six accounts, after the review: the open header's tabs scroll and Sync History and More
+  stay whole; the closed header's tabs scroll to the window's edge.
+- Not checked by the author, because each loads arena.ai: a click on a tab, and the dot of a
+  session open in the background, and the shown tab scrolled into view when it isn't the first
+  (the previews show the first account). Not checked: VoiceOver reading the tabs.
+- Independent review: `Docs/reviews/2026-10-20-site-tabs.md`.

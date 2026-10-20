@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-20, after the local vote notes (committed locally, not pushed; the encrypted backup was pushed). The app icon, the Insights page and the history filters were pushed at the user's request on 2026-10-19.
+Updated 2026-10-20, after unfinished conversations and Refresh, and the site's account tabs. Both are committed locally, as is the ledger commit before them (N-019/N-020); none of the three is pushed. The vote notes were pushed. The app icon, the Insights page and the history filters were pushed at the user's request on 2026-10-19.
 
 ## Where things stand
 
@@ -137,9 +137,32 @@ Updated 2026-10-20, after the local vote notes (committed locally, not pushed; t
       different stored local version rebuilds the index.
     - Not in exports, Insights or filters (a test pins that). Known limit: removing an account at
       the instant its note is written can add that note to the removed account's kept journal.
+  - **Unfinished conversations and Refresh** (2026-10-20, `Docs/sync-refresh-2026-10-20.md`):
+    found while observing attachments. A battle synced mid-generation kept `pending` responses and
+    missed the later vote, because the history list didn't change (N-020). Sync now fetches again
+    a conversation whose latest snapshot is unfinished (at most 3 unfinished snapshots in a row
+    per `updatedAt`; unlisted ones by ID, their type and `updatedAt` marked `last_listed`). A
+    user-clicked Refresh in the transcript header runs a `conversation_refresh` job: identity, then
+    one detail. The `pending` vocabulary is `ArenaArchiveDecoder.unfinishedStatuses`. Entries
+    listed without `updatedAt` keep the always-fetch rule (none in the live archive). Review:
+    `Docs/reviews/2026-10-20-sync-refresh.md` (three runs; the third found it ready). Not yet run
+    against Arena: after installing, the user's next Sync History fetches their 3 unfinished
+    conversations again (counted in the live archive on 2026-10-20).
+  - **Site account tabs and the rail's border** (2026-10-20, from the user's notes;
+    `Docs/arena-window-2026-10-18.md`, fourth iteration): one tab per account in the app after the
+    site's navigation buttons (the app can't tell which profiles are signed in); a click goes
+    through `openSite`, as the sidebar does; tabs scroll when they don't fit. With the rail, the
+    sidebar's border starts below the window buttons. Review: `Docs/reviews/2026-10-20-site-tabs.md`
+    (two runs; the second found it ready). A tab click wasn't tried by the author (it loads the site).
+  - **Attachments, observed** (N-019): links are S3 presigned R2 URLs signed when Arena serves the
+    detail, valid 3600 s. One fresh link downloaded natively without cookies (200, type and length
+    as declared). Downloading must follow a detail fetch within the hour; whether an object keeps its
+    path across fetches and whether the `ETag` is its MD5 are not yet observed. The probe scripts
+    were scratch-only.
   - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
     gaps", in order):
-    1. attachments (observe whether their URLs can be fetched natively first, then plan §9.4);
+    1. attachment downloads (plan §9.4), on top of the refresh: download right after each detail
+       fetch, content-addressed under `objects/sha256/`, with expired/denied/unavailable states;
     2. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
 
     Import of arena-exporter folders (the second half of item 7) is not to be built: the user
