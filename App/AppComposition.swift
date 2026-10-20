@@ -15,6 +15,10 @@ enum AppComposition {
         let insights: InsightsService?
         /// Your notes beside recorded votes, kept locally (never sent). nil when the index could not be opened.
         let notes: VoteNoteService?
+        /// Fetches one conversation again on the user's click. nil when the index could not be opened.
+        let refresh: ConversationRefreshService?
+        /// Message statuses that mean "still being generated" (the adapter's vocabulary, N-020).
+        let unfinishedStatuses: Set<String>
         let maintenance: Maintenance
         /// Where the embedded site window may go (ADR 0006).
         let website: WebSitePolicy
@@ -90,6 +94,8 @@ enum AppComposition {
             accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable,
             insights: archive.map { InsightsService(archive: $0, vocabulary: ArenaArchiveDecoder.voteVocabulary) },
             notes: archive.map { VoteNoteService(sync: sync, archive: $0) },
+            refresh: archive.map { ConversationRefreshService(sync: sync, archive: $0, kinds: ArenaHistorySync.refreshableKinds) },
+            unfinishedStatuses: ArenaArchiveDecoder.unfinishedStatuses,
             maintenance: maintenance,
             website: ArenaWebsite.policy)
     }

@@ -8,6 +8,11 @@ import SuiteDomain
 /// it is interpreted; resume and incremental decisions are derived from the journal alone.
 public struct ArenaHistorySync: HistorySyncing {
     public typealias Sleeper = @Sendable (Duration) async throws -> Void
+
+    /// Conversation kinds whose detail route is observed (N-007, N-008): the only ones fetched in
+    /// detail, so the only ones Refresh can fetch again. Arena vocabulary, passed to the app.
+    public static let refreshableKinds: Set<String> = ["evaluation"]
+
     private let sessions: ArenaAccountSessions
     private let sleep: Sleeper
 
@@ -25,6 +30,17 @@ public struct ArenaHistorySync: HistorySyncing {
             journalRoot: journalRoot, options: options, sleep: sleep, progress: progress)
         return await job.run()
     }
+
+    public func refresh(
+        account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
+        conversationID: String, options: SyncOptions
+    ) async -> SyncManifest {
+        let job = SyncJob(
+            account: account.accountID, principal: principal, sessions: sessions, journal: journal,
+            journalRoot: journalRoot, options: options, sleep: sleep, progress: { _ in },
+            mode: .refresh(conversationID))
+        return await job.run()
+    }
 }
 
 /// Journal-derived state: what has already been archived for this account.
@@ -35,6 +51,23 @@ struct ArchivedState {
     var listed: [String: String?] = [:]
     /// Conversation ID → `updatedAt` when its detail request was answered 404 (observed absence).
     var absent: [String: String?] = [:]
+    /// Entry ID → its type in the last recorded list page that listed it.
+    var types: [String: String] = [:]
+    /// Conversation ID → unfinished snapshots in a row for one `updatedAt`, while its latest valid
+    /// snapshot is unfinished (Docs/sync-refresh-2026-10-20.md). Only for a snapshot recorded with
+    /// an `updatedAt`: without one, a change can't be detected and the always-fetch rule applies.
+    var unfinished: [String: UnfinishedRun] = [:]
+    /// Refresh jobs that never recorded `job.finished`; closed as `interrupted`, never resumed.
+    var abandonedRefreshes: [UUID] = []
+
+    struct UnfinishedRun: Equatable {
+        let updatedAt: String
+        let count: Int
+    }
+
+    /// Unfinished snapshots in a row (for one `updatedAt`) after which sync stops fetching a
+    /// conversation again for being unfinished: the first fetch and up to two more.
+    static let unfinishedLimit = 3
     /// The most recent history job that never recorded `job.finished` (e.g. the app was killed).
     var interrupted: Interrupted?
     /// Older unfinished jobs, closed as `interrupted` without resuming.
@@ -54,6 +87,7 @@ struct ArchivedState {
         var state = ArchivedState()
         var open: [UUID: Interrupted] = [:]
         var order: [UUID] = []
+        var refreshes: [UUID] = []
         try JournalReader(root: root).forEach { record in
             let envelope = record.envelope
             let role = envelope.metadata["role"].flatMap { if case .string(let value) = $0 { value } else { nil } }
@@ -63,17 +97,23 @@ struct ArchivedState {
                     open[job] = Interrupted(jobID: job)
                     order.append(job)
                 }
+            case JournalKind.jobStarted where envelope.metadata["job_kind"] == .string(SyncJob.refreshKind):
+                if let job = envelope.jobID { refreshes.append(job) }
             case JournalKind.jobFinished:
                 if let job = envelope.jobID {
                     open[job] = nil
                     order.removeAll { $0 == job }
+                    refreshes.removeAll { $0 == job }
                 }
             case "exchange" where role == "list":
                 guard record.envelope.metadata["status"] == .integer(200),
                     record.envelope.metadata["transfer_end"] == .string("complete"),
                     let page = ListPage.decode(record.payload)
                 else { return }
-                for entry in page.entries { state.listed[entry.id] = entry.updatedAt }
+                for entry in page.entries {
+                    state.listed[entry.id] = entry.updatedAt
+                    state.types[entry.id] = entry.type
+                }
                 if let job = envelope.jobID, var interrupted = open[job] {
                     interrupted.entries.append(contentsOf: page.entries)
                     interrupted.pages += 1
@@ -89,17 +129,24 @@ struct ArchivedState {
                 } else {
                     state.absent[id] = String?.none
                 }
+                // Absent now: fetching it again for being unfinished would only repeat the 404.
+                state.unfinished[id] = nil
             case "exchange" where role == "detail":
                 guard case .string(let id) = envelope.metadata["entry_id"],
                     envelope.metadata["status"] == .integer(200),
                     envelope.metadata["transfer_end"] == .string("complete"),
-                    DetailCheck.isValid(record.payload, id: id)
+                    let unfinished = DetailCheck.unfinished(record.payload, id: id)
                 else { return }
                 state.absent[id] = nil
-                if case .string(let updated) = envelope.metadata["source_updated_at"] {
-                    state.snapshots[id] = updated
+                let updated: String?
+                if case .string(let value) = envelope.metadata["source_updated_at"] { updated = value } else { updated = nil }
+                state.snapshots[id] = updated
+                if unfinished, let updated {
+                    let previous = state.unfinished[id]
+                    let count = previous.map { $0.updatedAt == updated ? $0.count + 1 : 1 } ?? 1
+                    state.unfinished[id] = UnfinishedRun(updatedAt: updated, count: count)
                 } else {
-                    state.snapshots[id] = String?.none
+                    state.unfinished[id] = nil
                 }
             default:
                 break
@@ -107,6 +154,7 @@ struct ArchivedState {
         }
         if let latest = order.last { state.interrupted = open[latest] }
         state.abandoned = order.dropLast().filter { open[$0] != nil }
+        state.abandonedRefreshes = refreshes
         return state
     }
 
@@ -119,13 +167,52 @@ struct ArchivedState {
         guard entry.type == "evaluation" else { return false }
         // Without `updatedAt` a change is undetectable, so such conversations are always refetched.
         guard let updated = entry.updatedAt else { return true }
-        if snapshots[entry.id] == updated { return false }
+        if snapshots[entry.id] == updated { return refetchesUnfinished(entry) }
         // A 404 for this same version is remembered; a changed `updatedAt` retries it.
         return absent[entry.id] != updated
+    }
+
+    /// The latest snapshot of this unchanged entry was taken while a response was still being
+    /// generated (N-020: the list doesn't change when it finishes), and it was fetched fewer than
+    /// `unfinishedLimit` times in a row for this `updatedAt`.
+    func refetchesUnfinished(_ entry: ListEntry) -> Bool {
+        isUnfinished(entry) && (unfinished[entry.id]?.count ?? 0) < Self.unfinishedLimit
+    }
+
+    /// The latest snapshot of this unchanged `evaluation` entry is unfinished.
+    func isUnfinished(_ entry: ListEntry) -> Bool {
+        guard entry.type == "evaluation", let updated = entry.updatedAt, snapshots[entry.id] == updated,
+            let run = unfinished[entry.id]
+        else { return false }
+        return run.updatedAt == updated
+    }
+
+    /// Unfinished conversations still under the limit, whether or not a listing reaches them (an
+    /// incremental listing stops before older entries). Sorted, so jobs are deterministic.
+    var unfinishedToRevisit: [String] { unfinishedConversations { $0 < Self.unfinishedLimit } }
+
+    /// Unfinished conversations that reached the limit: sync leaves them until their `updatedAt`
+    /// changes or the user refreshes one.
+    var unfinishedAtLimit: [String] { unfinishedConversations { $0 >= Self.unfinishedLimit } }
+
+    private func unfinishedConversations(_ count: (Int) -> Bool) -> [String] {
+        unfinished.filter { id, run in
+            count(run.count) && types[id] == "evaluation" && snapshots[id] == run.updatedAt
+        }.keys.sorted()
     }
 }
 
 final class SyncJob {
+    /// A history sync, or a refresh of one conversation's detail (Docs/sync-refresh-2026-10-20.md).
+    enum Mode: Equatable {
+        case history
+        case refresh(String)
+    }
+
+    static let refreshKind = "conversation_refresh"
+
+    private let mode: Mode
+    private var jobKind: String { mode == .history ? "history_sync" : Self.refreshKind }
     private let account: AccountID
     private let principal: PrincipalIdentity
     private let sessions: ArenaAccountSessions
@@ -141,13 +228,16 @@ final class SyncJob {
     /// Why the listing is not proven complete (partial pages, failed sources, no `hasMore`). Any
     /// entry keeps the outcome from being `completed`, even if every detail was fetched.
     private var listingGaps: [String] = []
+    /// What this job listed (entry ID → `updatedAt`), for `unfinishedLeft`.
+    private var listedByJob: [String: String?] = [:]
     private lazy var recorder = ExchangeRecorder(journal: journal, account: account, jobID: jobID)
 
     init(
         account: AccountID, principal: PrincipalIdentity, sessions: ArenaAccountSessions, journal: JournalWriter,
         journalRoot: URL, options: SyncOptions, sleep: @escaping ArenaHistorySync.Sleeper,
-        progress: @escaping @Sendable (SyncProgress) -> Void
+        progress: @escaping @Sendable (SyncProgress) -> Void, mode: Mode = .history
     ) {
+        self.mode = mode
         self.account = account
         self.principal = principal
         self.sessions = sessions
@@ -169,17 +259,29 @@ final class SyncJob {
         do { state = try ArchivedState.scan(journalRoot) } catch {
             return finishWithoutJournal(.storageFailed, "journal could not be read")
         }
+        // Only a conversation listed as `evaluation` has an observed detail route; nothing is sent
+        // or written for anything else.
+        if case .refresh(let id) = mode, state.types[id].map(ArenaHistorySync.refreshableKinds.contains) != true {
+            return finishWithoutJournal(.partial, "refused: not listed as a conversation in this account")
+        }
         do {
-            for job in state.abandoned { try closeInterrupted(job, resumedBy: nil) }
-            if let interrupted = state.interrupted {
-                manifest.resumedJobID = interrupted.jobID
-                try closeInterrupted(interrupted.jobID, resumedBy: jobID)
+            for job in state.abandonedRefreshes { try closeInterrupted(job, kind: Self.refreshKind, resumedBy: nil) }
+            // A refresh leaves an interrupted history job for the next sync to resume.
+            if mode == .history {
+                for job in state.abandoned { try closeInterrupted(job, kind: jobKind, resumedBy: nil) }
+                if let interrupted = state.interrupted {
+                    manifest.resumedJobID = interrupted.jobID
+                    try closeInterrupted(interrupted.jobID, kind: jobKind, resumedBy: jobID)
+                }
             }
-            var started: [String: JournalValue] = [
-                "job_kind": .string("history_sync"), "full_pass": .bool(options.fullPass),
-                "page_limit": .integer(Int64(HistoryRoutes.pageLimit)),
-            ]
+            var started: [String: JournalValue] = ["job_kind": .string(jobKind)]
+            if mode == .history {
+                started["full_pass"] = .bool(options.fullPass)
+                started["page_limit"] = .integer(Int64(HistoryRoutes.pageLimit))
+            }
             if let resumed = manifest.resumedJobID { started["resumes"] = .string(resumed.uuidString) }
+            // Counted now in case the job can't start, and again when it ends.
+            if mode == .history { manifest.unfinishedLeft = unfinishedLeft(state) }
             try append(JournalDraft(kind: JournalKind.jobStarted, accountID: account.rawValue, jobID: jobID, metadata: started))
             try journal.synchronize()
         } catch {
@@ -188,8 +290,13 @@ final class SyncJob {
 
         do {
             try await verifyIdentity()
-            let entries = try await list(state: state)
-            try await fetchDetails(entries, state: state)
+            switch mode {
+            case .history:
+                let entries = try await list(state: state)
+                try await fetchDetails(entries, state: state)
+            case .refresh(let id):
+                try await refreshDetail(id, state: state)
+            }
             var reasons: [String] = []
             if manifest.detailsFailed > 0 { reasons.append("\(manifest.detailsFailed) detail request(s) failed; resumable") }
             if !listingGaps.isEmpty { reasons.append("listing not proven complete (\(listingGaps.joined(separator: "; ")))") }
@@ -209,7 +316,18 @@ final class SyncJob {
             manifest.outcome = .storageFailed
             manifest.reason = "journal could not be written"
         }
+        if mode == .history { manifest.unfinishedLeft = unfinishedLeft(state) }
         return finish()
+    }
+
+    /// Unfinished conversations at the limit that this job left alone because of it, however the
+    /// job ended. One this job listed with another `updatedAt` isn't held by the limit: this job
+    /// fetches it (the ordinary rule), or the next one does if this one stopped first.
+    private func unfinishedLeft(_ state: ArchivedState) -> Int {
+        state.unfinishedAtLimit.filter { id in
+            guard let listed = listedByJob[id] else { return true }
+            return listed == state.unfinished[id]?.updatedAt
+        }.count
     }
 
     /// Identity first: nothing else is sent before the principal is verified again for this job.
@@ -252,7 +370,10 @@ final class SyncJob {
         var entries: [ListEntry] = []
         var seen = Set<String>()
         func add(_ page: [ListEntry]) {
-            for entry in page where seen.insert(entry.id).inserted { entries.append(entry) }
+            for entry in page where seen.insert(entry.id).inserted {
+                entries.append(entry)
+                listedByJob[entry.id] = entry.updatedAt
+            }
         }
         var cursor: String?
         if let interrupted = state.interrupted {
@@ -342,13 +463,17 @@ final class SyncJob {
 
     private func fetchDetails(_ entries: [ListEntry], state: ArchivedState) async throws {
         let needed = entries.filter(state.needsDetail)
+        // Unfinished conversations this listing didn't reach are fetched by ID, as a refresh would.
+        let listedIDs = Set(entries.map(\.id))
+        let unlisted = state.unfinishedToRevisit.filter { !listedIDs.contains($0) }
         manifest.detailsUnchanged = entries.filter { $0.type == "evaluation" }.count - needed.count
+        let total = needed.count + unlisted.count
         let unstamped = needed.filter { $0.updatedAt == nil }.count
         if unstamped > 0 {
             manifest.warnings.append("\(unstamped) conversation(s) without updatedAt refetched (change not detectable)")
         }
         for (index, entry) in needed.enumerated() {
-            report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: index, detailsNeeded: needed.count))
+            report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: index, detailsNeeded: total))
             guard let request = HistoryRoutes.detail(id: entry.id) else {
                 manifest.detailsFailed += 1
                 manifest.warnings.append("detail skipped: ID not path-safe")
@@ -356,19 +481,53 @@ final class SyncJob {
             }
             var extra: [String: JournalValue] = ["entry_id": .string(entry.id), "entry_type": .string(entry.type)]
             if let updated = entry.updatedAt { extra["source_updated_at"] = .string(updated) }
-            let exchange = try await fetch(request, role: "detail", route: HistoryRoutes.detailTemplate, extra: extra, allowNotFound: true)
-            if exchange.status == 404 {
-                manifest.detailsAbsent += 1  // plan §9.5: an observation of absence; local evidence kept
-            } else if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: entry.id) {
-                manifest.detailsFetched += 1
-            } else if exchange.status == 200 && Self.looksLikeChallenge(exchange) {
-                throw Stop.outcome(.blocked, "detail response not recognized")
-            } else {
-                manifest.detailsFailed += 1
-                manifest.warnings.append("detail HTTP \(exchange.status.map(String.init) ?? "none") or unrecognized body")
-            }
+            let refetch = state.refetchesUnfinished(entry)
+            if try await fetchDetail(request, id: entry.id, extra: extra), refetch { manifest.detailsRefetchedUnfinished += 1 }
         }
-        report(SyncProgress(stage: .finishing, pages: manifest.pagesListed, entries: entries.count, detailsDone: needed.count, detailsNeeded: needed.count))
+        for (index, id) in unlisted.enumerated() {
+            report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: needed.count + index, detailsNeeded: total))
+            if try await refreshDetail(id, state: state) { manifest.detailsRefetchedUnfinished += 1 }
+        }
+        report(SyncProgress(stage: .finishing, pages: manifest.pagesListed, entries: entries.count, detailsDone: total, detailsNeeded: total))
+    }
+
+    /// One conversation's detail by ID (a refresh, or an unfinished one the listing didn't reach).
+    /// This job didn't see it listed, so the record names the type and `updatedAt` last listed for
+    /// it in the journal and says where those values came from. True when a valid detail arrived.
+    @discardableResult
+    private func refreshDetail(_ id: String, state: ArchivedState) async throws -> Bool {
+        guard let request = HistoryRoutes.detail(id: id) else {
+            manifest.detailsFailed += 1
+            manifest.warnings.append("detail skipped: ID not path-safe")
+            return false
+        }
+        var extra: [String: JournalValue] = ["entry_id": .string(id)]
+        if let type = state.types[id] {
+            extra["entry_type"] = .string(type)
+            extra["entry_type_origin"] = .string("last_listed")
+        }
+        if case .some(.some(let updated)) = state.listed[id] {
+            extra["source_updated_at"] = .string(updated)
+            extra["source_updated_at_origin"] = .string("last_listed")
+        }
+        return try await fetchDetail(request, id: id, extra: extra)
+    }
+
+    /// True when a valid detail arrived (counted in `detailsFetched`).
+    private func fetchDetail(_ request: URLRequest, id: String, extra: [String: JournalValue]) async throws -> Bool {
+        let exchange = try await fetch(request, role: "detail", route: HistoryRoutes.detailTemplate, extra: extra, allowNotFound: true)
+        if exchange.status == 404 {
+            manifest.detailsAbsent += 1  // plan §9.5: an observation of absence; local evidence kept
+        } else if exchange.status == 200 && DetailCheck.isValid(exchange.body, id: id) {
+            manifest.detailsFetched += 1
+            return true
+        } else if exchange.status == 200 && Self.looksLikeChallenge(exchange) {
+            throw Stop.outcome(.blocked, "detail response not recognized")
+        } else {
+            manifest.detailsFailed += 1
+            manifest.warnings.append("detail HTTP \(exchange.status.map(String.init) ?? "none") or unrecognized body")
+        }
+        return false
     }
 
     // MARK: Requests
@@ -442,8 +601,8 @@ final class SyncJob {
         _ = try journal.append(draft)
     }
 
-    private func closeInterrupted(_ job: UUID, resumedBy: UUID?) throws {
-        var metadata: [String: JournalValue] = ["job_kind": .string("history_sync"), "outcome": .string("interrupted")]
+    private func closeInterrupted(_ job: UUID, kind: String, resumedBy: UUID?) throws {
+        var metadata: [String: JournalValue] = ["job_kind": .string(kind), "outcome": .string("interrupted")]
         if let resumedBy { metadata["resumed_by"] = .string(resumedBy.uuidString) }
         try append(JournalDraft(kind: JournalKind.jobFinished, accountID: account.rawValue, jobID: job, metadata: metadata))
     }
@@ -456,7 +615,7 @@ final class SyncJob {
             try append(
                 JournalDraft(
                     kind: JournalKind.jobFinished, payload: payload, accountID: account.rawValue, jobID: jobID,
-                    metadata: ["job_kind": .string("history_sync"), "outcome": .string(manifest.outcome.rawValue)]))
+                    metadata: ["job_kind": .string(jobKind), "outcome": .string(manifest.outcome.rawValue)]))
             try journal.synchronize()
         } catch {
             manifest.outcome = .storageFailed

@@ -25,6 +25,21 @@ private actor SlowEngine: HistorySyncing {
         return manifest
     }
 
+    private(set) var refreshed: [String] = []
+
+    nonisolated func refresh(
+        account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
+        conversationID: String, options: SyncOptions
+    ) async -> SyncManifest {
+        await noteRefresh(conversationID)
+        await record(account.accountID, principal)
+        var manifest = SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: await result.0)
+        manifest.sessionState = await result.1
+        return manifest
+    }
+
+    private func noteRefresh(_ id: String) { refreshed.append(id) }
+
     private func record(_ id: AccountID, _ principal: PrincipalIdentity) async {
         calls.append((id, principal))
         waiting = true
@@ -128,4 +143,51 @@ func aRejectedSyncUpdatesTheAccountsState(_ outcome: SyncOutcome, _ state: Accou
     await engine.release()
     #expect(try await job.value.outcome == .needsSignIn)
     #expect(await accounts.accounts().first?.state == .signedIn)
+}
+
+// Refresh (Docs/sync-refresh-2026-10-20.md): the same job slot as a sync.
+
+@Test func aRefreshAndASyncOfOneAccountExcludeEachOther() async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    let b = try await accounts.addAccount(email: "b", password: "p", displayName: nil)
+    let refresh = Task { try await service.refresh(a.id, conversationID: "c1") }
+    await waitUntilWaiting(engine)
+    #expect(await service.isRunning(a.id))
+    await #expect(throws: AccountError.busy) { _ = try await service.sync(a.id) }
+    await #expect(throws: AccountError.busy) { _ = try await service.refresh(a.id, conversationID: "c2") }
+    await #expect(throws: AccountError.busy) { try await service.beginMaintenance() }
+    #expect(await !service.isRunning(b.id))
+    await engine.release()
+    #expect(try await refresh.value.outcome == .completed)
+    #expect(await engine.refreshed == ["c1"])
+    #expect(await service.manifest(a.id) == nil, "a refresh is not the account's last sync")
+    // A sync running: no refresh of that account.
+    let sync = Task { try await service.sync(a.id) }
+    await waitUntilWaiting(engine)
+    await #expect(throws: AccountError.busy) { _ = try await service.refresh(a.id, conversationID: "c1") }
+    await engine.release()
+    _ = try await sync.value
+    #expect(await engine.refreshed == ["c1"])
+}
+
+@Test func aRefreshIsRefusedDuringMaintenanceAndWithoutASignedInAccount() async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    try await service.beginMaintenance()
+    await #expect(throws: AccountError.busy) { _ = try await service.refresh(a.id, conversationID: "c1") }
+    await service.endMaintenance()
+    await #expect(throws: AccountError.unknownAccount) { _ = try await service.refresh(AccountID(), conversationID: "c1") }
+    #expect(await engine.refreshed.isEmpty)
+}
+
+@Test func aRejectedRefreshUpdatesTheAccountsState() async throws {
+    let (accounts, service, engine, _) = try await setup()
+    let a = try await accounts.addAccount(email: "a", password: "p", displayName: nil)
+    await engine.setResult(.blocked, .blocked)
+    let job = Task { try await service.refresh(a.id, conversationID: "c1") }
+    await waitUntilWaiting(engine)
+    await engine.release()
+    #expect(try await job.value.outcome == .blocked)
+    await #expect(throws: AccountError.notSignedIn(.blocked)) { _ = try await service.refresh(a.id, conversationID: "c1") }
 }

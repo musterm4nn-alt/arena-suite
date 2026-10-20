@@ -19,6 +19,11 @@ final class AccountsModel {
     private var sessionErrors: Set<AccountID> = []
     /// When each account's last sync ended (this session).
     private(set) var lastSyncAt: [AccountID: Date] = [:]
+    /// The conversation each account is refreshing (one job per account, like a sync).
+    private(set) var refreshing: [AccountID: String] = [:]
+    /// Accounts whose shown error came from a refresh: a later successful refresh clears it, but
+    /// never a sync's error.
+    private var refreshErrors: Set<AccountID> = []
     /// An account whose sign-in form the Accounts page should open (the sidebar's "Sign In…").
     var pendingSignIn: AccountID?
     /// The Accounts page should open the Add Account form (the home screen's "Add Account…").
@@ -27,17 +32,19 @@ final class AccountsModel {
 
     private let service: AccountService
     private let sync: HistorySyncService
+    private let refresher: ConversationRefreshService?
     private let statusURL: URL
 
     init(services: AppComposition.Services, archiveRoot: URL) {
         service = services.accounts
         sync = services.sync
+        refresher = services.refresh
         statusURL = archiveRoot.appendingPathComponent("diagnostics/accounts-status.json")
     }
 
     /// User-initiated read-only history sync (plan v3 §2). One job per account.
     func syncHistory(_ id: AccountID) async {
-        guard syncing[id] == nil else { return }
+        guard syncing[id] == nil, refreshing[id] == nil else { return }
         syncing[id] = SyncProgress(stage: .verifying, pages: 0, entries: 0, detailsDone: 0, detailsNeeded: 0)
         let poll = Task { @MainActor [sync] in
             while !Task.isCancelled {
@@ -52,6 +59,7 @@ final class AccountsModel {
             // Failed outcomes are returned manifests, not thrown errors: keep them shown until this
             // account syncs completely or the user dismisses them.
             syncErrors[id] = Self.problem(manifest)
+            refreshErrors.remove(id)
             if manifest.sessionState != nil { sessionErrors.insert(id) } else { sessionErrors.remove(id) }
         } catch {
             syncErrors[id] = Self.describe(error)
@@ -65,14 +73,76 @@ final class AccountsModel {
 
     func cancelSync(_ id: AccountID) async { await sync.cancel(id) }
 
+    /// Fetches one conversation again from Arena (Docs/sync-refresh-2026-10-20.md). The account and
+    /// conversation come from the transcript the button is in. Afterwards the index is updated as
+    /// after a sync.
+    func refreshConversation(account id: AccountID, conversation: String) async {
+        guard syncing[id] == nil, refreshing[id] == nil, let refresher else { return }
+        refreshing[id] = conversation
+        var problem: String?
+        var answered = false
+        do {
+            let manifest = try await refresher.refresh(account: id, conversation: conversation)
+            problem = Self.refreshProblem(manifest)
+            answered = manifest.outcome == .completed
+            if manifest.sessionState != nil { sessionErrors.insert(id) }
+        } catch {
+            switch error as? RefreshError {
+            case .notRefreshable:
+                problem = "This conversation can't be refreshed: the archive holds no transcript of it for this account."
+            case .indexUnreadable: problem = "Refresh: the archive index could not be read. Nothing was fetched."
+            case nil: problem = "Refresh: " + Self.describe(error)
+            }
+            if case .notSignedIn = error as? AccountError { sessionErrors.insert(id) }
+        }
+        refreshing[id] = nil
+        await refresh()
+        // A refresh whose detail was answered (200, or 404 for a conversation Arena no longer has)
+        // shows the session works: a shown session problem is resolved first, so that this
+        // refresh's own message stays.
+        if answered { resolveSessionProblem(id) }
+        if let problem {
+            syncErrors[id] = problem
+            refreshErrors.insert(id)
+        } else if refreshErrors.remove(id) != nil {
+            syncErrors[id] = nil
+        }
+        await onSyncFinished?(id)
+    }
+
+    /// Whether a conversation of this kind, with this latest snapshot, can be refreshed at all
+    /// (before checking the account): the refresh service's own rule.
+    func canRefresh(kind: String, latestSnapshot: UInt64?) -> Bool {
+        refresher?.canRefresh(kind: kind, latestSnapshot: latestSnapshot) ?? false
+    }
+
+    static func refreshProblem(_ manifest: SyncManifest) -> String? {
+        switch manifest.outcome {
+        case .completed:
+            manifest.detailsAbsent > 0
+                ? "Refresh: Arena no longer has this conversation (HTTP 404). The archive keeps what it had." : nil
+        case .partial: "Refresh not complete (\(manifest.reason ?? "unknown")). Nothing else was fetched."
+        case .blocked: "Refresh blocked by Arena (\(manifest.reason ?? "")). Nothing retried."
+        case .needsSignIn:
+            manifest.sessionState == .quarantined
+                ? "Refresh stopped: Arena identified a different account, so the session was discarded. Sign in again."
+                : "Refresh stopped: Arena no longer accepts the session. Sign in again."
+        case .sessionReplaced: "Refresh stopped: account signed in again meanwhile."
+        case .cancelled: "Refresh stopped."
+        case .storageFailed: "Refresh stopped: the archive could not be written."
+        }
+    }
+
     /// Clears the shown errors (the sidebar's Dismiss). Manifests and the status file keep the outcome.
     func dismissErrors() {
         message = nil
         syncErrors = [:]
         sessionErrors = []
+        refreshErrors = []
     }
 
-    var isSyncing: Bool { !syncing.isEmpty }
+    /// A sync or a refresh is running for some account.
+    var isSyncing: Bool { !syncing.isEmpty || !refreshing.isEmpty }
 
     /// After a restore: reads the restored account list and restores saved sessions.
     func reloadAccounts() async {

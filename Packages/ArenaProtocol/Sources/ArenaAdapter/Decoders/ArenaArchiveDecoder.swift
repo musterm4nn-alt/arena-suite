@@ -17,6 +17,11 @@ extension ArenaArchiveDecoder {
     public static let voteVocabulary = VoteVocabulary(
         outcomes: ["model_a": .preferA, "model_b": .preferB, "tie": .tie, "both_bad": .bothBad],
         evidence: "assumed from the recorded value names (protocol ledger N-016)")
+
+    /// `messages[].status` values meaning the response was still being generated when the snapshot
+    /// was taken (N-020, Docs/sync-refresh-2026-10-20.md). Assumption: `success`, `failed`,
+    /// `flagged` and `stopped` are final, and an unknown status is not treated as unfinished.
+    public static let unfinishedStatuses: Set<String> = ["pending"]
 }
 
 public struct ArenaArchiveDecoder: ArchiveDecoding {

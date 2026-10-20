@@ -475,3 +475,329 @@ func listingThatIsNotProvenCompleteIsNotCompleted(_ name: String, _ page: HTTPEx
     #expect(manifest.listingEnd == "hasMore absent (resumed)")
     #expect(manifest.outcome == .partial)
 }
+
+// MARK: - Unfinished conversations and Refresh (Docs/sync-refresh-2026-10-20.md)
+
+private func detailReply(_ id: String, statuses: [String?]) -> HTTPExchange {
+    let messages = statuses.enumerated().map { index, status in
+        #"{"id":"m\#(index)","content":"private text""# + (status.map { #","status":"\#($0)""# } ?? "") + "}"
+    }.joined(separator: ",")
+    return HTTPExchange(
+        status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"id":"\#(id)","messages":[\#(messages)]}"#.utf8))
+}
+
+/// N-020: the prompt done, both responses still generating.
+private let generating: [String?] = ["success", "pending", "pending"]
+private let finished: [String?] = ["success", "success", "success"]
+
+extension Harness {
+    func refresh(_ id: String) async -> SyncManifest {
+        let sleeps = self.sleeps
+        let engine = ArenaHistorySync(sessions: provider, sleep: { try await sleeps.sleep($0) })
+        return await engine.refresh(
+            account: record.context, principal: principalA, journal: journal, journalRoot: root, conversationID: id,
+            options: .testing())
+    }
+
+    func details(_ id: String) -> [JournalRecord] {
+        exchanges("detail").filter { $0.envelope.metadata["entry_id"] == .string(id) }
+    }
+}
+
+@Test func anUnfinishedConversationIsFetchedAgainWhileTheListIsUnchanged() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    #expect(await h.run().detailsFetched == 2)
+    h.script([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: finished)])
+    let second = await h.run()
+    #expect(second.outcome == .completed)
+    #expect(second.detailsFetched == 1 && second.detailsRefetchedUnfinished == 1 && second.unfinishedLeft == 0)
+    #expect(h.details("e1").count == 2 && h.details("e2").count == 1)
+    #expect(h.details("e1").last?.envelope.metadata["source_updated_at"] == .string(page1[0].2))
+    #expect(h.details("e1").last?.envelope.metadata["source_updated_at_origin"] == nil, "listed by this job")
+    // Finished now: nothing more is fetched.
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let before = h.transport.requestCount
+    let third = await h.run()
+    #expect(third.detailsFetched == 0 && third.detailsRefetchedUnfinished == 0)
+    #expect(h.transport.requestCount - before == 2)  // identity + one list page
+}
+
+@Test func anUnfinishedConversationTheListingDoesNotReachIsFetchedByID() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: true, cursor: "c1"), listReply(page2, hasMore: false, cursor: nil),
+        detailReply("e1"), detailReply("e2"), detailReply("e3", statuses: generating),
+    ])
+    #expect(await h.run().detailsFetched == 3)
+    h.script([listReply(page1, hasMore: true, cursor: "c1"), detailReply("e3", statuses: finished)])
+    let second = await h.run()
+    #expect(second.outcome == .completed)
+    #expect(second.pagesListed == 1 && second.listingEnd?.hasPrefix("caught up") == true)
+    #expect(second.detailsFetched == 1 && second.detailsRefetchedUnfinished == 1)
+    let refetched = try #require(h.details("e3").last)
+    #expect(refetched.envelope.metadata["source_updated_at"] == .string(page2[0].2))
+    #expect(refetched.envelope.metadata["source_updated_at_origin"] == .string("last_listed"))
+    #expect(refetched.envelope.metadata["entry_type"] == .string("evaluation"))
+    #expect(refetched.envelope.metadata["entry_type_origin"] == .string("last_listed"))
+    #expect(h.transport.paths.suffix(2) == ["/api/history/unified", "/api/evaluation/e3"])
+}
+
+@Test func anUnfinishedConversationIsFetchedAtMostThreeTimesForOneUpdatedAt() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    for _ in 0..<2 {
+        h.script([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+        #expect(await h.run().detailsRefetchedUnfinished == 1)
+    }
+    // Three unfinished snapshots in a row: left alone until the entry changes or the user refreshes.
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let left = await h.run()
+    #expect(left.outcome == .completed && left.detailsFetched == 0 && left.unfinishedLeft == 1)
+    #expect(h.details("e1").count == 3)
+    // A new `updatedAt`: fetched by the ordinary rule, and the count starts again.
+    let changed = [("e1", "evaluation", "2026-09-25T10:00:00Z"), page1[1]]
+    h.script([listReply(changed, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+    let moved = await h.run()
+    #expect(moved.detailsFetched == 1 && moved.detailsRefetchedUnfinished == 0 && moved.unfinishedLeft == 0)
+    h.script([listReply(changed, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+    #expect(await h.run().detailsRefetchedUnfinished == 1)
+}
+
+@Test func anUnknownStatusIsNotTreatedAsUnfinished() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: ["success", "queued_somehow", nil]),
+        detailReply("e2", statuses: ["success", "stopped", "failed"]),
+    ])
+    _ = await h.run()
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let before = h.transport.requestCount
+    let second = await h.run()
+    #expect(second.outcome == .completed && second.detailsFetched == 0 && second.unfinishedLeft == 0)
+    #expect(h.transport.requestCount - before == 2)  // identity + one list page
+}
+
+@Test func anUnfinishedConversationAnswered404IsNotFetchedAgain() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    h.script([listReply(page1, hasMore: false, cursor: nil), HTTPExchange(status: 404, body: Data())])
+    let absent = await h.run()
+    // Requested again for being unfinished, but no snapshot arrived: not counted as fetched again.
+    #expect(absent.detailsAbsent == 1 && absent.detailsFetched == 0 && absent.detailsRefetchedUnfinished == 0)
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let before = h.transport.requestCount
+    let third = await h.run()
+    #expect(third.outcome == .completed && third.detailsFetched == 0 && third.detailsAbsent == 0 && third.unfinishedLeft == 0)
+    #expect(h.transport.requestCount - before == 2)  // identity + one list page
+}
+
+@Test func aRefreshVerifiesIdentityThenFetchesOneDetail() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    h.script([detailReply("e1", statuses: finished)])
+    let records = h.records.count
+    let requests = h.transport.requestCount
+    let pauses = await h.sleeps.durations.count
+    let manifest = await h.refresh("e1")
+    #expect(manifest.outcome == .completed && manifest.detailsFetched == 1 && manifest.pagesListed == 0)
+    #expect(h.transport.requestCount - requests == 2)
+    #expect(await h.sleeps.durations.count - pauses == 1, "the request spacing before the detail")
+    #expect(h.transport.paths.suffix(2) == ["/api/me", "/api/evaluation/e1"])
+    let added = Array(h.records.dropFirst(records))
+    #expect(added.map(\.envelope.kind) == ["job.started", "exchange", "session.verified", "exchange", "job.finished"])
+    #expect(added[0].envelope.metadata == ["job_kind": .string("conversation_refresh")])
+    #expect(added[4].envelope.metadata["job_kind"] == .string("conversation_refresh"))
+    let detail = added[3].envelope.metadata
+    #expect(detail["role"] == .string("detail") && detail["entry_id"] == .string("e1"))
+    #expect(detail["entry_type"] == .string("evaluation") && detail["entry_type_origin"] == .string("last_listed"))
+    #expect(detail["source_updated_at"] == .string(page1[0].2))
+    #expect(detail["source_updated_at_origin"] == .string("last_listed"))
+    #expect(added.allSatisfy { $0.envelope.accountID == h.account.rawValue && $0.envelope.jobID == added[0].envelope.jobID })
+    // Finished by the refresh, and named after the listed `updatedAt`: the next sync fetches nothing.
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let next = await h.run()
+    #expect(next.outcome == .completed && next.detailsFetched == 0 && next.unfinishedLeft == 0)
+}
+
+@Test func aRefreshRecordsAbsenceAndStopsOnRefusal() async throws {
+    let gone = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2")])
+    _ = await gone.run()
+    gone.script([HTTPExchange(status: 404, body: Data())])
+    let absent = await gone.refresh("e1")
+    #expect(absent.outcome == .completed && absent.detailsAbsent == 1 && absent.detailsFetched == 0)
+
+    let refused = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2")])
+    _ = await refused.run()
+    refused.script([HTTPExchange(status: 403, body: Data())])
+    let blocked = await refused.refresh("e1")
+    #expect(blocked.outcome == .blocked && blocked.sessionState == .blocked)
+    #expect(refused.records.last?.envelope.metadata["outcome"] == .string("blocked"))
+}
+
+@Test func aRefreshOfAnythingButAListedConversationSendsAndWritesNothing() async throws {
+    let h = try await Harness([listReply(page2, hasMore: false, cursor: nil), detailReply("e3")])
+    _ = await h.run()
+    let records = h.records.count
+    let requests = h.transport.requestCount
+    for id in ["a1", "never-listed"] {
+        let manifest = await h.refresh(id)
+        #expect(manifest.outcome == .partial && manifest.reason?.hasPrefix("refused") == true)
+    }
+    #expect(h.transport.requestCount == requests && h.records.count == records)
+}
+
+@Test func aRefreshLeavesAnInterruptedSyncToBeResumedAndClosesAnInterruptedRefresh() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2")])
+    _ = await h.run()
+    // A sync and a refresh, both killed after their start records.
+    let sync = UUID()
+    let refresh = UUID()
+    _ = try h.journal.append(
+        JournalDraft(kind: JournalKind.jobStarted, accountID: h.account.rawValue, jobID: sync, metadata: ["job_kind": .string("history_sync")]))
+    _ = try h.journal.append(
+        JournalDraft(
+            kind: JournalKind.jobStarted, accountID: h.account.rawValue, jobID: refresh,
+            metadata: ["job_kind": .string("conversation_refresh")]))
+    h.script([detailReply("e1")])
+    #expect(await h.refresh("e1").outcome == .completed)
+    let closed = h.records.filter { $0.envelope.kind == JournalKind.jobFinished }
+    #expect(closed.contains { $0.envelope.jobID == refresh && $0.envelope.metadata["outcome"] == .string("interrupted") })
+    #expect(!closed.contains { $0.envelope.jobID == sync }, "left for the next sync")
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    #expect(await h.run().resumedJobID == sync)
+}
+
+// Review 2026-10-20 (Docs/reviews/2026-10-20-sync-refresh.md).
+
+@Test func anUnlistedUnfinishedConversationStopsAtTheLimitToo() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: true, cursor: "c1"), listReply(page2, hasMore: false, cursor: nil),
+        detailReply("e1"), detailReply("e2"), detailReply("e3", statuses: generating),
+    ])
+    _ = await h.run()
+    for _ in 0..<2 {
+        h.script([listReply(page1, hasMore: true, cursor: "c1"), detailReply("e3", statuses: generating)])
+        #expect(await h.run().detailsRefetchedUnfinished == 1)
+    }
+    h.script([listReply(page1, hasMore: true, cursor: "c1")])
+    let left = await h.run()
+    #expect(left.outcome == .completed && left.detailsFetched == 0 && left.unfinishedLeft == 1)
+    #expect(h.details("e3").count == 3)
+}
+
+@Test func aSyncStoppedWhileListingStillCountsTheUnfinishedItLeft() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    for _ in 0..<2 {
+        h.script([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+        _ = await h.run()
+    }
+    h.script([HTTPExchange(status: 403, body: Data())])
+    let blocked = await h.run()
+    #expect(blocked.outcome == .blocked && blocked.unfinishedLeft == 1)
+}
+
+@Test func refreshedUnfinishedSnapshotsCountTowardTheLimit() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    for _ in 0..<2 {
+        h.script([detailReply("e1", statuses: generating)])
+        #expect(await h.refresh("e1").detailsFetched == 1)
+    }
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let next = await h.run()
+    #expect(next.outcome == .completed && next.detailsFetched == 0 && next.unfinishedLeft == 1)
+}
+
+/// Documented exception: without `updatedAt` a change can't be detected, so the earlier rule
+/// fetches the conversation on every sync whatever its state; it isn't counted as unfinished.
+@Test func withoutUpdatedAtAnUnfinishedConversationKeepsTheAlwaysFetchRule() async throws {
+    let undated: [(String, String, String?)] = [("e1", "evaluation", nil)]
+    let h = try await Harness([listReply(undated, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+    _ = await h.run()
+    for _ in 0..<3 {
+        h.script([listReply(undated, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+        let manifest = await h.run()
+        #expect(manifest.outcome == .completed && manifest.detailsFetched == 1)
+        #expect(manifest.detailsRefetchedUnfinished == 0 && manifest.unfinishedLeft == 0)
+    }
+    // A refresh names no `updatedAt` it didn't have.
+    h.script([detailReply("e1")])
+    _ = await h.refresh("e1")
+    let metadata = try #require(h.details("e1").last).envelope.metadata
+    #expect(metadata["source_updated_at"] == nil && metadata["source_updated_at_origin"] == nil)
+    #expect(metadata["entry_type_origin"] == .string("last_listed"))
+}
+
+@Test func aSyncClosesAnInterruptedRefresh() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1"), detailReply("e2")])
+    _ = await h.run()
+    let refresh = UUID()
+    _ = try h.journal.append(
+        JournalDraft(
+            kind: JournalKind.jobStarted, accountID: h.account.rawValue, jobID: refresh,
+            metadata: ["job_kind": .string("conversation_refresh")]))
+    h.script([listReply(page1, hasMore: false, cursor: nil)])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .completed && manifest.resumedJobID == nil)
+    let closed = try #require(h.records.first { $0.envelope.kind == JournalKind.jobFinished && $0.envelope.jobID == refresh })
+    #expect(closed.envelope.metadata == ["job_kind": .string("conversation_refresh"), "outcome": .string("interrupted")])
+}
+
+// Re-review 2026-10-20 (Docs/reviews/2026-10-20-sync-refresh.md).
+
+/// Without `updatedAt` there is no run to count: an unfinished conversation the listing doesn't
+/// reach is not fetched by ID, and nothing claims it was fetched for being unfinished or left at
+/// the limit. Listed, it keeps the always-fetch rule (the test above).
+@Test func anUnlistedConversationWithoutUpdatedAtIsNotTrackedAsUnfinished() async throws {
+    let undated: [(String, String, String?)] = [("e3", "evaluation", nil)]
+    let h = try await Harness([
+        listReply(page1, hasMore: true, cursor: "c1"), listReply(undated, hasMore: false, cursor: nil),
+        detailReply("e1"), detailReply("e2"), detailReply("e3", statuses: generating),
+    ])
+    #expect(await h.run().detailsFetched == 3)
+    let requests = h.transport.requestCount
+    h.script([listReply(page1, hasMore: true, cursor: "c1")])
+    let next = await h.run()
+    #expect(next.outcome == .completed && next.pagesListed == 1)
+    #expect(next.detailsFetched == 0 && next.detailsRefetchedUnfinished == 0 && next.unfinishedLeft == 0)
+    #expect(h.transport.requestCount == requests + 2, "identity and one list page")
+}
+
+/// A conversation at the limit that this job lists with a new `updatedAt` is no longer held by the
+/// limit, even when the job stops before fetching it.
+@Test func aChangedUpdatedAtIsNotCountedAsLeftWhenTheSyncStopsBeforeDetails() async throws {
+    let h = try await Harness([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating), detailReply("e2")])
+    _ = await h.run()
+    for _ in 0..<2 {
+        h.script([listReply(page1, hasMore: false, cursor: nil), detailReply("e1", statuses: generating)])
+        _ = await h.run()
+    }
+    let changed: [(String, String, String?)] = [("e1", "evaluation", "2026-09-25T10:00:00Z"), page1[1]]
+    h.script([listReply(changed, hasMore: true, cursor: "c1"), HTTPExchange(status: 403, body: Data())])
+    let blocked = await h.run()
+    #expect(blocked.outcome == .blocked && blocked.pagesListed == 1)
+    #expect(blocked.unfinishedLeft == 0)
+}
+
+// Third review 2026-10-20 (Docs/reviews/2026-10-20-sync-refresh.md).
+
+/// If the listing stops stating `updatedAt` for an unfinished conversation (drift), it is fetched
+/// by ID once more; that snapshot has no `updatedAt`, so it starts no count, and nothing more is
+/// fetched by ID.
+@Test func anUnfinishedConversationWhoseListingLostUpdatedAtIsFetchedByIDOnceMore() async throws {
+    let h = try await Harness([
+        listReply(page1, hasMore: true, cursor: "c1"), listReply(page2, hasMore: false, cursor: nil),
+        detailReply("e1"), detailReply("e2"), detailReply("e3", statuses: generating),
+    ])
+    _ = await h.run()
+    // A full pass lists e3 without `updatedAt`, then stops on its detail (HTTP 500).
+    let undated: [(String, String, String?)] = [("e3", "evaluation", nil), page2[1]]
+    h.script([listReply(page1, hasMore: true, cursor: "c1"), listReply(undated, hasMore: false, cursor: nil), HTTPExchange(status: 500, body: Data())])
+    #expect(await h.run(.testing(fullPass: true)).outcome == .partial)
+    h.script([listReply(page1, hasMore: true, cursor: "c1"), detailReply("e3", statuses: generating)])
+    let once = await h.run()
+    #expect(once.outcome == .completed && once.detailsFetched == 1 && once.detailsRefetchedUnfinished == 1)
+    #expect(try #require(h.details("e3").last).envelope.metadata["source_updated_at"] == nil)
+    h.script([listReply(page1, hasMore: true, cursor: "c1")])
+    let after = await h.run()
+    #expect(after.outcome == .completed && after.detailsFetched == 0 && after.unfinishedLeft == 0)
+}

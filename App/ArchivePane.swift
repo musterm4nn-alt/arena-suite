@@ -56,6 +56,7 @@ struct ArchivePane: View {
                 Text(meta(detail.summary)).foregroundStyle(.secondary).lineLimit(1)
             } trailing: {
                 if detail.snapshotSequences.count > 1 { snapshotMenu(detail) }
+                refreshButton(detail)
                 exportMenu(detail)
                 Button { showingInspector.toggle() } label: {
                     Label(showingInspector ? "Hide Evidence" : "Show Evidence", systemImage: "sidebar.right")
@@ -99,6 +100,38 @@ struct ArchivePane: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Each sync that found changes kept a separate snapshot")
+    }
+
+    /// Fetches the conversation shown again from Arena (Docs/sync-refresh-2026-10-20.md). Its account
+    /// and conversation come from this transcript, never from the selection.
+    @ViewBuilder private func refreshButton(_ detail: ConversationDetail) -> some View {
+        let account = detail.summary.account
+        if accounts.refreshing[account] == detail.summary.remoteID {
+            ProgressView().controlSize(.small).frame(width: 28, height: 24).help("Fetching this conversation from Arena…")
+        } else {
+            let reason = refreshUnavailable(detail)
+            Button {
+                Task { await accounts.refreshConversation(account: account, conversation: detail.summary.remoteID) }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.arenaIcon(width: 28, height: 24))
+            .disabled(reason != nil)
+            .help(reason ?? "Fetch this conversation again from Arena, for example after voting")
+        }
+    }
+
+    private func refreshUnavailable(_ detail: ConversationDetail) -> String? {
+        let account = detail.summary.account
+        if detail.summary.latestSnapshotSequence == nil { return "Only listed on Arena; there is no transcript to fetch again" }
+        if !accounts.canRefresh(kind: detail.summary.kind, latestSnapshot: detail.summary.latestSnapshotSequence) {
+            return "This kind of conversation can't be fetched again"
+        }
+        if accounts.accounts.first(where: { $0.id == account })?.state != .signedIn {
+            return "Sign in to this conversation's account to fetch it again"
+        }
+        if accounts.syncing[account] != nil || accounts.refreshing[account] != nil { return "This account is syncing" }
+        return nil
     }
 
     private func exportMenu(_ detail: ConversationDetail) -> some View {
@@ -383,8 +416,18 @@ private struct TranscriptView: View {
     /// Model claims (each with its source) and what the snapshot holds, above the first turn.
     @ViewBuilder private var intro: some View {
         let claims = detail.claims.filter { $0.subject == .conversation }
-        if !claims.isEmpty || detail.messages.isEmpty {
+        // Only the latest snapshot: sync and Refresh fetch the conversation's next one.
+        let unfinished = !detail.isFrozen && detail.messages.contains { $0.status.map(archive.unfinishedStatuses.contains) ?? false }
+        if !claims.isEmpty || detail.messages.isEmpty || unfinished {
             VStack(alignment: .leading, spacing: 8) {
+                if unfinished {
+                    Label {
+                        Text("Recorded while a response was still being generated. Sync History fetches this conversation again a few times; Refresh fetches it now.")
+                    } icon: {
+                        Image(systemName: "hourglass")
+                    }
+                    .foregroundStyle(.secondary)
+                }
                 if !claims.isEmpty {
                     HStack(spacing: 6) {
                         Text("Model claims").fontWeight(.bold)

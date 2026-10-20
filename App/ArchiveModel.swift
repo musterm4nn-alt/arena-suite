@@ -106,9 +106,16 @@ final class ArchiveModel {
     private var searchTask: Task<Void, Never>?
 
     /// `archive` is nil when the index could not be opened; the app then shows `message`.
-    init(archive: ArchiveService?, notes: VoteNoteService? = nil, unavailableReason: String? = nil) {
+    /// Message statuses that mean the response was still being generated (from the adapter, N-020).
+    let unfinishedStatuses: Set<String>
+
+    init(
+        archive: ArchiveService?, notes: VoteNoteService? = nil, unfinishedStatuses: Set<String> = [],
+        unavailableReason: String? = nil
+    ) {
         self.archive = archive
         self.notes = notes
+        self.unfinishedStatuses = unfinishedStatuses
         message = unavailableReason
     }
 

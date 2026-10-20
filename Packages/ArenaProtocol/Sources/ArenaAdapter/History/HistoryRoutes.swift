@@ -86,7 +86,17 @@ struct ListPage: Equatable, Sendable {
 enum DetailCheck {
     /// A detail snapshot counts only if its body decodes and names the requested conversation.
     static func isValid(_ data: Data, id: String) -> Bool {
-        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
-        return object["id"] as? String == id && object["messages"] is [Any]
+        unfinished(data, id: id) != nil
+    }
+
+    /// nil when the snapshot doesn't count (see `isValid`); otherwise whether a message was still
+    /// being generated when it was taken (`ArenaArchiveDecoder.unfinishedStatuses`, ledger N-020).
+    static func unfinished(_ data: Data, id: String) -> Bool? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            object["id"] as? String == id, let messages = object["messages"] as? [Any]
+        else { return nil }
+        return messages.contains { message in
+            ((message as? [String: Any])?["status"] as? String).map(ArenaArchiveDecoder.unfinishedStatuses.contains) ?? false
+        }
     }
 }

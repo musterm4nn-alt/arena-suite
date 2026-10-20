@@ -41,7 +41,8 @@ public struct SyncOptions: Sendable, Equatable {
 public enum SyncOutcome: String, Codable, Sendable {
     /// Listing reached `hasMore == false` (or caught up on a page that was itself complete), no page
     /// reported `partial` or failed sources, and every needed detail was fetched or observed absent
-    /// (404). Scope: the pagination observed in this job.
+    /// (404). Scope: the pagination observed in this job. For a refresh: the one conversation's
+    /// detail was fetched or observed absent.
     case completed
     /// Not proven complete: stopped early for a recorded reason (rate limit, pagination anomaly,
     /// transport), a detail failed, or the listing was partial, had failed sources or no `hasMore`.
@@ -73,6 +74,13 @@ public struct SyncManifest: Sendable, Codable, Equatable {
     public var detailsFailed = 0
     /// Detail requests answered 404: recorded as absence, not retried until the entry changes.
     public var detailsAbsent = 0
+    /// Of `detailsFetched`, those fetched again only because their latest snapshot was unfinished
+    /// (Docs/sync-refresh-2026-10-20.md).
+    public var detailsRefetchedUnfinished = 0
+    /// Conversations whose latest snapshot is unfinished and that reached the limit of unfinished
+    /// snapshots in a row, not fetched by this job (also when it stopped before the details).
+    /// Refresh fetches one. Sync jobs only.
+    public var unfinishedLeft = 0
     public var listOnlyEntries = 0
     /// "Complete" always names its scope: listing ended on `hasMore == false`, or caught up early.
     public var listingEnd: String?
@@ -111,6 +119,13 @@ public protocol HistorySyncing: Sendable {
     func sync(
         account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
         options: SyncOptions, progress: @escaping @Sendable (SyncProgress) -> Void
+    ) async -> SyncManifest
+
+    /// One conversation's detail again, without listing: identity check, then one detail request,
+    /// each recorded before it is interpreted (Docs/sync-refresh-2026-10-20.md).
+    func refresh(
+        account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
+        conversationID: String, options: SyncOptions
     ) async -> SyncManifest
 }
 
@@ -180,6 +195,31 @@ public actor HistorySyncService {
 
     /// Starts a job and returns its manifest when it ends. Refuses a second job for the same account.
     public func sync(_ account: AccountID, options: SyncOptions = SyncOptions()) async throws -> SyncManifest {
+        let engine = self.engine
+        let progress = self.progress
+        return try await runJob(account, isSync: true) { context, principal, writer, root in
+            await engine.sync(
+                account: context, principal: principal, journal: writer, journalRoot: root, options: options
+            ) { update in progress[account] = update }
+        }
+    }
+
+    /// Fetches one conversation's detail again (Docs/sync-refresh-2026-10-20.md). It takes the
+    /// account's one job slot, so a sync and a refresh of one account exclude each other, and
+    /// maintenance excludes both. It is not the account's last sync.
+    public func refresh(_ account: AccountID, conversationID: String) async throws -> SyncManifest {
+        let engine = self.engine
+        return try await runJob(account, isSync: false) { context, principal, writer, root in
+            await engine.refresh(
+                account: context, principal: principal, journal: writer, journalRoot: root,
+                conversationID: conversationID, options: SyncOptions())
+        }
+    }
+
+    private func runJob(
+        _ account: AccountID, isSync: Bool,
+        _ job: @escaping @Sendable (AccountContext, PrincipalIdentity, JournalWriter, URL) async -> SyncManifest
+    ) async throws -> SyncManifest {
         // Reserved before the first suspension, so neither a second job nor maintenance can slip in.
         guard running[account] == nil, !starting.contains(account), !maintaining else { throw AccountError.busy }
         starting.insert(account)
@@ -188,18 +228,16 @@ public actor HistorySyncService {
         let principal = try await accounts.principal(for: account)
         let writer = try await journals.writer(for: account)
         let root = journals.root(for: account)
-        let engine = self.engine
-        let progress = self.progress
-        let task = Task {
-            await engine.sync(
-                account: context, principal: principal, journal: writer, journalRoot: root, options: options
-            ) { update in progress[account] = update }
-        }
+        let task = Task { await job(context, principal, writer, root) }
         running[account] = task
         let manifest = await task.value
         running[account] = nil
-        progress[account] = nil
-        lastManifest[account] = manifest
+        // Before the next suspension: once the slot is free a new sync may start, and its
+        // progress and manifest must not be overwritten by this one's.
+        if isSync {
+            progress[account] = nil
+            lastManifest[account] = manifest
+        }
         if let state = manifest.sessionState {
             // Guarded by the job's credential generation: a newer sign-in is never downgraded.
             await accounts.noteSessionState(account, generation: context.credentialGeneration, state: state)
@@ -262,4 +300,48 @@ public enum LocalWriteError: Error, Equatable, Sendable {
     case notALocalRecord
     /// The record was appended, but flushing it to disk failed: it may or may not survive a restart.
     case appendedButNotFlushed
+}
+
+/// Refresh: fetches one archived conversation again from Arena, on the user's click
+/// (Docs/sync-refresh-2026-10-20.md). The account and conversation name the transcript it was
+/// clicked in; the index must hold a snapshot of that conversation for that account, of a kind
+/// the provider can fetch again.
+public struct ConversationRefreshService: Sendable {
+    private let sync: HistorySyncService
+    private let archive: ArchiveService
+    private let kinds: Set<String>
+
+    /// `kinds`: the conversation kinds the provider can fetch again (provider vocabulary).
+    public init(sync: HistorySyncService, archive: ArchiveService, kinds: Set<String>) {
+        self.sync = sync
+        self.archive = archive
+        self.kinds = kinds
+    }
+
+    /// Whether a conversation the index holds can be refreshed: a kind the provider can fetch
+    /// again, with a snapshot. The app uses this for its button; `refresh` checks it again.
+    public func canRefresh(kind: String, latestSnapshot: UInt64?) -> Bool {
+        kinds.contains(kind) && latestSnapshot != nil
+    }
+
+    /// The job's manifest. The caller updates the index afterwards, as after a sync.
+    public func refresh(account: AccountID, conversation: String) async throws -> SyncManifest {
+        let held: (kind: String, latest: UInt64?)?
+        do {
+            held = try archive.conversation(account: account, remoteID: conversation)
+                .map { ($0.summary.kind, $0.summary.latestSnapshotSequence) }
+        } catch {
+            throw RefreshError.indexUnreadable
+        }
+        guard let held, canRefresh(kind: held.kind, latestSnapshot: held.latest) else { throw RefreshError.notRefreshable }
+        return try await sync.refresh(account, conversationID: conversation)
+    }
+}
+
+public enum RefreshError: Error, Equatable, Sendable {
+    /// The index holds no snapshot of that conversation for that account (only listed, or unknown),
+    /// or it is of a kind the provider can't fetch again.
+    case notRefreshable
+    /// The index could not be read, so nothing was checked or fetched.
+    case indexUnreadable
 }

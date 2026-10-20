@@ -54,6 +54,17 @@ private actor HeldSync: HistorySyncing {
         return SyncManifest(jobID: job, accountID: account.accountID, outcome: .completed)
     }
 
+    nonisolated func refresh(
+        account: AccountContext, principal: PrincipalIdentity, journal: JournalWriter, journalRoot: URL,
+        conversationID: String, options: SyncOptions
+    ) async -> SyncManifest {
+        await noteRefresh(conversationID)
+        return SyncManifest(jobID: UUID(), accountID: account.accountID, outcome: .completed)
+    }
+
+    private(set) var refreshed: [String] = []
+    private func noteRefresh(_ id: String) { refreshed.append(id) }
+
     private func hold() async {
         waiting = true
         await withCheckedContinuation { gate = $0 }
@@ -474,4 +485,55 @@ private func warnings(_ decoded: [DecodedRecord]) -> [String] {
         #expect(warnings(decoded) == ["local_control_unrecognized: payload representation or transformations"])
         #expect(try a.archive.voteNotes(account: account, conversationID: "c1").isEmpty)
     }
+}
+
+// MARK: - Refresh's index check (Docs/sync-refresh-2026-10-20.md), on this fixture
+
+@Test func aRefreshIsRefusedForAConversationTheIndexDoesNotHoldForThatAccount() async throws {
+    let a = try await NoteArchive()
+    await a.accountService.restoreAll()
+    let refresh = ConversationRefreshService(sync: a.sync, archive: a.archive, kinds: ArenaHistorySync.refreshableKinds)
+    // "d1" is only in the second account; "x" in neither.
+    for (account, conversation) in [(a.accounts[0], "d1"), (a.accounts[0], "x"), (a.accounts[1], "x")] {
+        await #expect(throws: RefreshError.notRefreshable) { _ = try await refresh.refresh(account: account, conversation: conversation) }
+    }
+    #expect(await a.engine.refreshed.isEmpty)
+    #expect(try await refresh.refresh(account: a.accounts[1], conversation: "d1").outcome == .completed)
+    #expect(await a.engine.refreshed == ["d1"])
+}
+
+@Test func aRefreshIsRefusedForAKindArenaCannotFetchAgain() async throws {
+    let a = try await NoteArchive()
+    await a.accountService.restoreAll()
+    // A snapshot of another kind (as a future decoder might record it): in the index, not refreshable.
+    let writer = try await a.journals.writer(for: a.accounts[0])
+    _ = try writer.append(
+        JournalDraft(
+            kind: "exchange", payload: battle("g1"), accountID: a.accounts[0].rawValue,
+            metadata: [
+                "role": .string("detail"), "status": .integer(200), "transfer_end": .string("complete"),
+                "entry_id": .string("g1"), "entry_type": .string("agentic"),
+            ]))
+    try writer.synchronize()
+    _ = try await a.archive.project(a.accounts[0])
+    let held = try #require(try a.archive.conversation(account: a.accounts[0], remoteID: "g1")?.summary)
+    #expect(held.kind == "agentic" && held.latestSnapshotSequence != nil)
+    let refresh = ConversationRefreshService(sync: a.sync, archive: a.archive, kinds: ArenaHistorySync.refreshableKinds)
+    #expect(!refresh.canRefresh(kind: held.kind, latestSnapshot: held.latestSnapshotSequence))
+    await #expect(throws: RefreshError.notRefreshable) { _ = try await refresh.refresh(account: a.accounts[0], conversation: "g1") }
+    #expect(await a.engine.refreshed.isEmpty)
+}
+
+@Test func aRefreshIsRefusedWhenTheIndexCannotBeRead() async throws {
+    let a = try await NoteArchive()
+    await a.accountService.restoreAll()
+    let sqlite = Process()
+    sqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    sqlite.arguments = [a.root.appendingPathComponent("index/archive.sqlite").path, "DROP TABLE conversations;"]
+    try sqlite.run()
+    sqlite.waitUntilExit()
+    #expect(sqlite.terminationStatus == 0)
+    let refresh = ConversationRefreshService(sync: a.sync, archive: a.archive, kinds: ArenaHistorySync.refreshableKinds)
+    await #expect(throws: RefreshError.indexUnreadable) { _ = try await refresh.refresh(account: a.accounts[0], conversation: "c1") }
+    #expect(await a.engine.refreshed.isEmpty)
 }

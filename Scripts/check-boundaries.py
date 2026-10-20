@@ -32,7 +32,9 @@ mcp_forbidden = re.compile(
     r"FileManager\.default\.(?:create|remove|move|copy|replace|setAttributes|trash)|"
     r"\.write\(to:|(?<![.\w])open\(|\bchmod\(|\bunlink\(|\brename\(|"
     # Local vote notes (Docs/vote-notes-2026-10-20.md) are the app's alone: MCP neither reads nor writes them.
-    r"[Vv]oteNote|vote_notes|LocalControl|local\.control|appendLocal",
+    r"[Vv]oteNote|vote_notes|LocalControl|local\.control|appendLocal|"
+    # Refresh and sync go to Arena (Docs/sync-refresh-2026-10-20.md): never from MCP.
+    r"ConversationRefresh|RefreshError|HistorySyncing|ArenaHistorySync|conversation_refresh",
 )
 # The deny-list must keep catching these (self-test on every run).
 for probe in [
@@ -44,6 +46,8 @@ for probe in [
     "try archive.voteNotes(account: a, conversationID: c)", "VoteNoteService(sync: s, archive: a)",
     "SELECT * FROM vote_notes", "LocalControl.draft(n, account: a)", "kind == \"local.control\"",
     "try await sync.appendLocal(d, account: a)",
+    "ConversationRefreshService(sync: s, archive: a)", "catch RefreshError.notRefreshable",
+    "ArenaHistorySync(sessions: s)", "let e: any HistorySyncing", "job_kind == \"conversation_refresh\"",
 ]:
     assert mcp_forbidden.search(probe), f"MCP deny-list self-test missed: {probe}"
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:
