@@ -71,6 +71,33 @@ than one account, and no model ID has more than one revealed name in any account
 one account labels that ID in another (Insights and the history filters' model menu). Nothing in a response
 states this. Where names differ, the latest record's name is shown (by sequence, then account, then name).
 
+N-019 (2026-10-20, `verified_observation`, counts and shapes only; read-only over the archived journals):
+the 19 detail responses that carry attachments hold 138 `messages[].experimental_attachments[]`, all with a `url`,
+all images (`image/png` 77, `image/jpeg` 59, `image/webp` 2). Every URL is `https` on
+`messages-prod.<id>.r2.cloudflarestorage.com` with path `/<id>/<id>.<ext>`, and an S3 SigV4 presigned query:
+`X-Amz-Algorithm`, `X-Amz-Content-Sha256` (`UNSIGNED-PAYLOAD`), `X-Amz-Credential` (scope `auto/s3/aws4_request`),
+`X-Amz-Date`, `X-Amz-Expires` (`3600` in all 138), `X-Amz-Signature`, `X-Amz-SignedHeaders` (`host`),
+`x-amz-checksum-mode` (`ENABLED`), `x-id` (`GetObject`). Every `X-Amz-Date` is 0–5 s before the record's
+`observed_at`, one signing time per response: Arena signs the links when it serves the detail. All 138 had
+expired at the time of counting. No object path appears in more than one snapshot, so whether a path stays the
+same across fetches is not observed. **Live (2026-10-20, announced, the user's own new battle with one image,
+synced by the user):** one native GET of the fresh link (ephemeral `URLSession`, no cookies, no credentials, no
+cache, redirects refused) returned `200`, `Content-Type: image/png` as declared, `Content-Length` equal to the
+1 234 131 bytes received, PNG magic bytes, and an `ETag`; headers `accept-ranges`, `cf-ray`, `connection`,
+`content-length`, `content-type`, `date`, `etag`, `last-modified`, `server` (no `x-amz-checksum-*`). No request
+went to Arena itself; the bytes stayed in memory. Still not observed: whether a later fetch of the same
+conversation signs the same object path, whether the `ETag` is the bytes' MD5, and whether old objects remain.
+
+N-020 (2026-10-20, `verified_observation` + `assumption`, counts only; the user's own battle, announced): the
+user synced while a new battle was generating, then let it finish, voted, and synced again about 40 minutes later.
+The first sync's detail recorded 3 messages: the prompt `success` and both responses `pending`, no vote. The
+second sync's history list response was **byte-identical** to the first, so the incremental rule (plan §9.3:
+refetch only when the list's `updatedAt` changes) fetched no detail. The archive keeps the unfinished responses
+and no vote. Across the live index, the latest snapshots of 3 conversations hold `pending` messages (2 `battle`,
+1 `direct-battle`; 5 messages); 25 of 44 battles' latest snapshots carry a vote. **`assumption`:** the list
+entry, including `updatedAt`, does not change when responses finish or a vote is cast (server-side caching is not
+excluded). So a snapshot taken before either is never refreshed by the incremental sync.
+
 N-013: [phase4-index-2026-09-24.md](phase4-index-2026-09-24.md) records that every field in the 51 archived
 detail and 7 list responses is recognized by `arena-decoder/1` (0 unknown paths, 0 warnings), content-block kinds
 `text`/`reasoning`/`tool-call`/`tool-result`, lanes `a`/`b`, and that `JSONSerialization` keeps the first duplicate key.
