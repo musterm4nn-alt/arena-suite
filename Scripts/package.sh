@@ -56,3 +56,7 @@ else
   mv "$staging/Arena Suite.app" "$destination"
   echo "Installed $version in ~/Applications."
 fi
+# ditto keeps the build's folder date, so the Dock and Finder could keep an older install's cached
+# icon: give the bundle a new date and register it again with Launch Services.
+touch "$destination"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$destination" || true
