@@ -6,7 +6,7 @@ evidence, and export. It is read-only. It never sends prompts, votes, reveals mo
 ## Install and upgrade
 
 ```sh
-bash Scripts/package.sh        # Release build, signature check, install to ~/Applications/Arena Suite.app
+bash Scripts/package.sh        # Release build, signature check, install to /Applications/Arena Suite.app
 ```
 
 - It needs the git-ignored `Config/Signing.local.xcconfig`. An ad-hoc build is refused because the
@@ -15,7 +15,7 @@ bash Scripts/package.sh        # Release build, signature check, install to ~/Ap
   the app is running. The archive in `~/Library/Application Support/Arena Suite/Archive` is never
   touched.
 - If the script is killed mid-swap, the previous app is kept in
-  `~/Applications/.arena-suite-install.*/previous.app`.
+  `/Applications/.arena-suite-install.*/previous.app` (`~/Applications` before 2026-10-20).
 - Checked on the target Mac (2026-09-24):
   - A clean install with an empty home folder creates an empty owner-only archive and starts with
     no accounts.

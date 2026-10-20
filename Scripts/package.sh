@@ -1,6 +1,6 @@
 #!/bin/bash
 # Personal release (plan v3 §13, Phase 7): Release build signed with the local identity, verified,
-# then installed to ~/Applications/Arena Suite.app. An existing install is replaced only after the
+# then installed to /Applications/Arena Suite.app. An existing install is replaced only after the
 # new copy is complete; the archive in ~/Library/Application Support/Arena Suite is never touched.
 # Usage: Scripts/package.sh [--no-install]
 set -euo pipefail
@@ -31,15 +31,23 @@ echo "Built Arena Suite $version ($build), signature verified."
 
 [ "${1:-}" = "--no-install" ] && exit 0
 
-destination="$HOME/Applications/Arena Suite.app"
-mkdir -p "$HOME/Applications"
+destination="/Applications/Arena Suite.app"
+if [ ! -w /Applications ]; then
+  echo "/Applications is not writable for this user; nothing installed." >&2
+  exit 1
+fi
+# Installs before 2026-10-20 went to ~/Applications; a copy left there would be a second app.
+if [ -d "$HOME/Applications/Arena Suite.app" ]; then
+  echo "An older install is still in ~/Applications/Arena Suite.app; move it to the Trash, then run this again." >&2
+  exit 1
+fi
 if pgrep -f "^$destination/Contents/MacOS/ArenaSuite" >/dev/null; then
   echo "Arena Suite is running from $destination. Quit it, then run this again." >&2
   exit 1
 fi
 # Unique staging next to the destination (same volume, so the swap is a rename). If this script is
-# killed mid-swap, the previous app is in ~/Applications/.arena-suite-install.*/previous.app.
-staging=$(mktemp -d "$HOME/Applications/.arena-suite-install.XXXXXX")
+# killed mid-swap, the previous app is in /Applications/.arena-suite-install.*/previous.app.
+staging=$(mktemp -d "/Applications/.arena-suite-install.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 ditto "$built" "$staging/Arena Suite.app"
 codesign --verify --deep --strict "$staging/Arena Suite.app"
@@ -51,10 +59,10 @@ if [ -d "$destination" ]; then
     echo "Install failed; the previous version was put back." >&2
     exit 1
   fi
-  echo "Upgraded $previous -> $version in ~/Applications."
+  echo "Upgraded $previous -> $version in /Applications."
 else
   mv "$staging/Arena Suite.app" "$destination"
-  echo "Installed $version in ~/Applications."
+  echo "Installed $version in /Applications."
 fi
 # ditto keeps the build's folder date, so the Dock and Finder could keep an older install's cached
 # icon: give the bundle a new date and register it again with Launch Services.

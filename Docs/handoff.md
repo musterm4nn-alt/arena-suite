@@ -12,8 +12,10 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
   - Per-phase records: `Docs/phase*-*.md`.
   - Reviews: `Docs/reviews/2026-09-24-*.md`.
   - Release notes and known limits: `Docs/release-notes-1.0.md`.
-- Arena Suite 1.0.0 is installed at `~/Applications/Arena Suite.app` (signed Release, via
-  `Scripts/package.sh`).
+- Arena Suite 1.0.0 is installed at `/Applications/Arena Suite.app` (signed Release, via
+  `Scripts/package.sh`). It was in `~/Applications` until 2026-10-20, when the user asked for it in
+  `/Applications`; the installer refuses while a copy is left in `~/Applications`, and it gives
+  the bundle a new date so the Dock shows the current icon.
 - Live archive: `~/Library/Application Support/Arena Suite/Archive`.
   - 3 accounts, all signed in; 57 conversations; journals of 30 / 31 / 49 records.
   - Verify is clean, and the live index equals a fresh replay.
@@ -276,7 +278,7 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
 ```sh
 bash Scripts/test-offline.sh        # boundaries, core + adapter tests, golden journal, crash gate, harnesses
 bash Scripts/build.sh Debug         # app → DerivedData/Build/Products/Debug/ArenaSuite.app
-bash Scripts/package.sh             # signed Release → ~/Applications/Arena Suite.app (refuses while running)
+bash Scripts/package.sh             # signed Release → /Applications/Arena Suite.app (refuses while running)
 # Opt-in:
 ARENA_SUITE_REAL_ARCHIVE="$HOME/Library/Application Support/Arena Suite/Archive" \
   swift test --package-path Packages/ArenaProtocol --filter realArchive    # rebuild, exports, verify+backup on real data
