@@ -190,6 +190,8 @@ public final class ArchiveIndex: Sendable {
         /// The sequence is not one of the conversation's snapshots (it may belong to another
         /// conversation, not exist, or be beyond SQLite's integer range).
         case snapshotNotInConversation(UInt64)
+        /// A stored vote note has a choice this build does not know.
+        case unreadableVoteNote
     }
 
     public enum ReadOnlyOpenError: Error, Equatable {
@@ -251,6 +253,7 @@ public final class ArchiveIndex: Sendable {
     private static let migrator: DatabaseMigrator = {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in try createSchema(db) }
+        migrator.registerMigration("v2") { db in try createVoteNotes(db) }
         return migrator
     }()
 
@@ -260,6 +263,11 @@ public final class ArchiveIndex: Sendable {
         "meta", "checkpoints", "conversations", "snapshots", "messages", "message_parents", "blocks",
         "attachments", "model_claims", "feedback", "unknown_fields", "warnings", "search",
     ]
+
+    /// Tables added after the first schema, hashed after `digestTables` and only when they hold
+    /// rows: an archive that never used one keeps the digest it had before, which older backups
+    /// recorded as their replay digest.
+    private static let laterDigestTables = ["vote_notes"]
 
     /// Full primary key of each table; `search` (FTS5) has no primary key, so all its columns.
     private static let digestOrder: [String: String] = [
@@ -276,6 +284,7 @@ public final class ArchiveIndex: Sendable {
         "unknown_fields": "account_id, path",
         "warnings": "account_id, seq, ordinal",
         "search": "text, account_id, conversation_id, snapshot_seq, message_id, kind",
+        "vote_notes": "account_id, conversation_id, message_a, message_b",
     ]
 
     private static func createSchema(_ db: Database) throws {
@@ -415,13 +424,29 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// Local notes beside recorded votes (`local.control`, Docs/vote-notes-2026-10-20.md).
+    private static func createVoteNotes(_ db: Database) throws {
+        try db.create(table: "vote_notes") { t in
+            t.column("account_id", .text).notNull()
+            t.column("conversation_id", .text).notNull()
+            t.column("message_a", .text).notNull()
+            t.column("message_b", .text).notNull()
+            t.column("choice", .text).notNull()
+            t.column("vote_id", .text)
+            t.column("seq", .integer).notNull()
+            t.column("noted_at", .text)
+            t.primaryKey(["account_id", "conversation_id", "message_a", "message_b"])
+        }
+    }
+
     /// Drops and recreates every table in one transaction. Used to rebuild from the journal.
     public func reset() throws {
         try pool.write { db in
-            for table in Self.digestTables {
+            for table in Self.digestTables + Self.laterDigestTables {
                 try db.execute(sql: "DROP TABLE IF EXISTS \(table)")
             }
             try Self.createSchema(db)
+            try Self.createVoteNotes(db)
         }
     }
 
@@ -446,12 +471,22 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// The version that projected local (`local.control`) records; nil until one was projected, so an
+    /// archive without local records keeps its digest.
+    public func localControlVersion() throws -> String? {
+        try pool.read { db in
+            try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'local_control_version'")
+        }
+    }
+
     // MARK: Apply
 
     /// Applies decoded records in one write transaction, then advances the checkpoint and records
-    /// the decoder version. Records at or below the account's current checkpoint are skipped.
+    /// the decoder version, and `localControlVersion` when the batch held local records. Records at
+    /// or below the account's current checkpoint are skipped.
     public func apply(
-        account: AccountID, records: [(RecordRef, DecodedRecord)], through sequence: UInt64, decoderVersion: String
+        account: AccountID, records: [(RecordRef, DecodedRecord)], through sequence: UInt64, decoderVersion: String,
+        localControlVersion: String? = nil
     ) throws {
         try pool.write { db in
             let accountID = account.rawValue.uuidString
@@ -473,6 +508,14 @@ public final class ArchiveIndex: Sendable {
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """,
                 arguments: args(["version": decoderVersion]))
+            if let localControlVersion {
+                try db.execute(
+                    sql: """
+                        INSERT INTO meta (key, value) VALUES ('local_control_version', :version)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        """,
+                    arguments: args(["version": localControlVersion]))
+            }
         }
     }
 
@@ -514,6 +557,36 @@ public final class ArchiveIndex: Sendable {
                         "account": accountID, "seq": seq, "ordinal": warningOrdinal, "code": code, "detail": detail,
                     ]))
                 warningOrdinal += 1
+            case .voteNote(let note):
+                let key: [String: Any] = [
+                    "account": accountID, "conversation": note.conversationID, "a": note.messageA, "b": note.messageB,
+                    "seq": seq,
+                ]
+                if let choice = note.choice {
+                    var values = key
+                    values["choice"] = choice.rawValue
+                    values["vote"] = note.voteID as Any
+                    values["noted"] = note.notedAt as Any
+                    // Latest wins; the guard keeps an out-of-order replay from going back.
+                    try db.execute(
+                        sql: """
+                            INSERT INTO vote_notes (account_id, conversation_id, message_a, message_b, choice, vote_id, seq, noted_at)
+                            VALUES (:account, :conversation, :a, :b, :choice, :vote, :seq, :noted)
+                            ON CONFLICT(account_id, conversation_id, message_a, message_b) DO UPDATE SET
+                              choice = excluded.choice, vote_id = excluded.vote_id, seq = excluded.seq,
+                              noted_at = excluded.noted_at
+                            WHERE excluded.seq >= vote_notes.seq
+                            """,
+                        arguments: args(values))
+                } else {
+                    try db.execute(
+                        sql: """
+                            DELETE FROM vote_notes
+                            WHERE account_id = :account AND conversation_id = :conversation
+                              AND message_a = :a AND message_b = :b AND seq <= :seq
+                            """,
+                        arguments: args(key))
+                }
             }
         }
         for (path, count) in decoded.unknownFields {
@@ -917,6 +990,29 @@ public final class ArchiveIndex: Sendable {
         }
     }
 
+    /// Your local notes in one conversation (Docs/vote-notes-2026-10-20.md), ordered by message pair.
+    /// Only the app reads these; MCP never does.
+    public func voteNotes(account: AccountID, conversationID: String) throws -> [VoteNote] {
+        try pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT conversation_id, message_a, message_b, choice, vote_id, seq, noted_at FROM vote_notes
+                    WHERE account_id = :account AND conversation_id = :conversation
+                    ORDER BY message_a, message_b
+                    """,
+                arguments: args(["account": account.rawValue.uuidString, "conversation": conversationID]))
+            // Only valid choices are written (LocalControl checks them); any other is reported, not skipped.
+            return try rows.map { row -> VoteNote in
+                guard let choice = VoteOutcome(rawValue: row["choice"]) else { throw QueryError.unreadableVoteNote }
+                let seq: Int64 = row["seq"]
+                return VoteNote(
+                    conversationID: row["conversation_id"], messageA: row["message_a"], messageB: row["message_b"],
+                    choice: choice, voteID: row["vote_id"], notedAt: row["noted_at"], recordSequence: UInt64(exactly: seq))
+            }
+        }
+    }
+
     public func warnings(account: AccountID?) throws -> [IndexWarning] {
         try pool.read { db in
             var sql = "SELECT account_id, seq, code, detail FROM warnings"
@@ -1265,7 +1361,7 @@ public final class ArchiveIndex: Sendable {
     public func counts() throws -> [String: Int] {
         try pool.read { db in
             var counts: [String: Int] = [:]
-            for table in Self.digestTables {
+            for table in Self.digestTables + Self.laterDigestTables {
                 counts[table] = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? 0
             }
             return counts
@@ -1310,10 +1406,11 @@ public final class ArchiveIndex: Sendable {
 
     private static func contentDigest(_ db: Database) throws -> String {
         var hasher = SHA256()
-        for table in Self.digestTables {
-            hasher.update(data: Self.tagged(.text, Data(table.utf8)))
+        for table in Self.digestTables + Self.laterDigestTables {
             let order = Self.digestOrder[table] ?? ""
             let rows = try Row.fetchAll(db, sql: "SELECT * FROM \(table) ORDER BY \(order)")
+            if rows.isEmpty, Self.laterDigestTables.contains(table) { continue }
+            hasher.update(data: Self.tagged(.text, Data(table.utf8)))
             for row in rows {
                 for index in 0..<row.count {
                     Self.hash(row[index]?.databaseValue ?? .null, into: &hasher)

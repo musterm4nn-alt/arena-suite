@@ -205,6 +205,8 @@ public enum ArchiveEvent: Equatable, Sendable {
     case absent(remoteID: String)
     /// A structural observation that needs attention (never a silent drop).
     case warning(code: String, detail: String)
+    /// A local note beside a recorded vote (a `local.control` record); the latest for a pair wins.
+    case voteNote(VoteNote)
 }
 
 /// Decoder output for one record: events plus every key path the decoder did not recognize.

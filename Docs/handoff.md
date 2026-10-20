@@ -3,7 +3,7 @@
 Read this first in a new session, then `Docs/status.md`, `AGENTS.md` and
 `Arena-Suite-Master-Plan-v3.md`. This file is replaced, not appended to.
 
-Updated 2026-10-20, after the export options (committed locally, not pushed). The app icon, the Insights page and the history filters were pushed at the user's request on 2026-10-19.
+Updated 2026-10-20, after the local vote notes (committed locally, not pushed; the encrypted backup was pushed). The app icon, the Insights page and the history filters were pushed at the user's request on 2026-10-19.
 
 ## Where things stand
 
@@ -116,14 +116,35 @@ Updated 2026-10-20, after the export options (committed locally, not pushed). Th
         owner-only.
     - The boundary check allows `AppleArchive` and `System` in ApplicationActions (Apple system
       frameworks, not dependencies).
+  - **Local vote notes** (`Docs/vote-notes-2026-10-20.md`, review `Docs/reviews/2026-10-20-vote-notes.md`):
+    item 6 of the gap analysis. A note beside a vote Arena recorded ("A is better", "B is better",
+    "Tie", "Both are bad", or removed), kept only in this archive and never sent to Arena. It is not
+    a vote: no transport, nothing pre-selected, no MCP path (the boundary script's MCP deny-list
+    names notes and `local.control`).
+    - Format: the first `local.control` record (plan §7), type `vote_note` version 1, payload
+      `local_control_json` with IDs and the choice only. `LocalControl` (ApplicationActions)
+      writes and decodes it; ArenaAdapter never sees it. Unknown or malformed local records become
+      warnings that never repeat IDs.
+    - Write path: `VoteNoteService.set` checks that the vote, exactly as recorded, is in the named
+      snapshot of that account's conversation. `HistorySyncService.appendLocal` refuses during
+      maintenance, holds maintenance off while it writes, refuses accounts not in the app, and
+      flushes. The account is then projected. The app takes the account, conversation and snapshot
+      from the transcript the menu is in, never from the selection.
+    - Index: migration `v2` adds `vote_notes`; tables added after v1 enter the content digest only
+      when they hold rows, and `meta.local_control_version` is stored only once a local record is
+      projected. Both keep the digest of archives without notes, so backups made before still pass
+      their check (`archiveWithoutNotesKeepsItsDigest` pins a digest computed at `544194b`). A
+      different stored local version rebuilds the index.
+    - Not in exports, Insights or filters (a test pins that). Known limit: removing an account at
+      the instant its note is written can add that note to the removed account's kept journal.
   - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
     gaps", in order):
-    1. import of arena-exporter folders (the second half of item 7; it needs arena-exporter
-       2.2.2's format from `musterm4nn-alt/arena-exporter`). GitHub backup is a separate decision:
-       it sends private conversations off the Mac;
-    2. vote correction as a local note beside Arena's recorded vote, never sent to Arena (plan §1);
-    3. attachments (observe whether their URLs can be fetched natively first, then plan §9.4);
-    4. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
+    1. attachments (observe whether their URLs can be fetched natively first, then plan §9.4);
+    2. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
+
+    Import of arena-exporter folders (the second half of item 7) is not to be built: the user
+    chose "Skip import" on 2026-10-20. GitHub backup stays a separate decision: it sends private
+    conversations off the Mac.
 
     Items 3–5 of the analysis (failed requests, stream evidence, requested model) need the page
     read live, which ADR 0006 rules out. Still pending from the earlier announcement: bulk export
@@ -180,6 +201,8 @@ Updated 2026-10-20, after the export options (committed locally, not pushed). Th
 - **Font:** Departure Mono (departuremono.com), 11 pt body and 22 pt headings.
 - **Voting/reveal:** Track B only, as manual user-clicked actions. Never automated, never exposed
   through MCP.
+- **arena-exporter import:** not built (user, 2026-10-20). Its files are that extension's
+  reading of the page, not Arena's responses.
 - **Signing:** use the Apple Development identity. It lives only in the git-ignored
   `Config/Signing.local.env` and `Config/Signing.local.xcconfig`.
 

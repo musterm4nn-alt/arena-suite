@@ -18,7 +18,7 @@ struct ArenaSuiteApp: App {
     init() {
         Theme.registerFonts()
         let services = AppComposition.makeServices()
-        let archive = ArchiveModel(archive: services.archive, unavailableReason: services.archiveUnavailable)
+        let archive = ArchiveModel(archive: services.archive, notes: services.notes, unavailableReason: services.archiveUnavailable)
         let accounts = AccountsModel(services: services, archiveRoot: AppComposition.archiveRoot)
         // One index update after the last of several concurrent syncs, not one per finished job.
         accounts.onSyncFinished = { [archive] _ in

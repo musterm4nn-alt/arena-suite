@@ -13,6 +13,8 @@ enum AppComposition {
         let archiveUnavailable: String?
         /// nil when the index could not be opened. Votes are read with the adapter's vocabulary (N-016).
         let insights: InsightsService?
+        /// Your notes beside recorded votes, kept locally (never sent). nil when the index could not be opened.
+        let notes: VoteNoteService?
         let maintenance: Maintenance
         /// Where the embedded site window may go (ADR 0006).
         let website: WebSitePolicy
@@ -87,6 +89,7 @@ enum AppComposition {
         return Services(
             accounts: accounts, sync: sync, archive: archive, archiveUnavailable: unavailable,
             insights: archive.map { InsightsService(archive: $0, vocabulary: ArenaArchiveDecoder.voteVocabulary) },
+            notes: archive.map { VoteNoteService(sync: sync, archive: $0) },
             maintenance: maintenance,
             website: ArenaWebsite.policy)
     }

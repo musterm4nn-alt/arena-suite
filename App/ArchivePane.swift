@@ -338,12 +338,19 @@ private struct TranscriptView: View {
                 LazyVStack(alignment: .leading, spacing: 28) {
                     intro
                     ForEach(layout.turns) { turn in
-                        TurnView(turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage) {
+                        TurnView(
+                            turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage,
+                            notes: archive.canWriteNotes ? archive.voteNotes : nil,
+                            notesUnavailable: archive.canWriteNotes ? archive.notesUnavailable : "Notes are unavailable: the archive index could not be opened.",
+                            savingNotes: archive.savingNotes
+                        ) {
                             archive.inspect($0)
                             showInspector()
                         } inspectVote: { vote in
                             archive.inspect(.init(title: "Vote \(vote.remoteID)", pointers: ["$.pairwiseFeedbacks[] (id \(vote.remoteID))"]))
                             showInspector()
+                        } setNote: { choice, vote in
+                            archive.setNote(choice, beside: vote, in: detail)
                         }
                     }
                     if !layout.unmatchedVotes.isEmpty {
@@ -430,8 +437,14 @@ private struct TurnView: View {
     let turn: TranscriptLayout.Turn
     let names: [String: String]
     let highlighted: String?
+    /// Your local notes in this conversation; nil when they cannot be read or written.
+    let notes: [VoteNote]?
+    /// Why `notes` is nil.
+    let notesUnavailable: String?
+    let savingNotes: Set<String>
     let inspect: (DetailMessage) -> Void
     let inspectVote: (ArchivedFeedback) -> Void
+    let setNote: (VoteOutcome?, ArchivedFeedback) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -461,12 +474,21 @@ private struct TurnView: View {
                     highlighted: highlighted == message.remoteID, inspect: inspect)
             }
             ForEach(turn.votes, id: \.remoteID) { vote in
+                let note = notes?.first { $0.messageA == vote.messageA && $0.messageB == vote.messageB }
+                let letters = laneLetters(vote)
                 HStack(spacing: 6) {
                     Text("Your vote: \(vote.value ?? "unknown")").foregroundStyle(.secondary)
+                    if let choice = note?.choice {
+                        Text("· Your local note: \(Self.title(choice, letters))")
+                            .help("Kept only in this archive. It is never sent to Arena.")
+                    }
                     Button { inspectVote(vote) } label: {
                         Label("Show evidence for this vote", systemImage: "doc.text.magnifyingglass")
                     }
                     .buttonStyle(.arenaIcon(width: 22, height: 20))
+                    if vote.messageA != nil, vote.messageB != nil, vote.messageA != vote.messageB {
+                        noteMenu(vote, current: note?.choice, letters: letters)
+                    }
                 }
                 .padding(.leading, 12)
                 .padding(.trailing, 4)
@@ -474,6 +496,60 @@ private struct TurnView: View {
                 .background(Capsule().fill(Theme.sunken.opacity(0.6)))
                 .frame(maxWidth: .infinity)
             }
+        }
+    }
+
+    /// A menu of your note's choices. Nothing is pre-selected, and nothing here is sent anywhere.
+    private func noteMenu(_ vote: ArchivedFeedback, current: VoteOutcome?, letters: (a: String, b: String)) -> some View {
+        Menu {
+            // Checks the current note; choosing it again records nothing new.
+            Picker(
+                "Your note",
+                selection: Binding(get: { current }, set: { choice in if let choice, choice != current { setNote(choice, vote) } })
+            ) {
+                ForEach(VoteOutcome.allCases, id: \.self) { outcome in
+                    Text(Self.title(outcome, letters)).tag(VoteOutcome?.some(outcome))
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            if current != nil {
+                Divider()
+                Button("Remove Note") { setNote(nil, vote) }
+            }
+            Divider()
+            Text("A note is kept only in this archive. It is never sent to Arena.")
+        } label: {
+            Label(current == nil ? "Add a note" : "Change your note", systemImage: current == nil ? "square.and.pencil" : "pencil")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.arenaIcon(width: 22, height: 20))
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(notes == nil || savingNotes.contains(vote.remoteID))
+        .help(notes == nil
+            ? notesUnavailable ?? "Notes are unavailable."
+            : "Your own note beside this vote, kept only in this archive. It is never sent to Arena.")
+        .accessibilityLabel(current == nil ? "Add a local note to this vote" : "Change your local note on this vote")
+    }
+
+    /// The letters the transcript shows for the vote's two messages (their lanes); the vote's own A
+    /// and B when a lane is not exposed or both would read the same.
+    private func laneLetters(_ vote: ArchivedFeedback) -> (a: String, b: String) {
+        func lane(_ id: String?) -> String? {
+            turn.lanes.first { $0.messages.contains { $0.message.remoteID == id } }?.lane?.uppercased()
+        }
+        guard let a = lane(vote.messageA), let b = lane(vote.messageB), a != b else { return ("A", "B") }
+        return (a, b)
+    }
+
+    private static func title(_ outcome: VoteOutcome, _ letters: (a: String, b: String)) -> String {
+        switch outcome {
+        case .preferA: "\(letters.a) is better"
+        case .preferB: "\(letters.b) is better"
+        case .tie: "Tie"
+        case .bothBad: "Both are bad"
         }
     }
 

@@ -30,7 +30,9 @@ mcp_forbidden = re.compile(
     r"ArchiveIndex\(url:|DatabasePool|DatabaseQueue|\.save\(|\.load\(\)|PrivateFile\.|"
     r"\.export\(|\.build\(recipe:|BackupService|VerificationService|DiagnosticsService|HistorySyncService|AccountService|"
     r"FileManager\.default\.(?:create|remove|move|copy|replace|setAttributes|trash)|"
-    r"\.write\(to:|(?<![.\w])open\(|\bchmod\(|\bunlink\(|\brename\(",
+    r"\.write\(to:|(?<![.\w])open\(|\bchmod\(|\bunlink\(|\brename\(|"
+    # Local vote notes (Docs/vote-notes-2026-10-20.md) are the app's alone: MCP neither reads nor writes them.
+    r"[Vv]oteNote|vote_notes|LocalControl|local\.control|appendLocal",
 )
 # The deny-list must keep catching these (self-test on every run).
 for probe in [
@@ -39,6 +41,9 @@ for probe in [
     "ExportService(archive: a).export(account: x)", "let f = open(p, O_RDWR)", "a.checkAgainstJournal(scratch: u)",
     "index.reset()", "try await journals.writer(for: a)", "URLSession.shared", "ArchiveIndex(url: u)", "chmod(p, 0)",
     "try await datasets.build(recipe: r, in: u, appVersion: v)",
+    "try archive.voteNotes(account: a, conversationID: c)", "VoteNoteService(sync: s, archive: a)",
+    "SELECT * FROM vote_notes", "LocalControl.draft(n, account: a)", "kind == \"local.control\"",
+    "try await sync.appendLocal(d, account: a)",
 ]:
     assert mcp_forbidden.search(probe), f"MCP deny-list self-test missed: {probe}"
 for allowed_text in ["ArchiveTools.readOnly(archiveRoot: root)", "output.write(response)", "JournalStore(archiveRoot: r)"]:

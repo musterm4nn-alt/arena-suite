@@ -217,11 +217,35 @@ public actor HistorySyncService {
     /// Verify, backup, restore and rebuild need journals that are not being appended to. Refuses
     /// while any sync runs; while held, new syncs are refused with `AccountError.busy`.
     public func beginMaintenance() throws {
-        guard running.isEmpty, starting.isEmpty, !maintaining else { throw AccountError.busy }
+        guard running.isEmpty, starting.isEmpty, localWrites == 0, !maintaining else { throw AccountError.busy }
         maintaining = true
     }
 
     public func endMaintenance() { maintaining = false }
+
+    // MARK: Local records (plan v3 §7, `local.control`)
+
+    private var localWrites = 0
+
+    /// Appends one local record to `account`'s journal and flushes it to disk. Refused while
+    /// maintenance runs; a write in progress holds maintenance off (reserved before the first
+    /// suspension). A sync of the same account may run alongside: the shared writer serializes
+    /// appends, and job tracking ignores records without a job ID. Refused for an account that is not
+    /// in the app: a removed account's journal is kept as evidence, not extended.
+    public func appendLocal(_ draft: JournalDraft, account: AccountID) async throws -> AppendReceipt {
+        guard draft.kind == LocalControl.kind, draft.accountID == account.rawValue, draft.jobID == nil else {
+            throw LocalWriteError.notALocalRecord
+        }
+        guard !maintaining else { throw AccountError.busy }
+        localWrites += 1
+        defer { localWrites -= 1 }
+        guard await accounts.accounts().contains(where: { $0.id == account }) else { throw AccountError.unknownAccount }
+        let writer = try await journals.writer(for: account)
+        let receipt = try writer.append(draft)
+        // Appended but maybe not on disk: the record may still be read after the next launch.
+        do { try writer.synchronize() } catch { throw LocalWriteError.appendedButNotFlushed }
+        return receipt
+    }
 }
 
 final class ProgressBox: @unchecked Sendable {
@@ -231,4 +255,11 @@ final class ProgressBox: @unchecked Sendable {
         get { lock.withLock { values[account] } }
         set { lock.withLock { values[account] = newValue } }
     }
+}
+
+public enum LocalWriteError: Error, Equatable, Sendable {
+    /// Only `local.control` records for the named account, outside any job, go through `appendLocal`.
+    case notALocalRecord
+    /// The record was appended, but flushing it to disk failed: it may or may not survive a restart.
+    case appendedButNotFlushed
 }

@@ -53,7 +53,10 @@ public actor ArchiveService {
     /// from the decoder's (and is not nil), rebuilds every account instead.
     public func project(_ account: AccountID) async throws -> Int {
         let decoder = try requireDecoder()
-        if let stored = try index.projectionVersion(), stored != decoder.version {
+        // The local-record version is stored only once a local record was projected; a different
+        // one means local records were read by another local decoder.
+        let local = try index.localControlVersion()
+        if let stored = try index.projectionVersion(), stored != decoder.version || (local != nil && local != LocalControl.version) {
             let counts = try await rebuildAll()
             return counts[account] ?? 0
         }
@@ -89,12 +92,16 @@ public actor ArchiveService {
         let checkpoint = try index.checkpoint(for: account)
         let root = journals.root(for: account)
         var pending: [(RecordRef, DecodedRecord)] = []
+        var pendingLocal = false
         var lastSequence = checkpoint
         var applied = 0
         try JournalReader(root: root).forEach { record in
             let sequence = record.envelope.sequence
             guard sequence > checkpoint, sequence <= (limit ?? .max) else { return }
-            let decoded = decoder.decode(record, account: account)
+            // Local user state is the app's own (plan v3 §7); every other kind goes to the Arena decoder.
+            let local = record.envelope.kind == LocalControl.kind
+            let decoded = local ? LocalControl.decode(record, account: account) : decoder.decode(record, account: account)
+            pendingLocal = pendingLocal || local
             pending.append(
                 (
                     RecordRef(
@@ -105,14 +112,17 @@ public actor ArchiveService {
             lastSequence = sequence
             if pending.count == Self.batchSize {
                 try index.apply(
-                    account: account, records: pending, through: lastSequence, decoderVersion: decoder.version)
+                    account: account, records: pending, through: lastSequence, decoderVersion: decoder.version,
+                    localControlVersion: pendingLocal ? LocalControl.version : nil)
                 applied += pending.count
                 pending.removeAll(keepingCapacity: true)
+                pendingLocal = false
             }
         }
         if !pending.isEmpty {
             try index.apply(
-                account: account, records: pending, through: lastSequence, decoderVersion: decoder.version)
+                account: account, records: pending, through: lastSequence, decoderVersion: decoder.version,
+                localControlVersion: pendingLocal ? LocalControl.version : nil)
             applied += pending.count
         }
         return applied
@@ -196,6 +206,11 @@ public actor ArchiveService {
 
     public nonisolated func unknownFields(account: AccountID?) throws -> [UnknownFieldCount] {
         try index.unknownFields(account: account)
+    }
+
+    /// Your local notes in one conversation (Docs/vote-notes-2026-10-20.md).
+    public nonisolated func voteNotes(account: AccountID, conversationID: String) throws -> [VoteNote] {
+        try index.voteNotes(account: account, conversationID: conversationID)
     }
 
     public nonisolated func warnings(account: AccountID?) throws -> [IndexWarning] {

@@ -25,3 +25,33 @@ public struct VoteVocabulary: Sendable, Equatable {
 
     public func outcome(_ value: String?) -> VoteOutcome? { value.flatMap { outcomes[$0] } }
 }
+
+/// Your own note beside a vote Arena recorded (Docs/vote-notes-2026-10-20.md). It lives only in this
+/// archive, as a `local.control` record, and is never sent to Arena. Keyed by account, conversation
+/// and the vote's message pair; A and B are the vote's `messageA` and `messageB`.
+public struct VoteNote: Equatable, Sendable {
+    public var conversationID: String
+    public var messageA: String
+    public var messageB: String
+    /// nil: the note was removed.
+    public var choice: VoteOutcome?
+    /// The recorded vote it was written beside (provenance only).
+    public var voteID: String?
+    /// The record's wall time, ISO 8601 UTC with milliseconds.
+    public var notedAt: String?
+    /// The journal record that set it (nil before it is recorded).
+    public var recordSequence: UInt64?
+
+    public init(
+        conversationID: String, messageA: String, messageB: String, choice: VoteOutcome?, voteID: String?,
+        notedAt: String? = nil, recordSequence: UInt64? = nil
+    ) {
+        self.conversationID = conversationID
+        self.messageA = messageA
+        self.messageB = messageB
+        self.choice = choice
+        self.voteID = voteID
+        self.notedAt = notedAt
+        self.recordSequence = recordSequence
+    }
+}

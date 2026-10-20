@@ -28,6 +28,14 @@ final class ArchiveModel {
     private(set) var filterOptions = HistoryFilterOptions.empty
     private(set) var detail: ConversationDetail?
     private(set) var layout: TranscriptLayout?
+    /// Your local notes in the open conversation (Docs/vote-notes-2026-10-20.md); nil when they could
+    /// not be read, so the note menus are off rather than showing "no note". `notesUnavailable` says why.
+    private(set) var voteNotes: [VoteNote]? = []
+    private(set) var notesUnavailable: String?
+    /// The last note failure shown, cleared by the next note that is saved.
+    private var noteFailure: String?
+    /// Votes (remote IDs) whose note is being written.
+    private(set) var savingNotes: Set<String> = []
     private(set) var evidence: RawEvidence?
     private(set) var evidenceUnavailable = false
     private(set) var projecting = false
@@ -88,6 +96,7 @@ final class ArchiveModel {
     var includeReasoningAndTools = false { didSet { if oldValue != includeReasoningAndTools { scheduleSearch(debounce: false) } } }
 
     private let archive: ArchiveService?
+    private let notes: VoteNoteService?
     /// nil = could not be read (see `facetsUnavailable`).
     private var facets: HistoryFacets? = .empty
     private var visibleKeys: Set<ConversationKey> = []
@@ -97,8 +106,9 @@ final class ArchiveModel {
     private var searchTask: Task<Void, Never>?
 
     /// `archive` is nil when the index could not be opened; the app then shows `message`.
-    init(archive: ArchiveService?, unavailableReason: String? = nil) {
+    init(archive: ArchiveService?, notes: VoteNoteService? = nil, unavailableReason: String? = nil) {
         self.archive = archive
+        self.notes = notes
         message = unavailableReason
     }
 
@@ -224,16 +234,22 @@ final class ArchiveModel {
         guard let archive, let key = selection else {
             detail = nil
             layout = nil
+            voteNotes = []
+            notesUnavailable = nil
             return
         }
         let snapshot = snapshotSequence
         Task {
-            let loaded = await Task.detached {
-                try? archive.conversation(account: key.account, remoteID: key.remoteID, snapshot: snapshot)
+            let (loaded, notes) = await Task.detached {
+                (
+                    try? archive.conversation(account: key.account, remoteID: key.remoteID, snapshot: snapshot),
+                    Self.readNotes(archive, key)
+                )
             }.value
             guard generation == detailGeneration else { return }
             detail = loaded
             layout = loaded.map(TranscriptLayout.init)
+            (voteNotes, notesUnavailable) = notes
             if highlightedMessage != nil { scrollRequest += 1 }
         }
     }
@@ -247,10 +263,14 @@ final class ArchiveModel {
         let generation = detailGeneration
         let snapshot = snapshotSequence
         Task {
-            let loaded = await Task.detached {
-                try? archive.conversation(account: key.account, remoteID: key.remoteID, snapshot: snapshot)
+            let (loaded, notes) = await Task.detached {
+                (
+                    try? archive.conversation(account: key.account, remoteID: key.remoteID, snapshot: snapshot),
+                    Self.readNotes(archive, key)
+                )
             }.value
             guard generation == detailGeneration else { return }
+            (voteNotes, notesUnavailable) = notes
             if loaded?.snapshotSequence != detail?.snapshotSequence {
                 inspected = nil
                 evidence = nil
@@ -262,6 +282,71 @@ final class ArchiveModel {
             layout = loaded.map(TranscriptLayout.init)
             // An evidence read still running was for the previous detail generation and is dropped.
             if let inspected, evidence == nil, !evidenceUnavailable { inspect(inspected) }
+        }
+    }
+
+    // MARK: Vote notes (Docs/vote-notes-2026-10-20.md)
+
+    /// The notes, or nil and why they could not be read.
+    private nonisolated static func readNotes(_ archive: ArchiveService, _ key: ConversationKey) -> ([VoteNote]?, String?) {
+        do {
+            return (try archive.voteNotes(account: key.account, conversationID: key.remoteID), nil)
+        } catch ArchiveIndex.QueryError.unreadableVoteNote {
+            return (nil, "A note in this conversation has a value this version of the app cannot read. It is still in the archive.")
+        } catch {
+            return (nil, "Notes are unavailable: they could not be read from the archive index.")
+        }
+    }
+
+    /// Whether notes can be written at all (the index opened).
+    var canWriteNotes: Bool { notes != nil }
+
+    /// Your note beside `vote` in the open conversation, if any.
+    func note(beside vote: ArchivedFeedback) -> VoteNote? {
+        voteNotes?.first { $0.messageA == vote.messageA && $0.messageB == vote.messageB }
+    }
+
+    /// Records your note (nil removes it) beside `vote` in `detail`, the transcript the vote was shown
+    /// in. Its account, conversation and snapshot come from that transcript, never from the selection,
+    /// which may already name another conversation still loading. The note stays in this archive;
+    /// nothing is sent.
+    func setNote(_ choice: VoteOutcome?, beside vote: ArchivedFeedback, in detail: ConversationDetail) {
+        guard let notes, let snapshot = detail.snapshotSequence, !savingNotes.contains(vote.remoteID) else { return }
+        let (account, conversation) = (detail.summary.account, detail.summary.remoteID)
+        savingNotes.insert(vote.remoteID)
+        Task {
+            do {
+                try await notes.set(choice, beside: vote, account: account, conversation: conversation, snapshot: snapshot)
+                // Saved: an earlier note failure no longer applies (other messages are left alone).
+                if let shown = noteFailure, message == shown { message = nil }
+                noteFailure = nil
+            } catch {
+                let text = Self.describeNoteFailure(error)
+                message = text
+                noteFailure = text
+            }
+            savingNotes.remove(vote.remoteID)
+            // Shows what the index now holds, whether or not the write went through.
+            reload()
+        }
+    }
+
+    private static func describeNoteFailure(_ error: Error) -> String {
+        switch error {
+        case AccountError.busy:
+            "The note was not saved: a check, backup, restore or rebuild is running. Try again when it finishes."
+        case AccountError.unknownAccount:
+            "The note was not saved: this conversation's account is no longer in the app."
+        case VoteNoteError.savedButNotIndexed:
+            "The note is saved in the archive, but the index could not be updated; it shows after the next update."
+        case VoteNoteError.voteWithoutTwoMessages:
+            "This vote does not name two messages, so it cannot take a note."
+        case VoteNoteError.voteNotInConversation:
+            "The note was not saved: that vote is no longer in the archive's copy of the conversation."
+        case LocalWriteError.appendedButNotFlushed:
+            "The note was written but could not be flushed to disk, so it may not survive a restart. Quit and reopen the app before writing more; it is not shown until then."
+        default:
+            "The note could not be saved to the archive."
         }
     }
 
