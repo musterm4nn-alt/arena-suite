@@ -15,8 +15,11 @@ struct SidebarScope {
     var name: String { chosen?.displayName ?? "All accounts" }
     var initial: String? { chosen.map { String($0.displayName.prefix(1)).uppercased() } }
 
-    /// The account the site entry opens directly, or nil when the user has to pick one.
-    var siteAccount: AccountID? { members.count == 1 ? members[0].id : nil }
+    /// The account the site entry opens: the one last shown on the site when it is in scope,
+    /// otherwise the first in scope; nil only when there is no account.
+    func siteAccount(lastShown: AccountID?) -> AccountSummary? {
+        members.first { $0.id == lastShown } ?? members.first
+    }
 
     /// Every running sync, in scope or not: narrowing the scope must not hide a running job or its
     /// Stop. Starting stays scoped.
@@ -101,6 +104,8 @@ struct SidebarView: View {
     let profiles: ArenaWebProfiles
     @Binding var destination: MainDestination
     @Binding var searching: Bool
+    /// The account last shown on the site, which the site entry opens again.
+    let lastSite: AccountID?
     let openSite: (AccountID) -> Void
     let collapse: () -> Void
     @FocusState private var searchFocused: Bool
@@ -164,27 +169,13 @@ struct SidebarView: View {
             Spacer(minLength: 0)
             if open && !selected { Circle().fill(Theme.primaryText).frame(width: 5, height: 5).accessibilityLabel("open") }
         }
-        if let account = scope.siteAccount {
-            Button { openSite(account) } label: { label }
-                .buttonStyle(.arenaRow(selected: selected))
-                .help("Use \(profiles.siteName) here with \(scope.members[0].displayName)'s own web profile")
-                .accessibilityAddTraits(selected ? .isSelected : [])
-        } else {
-            Menu {
-                ForEach(scope.members) { account in
-                    Button(account.displayName + (profiles.sessions[account.id] != nil ? " (open)" : "")) { openSite(account.id) }
-                }
-            } label: {
-                label
-            }
-            .menuStyle(.button)
+        let account = scope.siteAccount(lastShown: lastSite)
+        Button { if let account { openSite(account.id) } } label: { label }
             .buttonStyle(.arenaRow(selected: selected))
-            .menuIndicator(.hidden)
-            .disabled(scope.members.isEmpty)
-            .help(scope.members.isEmpty
-                ? "Add an account under Manage Accounts first"
-                : "Use \(profiles.siteName) here with one account's own web profile")
-        }
+            .disabled(account == nil)
+            .help(account.map { "Use \(profiles.siteName) here with \($0.displayName)'s own web profile" }
+                ?? "Add an account under Manage Accounts first")
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var searchRow: some View {
@@ -268,6 +259,8 @@ struct SidebarRail: View {
     let profiles: ArenaWebProfiles
     @Binding var destination: MainDestination
     @Binding var searching: Bool
+    /// The account last shown on the site, which the site entry opens again.
+    let lastSite: AccountID?
     let openSite: (AccountID) -> Void
     let expand: () -> Void
 
@@ -318,27 +311,14 @@ struct SidebarRail: View {
             .overlay(alignment: .topTrailing) {
                 if open && !selected { Circle().fill(Theme.primaryText).frame(width: 5, height: 5).offset(x: 6, y: -4) }
             }
-        if let account = scope.siteAccount {
-            Button { openSite(account) } label: { label }
-                .buttonStyle(.arenaIcon(width: 36, height: 32, selected: selected))
-                .help("\(profiles.siteName) · \(scope.members[0].displayName)" + (open && !selected ? " (open)" : ""))
-                .accessibilityValue(open && !selected ? "open" : "")
-                .accessibilityAddTraits(selected ? .isSelected : [])
-        } else {
-            Menu {
-                ForEach(scope.members) { account in
-                    Button(account.displayName + (profiles.sessions[account.id] != nil ? " (open)" : "")) { openSite(account.id) }
-                }
-            } label: {
-                label
-            }
-            .menuStyle(.button)
+        let account = scope.siteAccount(lastShown: lastSite)
+        Button { if let account { openSite(account.id) } } label: { label }
             .buttonStyle(.arenaIcon(width: 36, height: 32, selected: selected))
-            .menuIndicator(.hidden)
-            .disabled(scope.members.isEmpty)
-            .help("\(profiles.siteName): choose an account" + (open && !selected ? " (one is open)" : ""))
+            .disabled(account == nil)
+            .help(account.map { "\(profiles.siteName) · \($0.displayName)" + (open && !selected ? " (open)" : "") }
+                ?? "Add an account under Manage Accounts first")
             .accessibilityValue(open && !selected ? "open" : "")
-        }
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     @ViewBuilder private var syncIcon: some View {
@@ -385,6 +365,10 @@ private struct AccountSwitcher: View {
                 }
             }
             Divider()
+            Button("Add Account…") {
+                accounts.pendingAdd = true
+                destination = .accounts
+            }
             Button("Manage Accounts") { destination = .accounts }
             Button("Maintenance") { destination = .maintenance }
         } label: {

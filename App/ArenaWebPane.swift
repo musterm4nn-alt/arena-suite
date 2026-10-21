@@ -163,6 +163,8 @@ struct ArenaWebPane: View {
     /// The user's click on Open or a tab: the main window opens the session, and collapses its
     /// sidebar when coming from outside the site.
     let open: (AccountID) -> Void
+    /// The tab row's "+": the Add Account form.
+    let addAccount: () -> Void
     @State private var confirmingClear = false
 
     private var account: AccountSummary? { accounts.accounts.first { $0.id == accountID } }
@@ -267,6 +269,9 @@ struct ArenaWebPane: View {
                 .accessibilityAddTraits(shown ? .isSelected : [])
                 .id(other.id)
             }
+            Button(action: addAccount) { Image(systemName: "plus").accessibilityLabel("Add Account") }
+                .buttonStyle(ArenaTabStyle())
+                .help("Add Account…")
         }
     }
 

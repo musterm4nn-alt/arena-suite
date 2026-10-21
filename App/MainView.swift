@@ -36,6 +36,8 @@ struct MainView: View {
     /// room, and switching between accounts on the site keeps the sidebar as it is.
     @AppStorage("sidebarRailInArchive") private var archiveRail = false
     @State private var siteRail = true
+    /// The account last shown on the site, which the sidebar's site entry opens again.
+    @AppStorage("lastSiteAccount") private var lastSiteAccount = ""
     @State private var searching = false
     @State private var showingInspector = false
 
@@ -58,7 +60,11 @@ struct MainView: View {
                         archive: archive, accounts: accounts, siteName: profiles.siteName, showingInspector: $showingInspector,
                         destination: $destination)
                 case .site(let account):
-                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite).id(account)
+                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite) {
+                        accounts.pendingAdd = true
+                        destination = .accounts
+                    }
+                    .id(account)
                 case .accounts:
                     AccountsView(model: accounts)
                 case .insights:
@@ -76,6 +82,9 @@ struct MainView: View {
         .ignoresSafeArea()
         .arenaPalette()
         .departureMono()
+        .onChange(of: destination) { _, now in
+            if case .site(let account) = now { lastSiteAccount = account.rawValue.uuidString }
+        }
         .onChange(of: accounts.accounts.map(\.id)) { _, ids in
             if case .site(let account) = destination, !ids.contains(account) { destination = .archive }
         }
@@ -141,6 +150,8 @@ struct MainView: View {
         }
     }
 
+    private var lastSite: AccountID? { UUID(uuidString: lastSiteAccount).map(AccountID.init(rawValue:)) }
+
     private var rail: Bool { destination.isSite ? siteRail : archiveRail }
 
     /// Opens the history filtered as given: the search closes (so the list, not stale results, is
@@ -170,12 +181,12 @@ struct MainView: View {
         if rail {
             SidebarRail(
                 accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
-                searching: $searching, openSite: openSite
+                searching: $searching, lastSite: lastSite, openSite: openSite
             ) { setRail(false) }
         } else {
             SidebarView(
                 accounts: accounts, archive: archive, profiles: profiles, destination: $destination,
-                searching: $searching, openSite: openSite
+                searching: $searching, lastSite: lastSite, openSite: openSite
             ) { setRail(true) }
             .frame(width: Theme.sidebarWidth)
         }
