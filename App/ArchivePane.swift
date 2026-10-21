@@ -511,7 +511,8 @@ private struct TurnView: View {
                         }
                         ForEach(lane.messages, id: \.message.remoteID) { entry in
                             MessageCard(
-                                message: entry.message, lane: lane.lane, title: laneTitle(lane.lane, entry.message),
+                                message: entry.message, lane: lane.lane, showsLane: !agent || lane.lane != nil,
+                                title: laneTitle(lane.lane, entry.message),
                                 note: entry.otherParents.isEmpty ? nil : "Replies to \(entry.otherParents.joined(separator: ", "))",
                                 highlighted: highlighted == entry.message.remoteID, inspect: inspect)
                         }
@@ -653,6 +654,8 @@ private struct PromptBubble: View {
 private struct MessageCard: View {
     let message: DetailMessage
     let lane: String?
+    /// Off for an Agent's replies, which have no lanes to mark.
+    var showsLane = true
     let title: String
     let note: String?
     let highlighted: Bool
@@ -661,7 +664,7 @@ private struct MessageCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                LaneBadge(lane: lane)
+                if showsLane { LaneBadge(lane: lane) }
                 Text(title).fontWeight(.bold).lineLimit(1)
                 if let status = message.status, status != "success" { Text("[\(status)]").foregroundStyle(.orange) }
                 if highlighted { Text("match").font(Theme.caption).foregroundStyle(.yellow) }

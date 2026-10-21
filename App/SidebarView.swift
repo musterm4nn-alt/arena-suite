@@ -134,8 +134,8 @@ struct SidebarView: View {
                 searchField.padding(.horizontal, 12).padding(.top, 8)
             }
             if showsResults {
-                if archive.filter.isActive {
-                    HistoryFilterBar(archive: archive).padding(.horizontal, 16).padding(.top, 12)
+                if archive.filter.isActive || !archive.visibleHits.isEmpty {
+                    HistoryFilterBar(archive: archive, searching: true).padding(.horizontal, 16).padding(.top, 12)
                 }
                 SearchResultsList(archive: archive) { hit in
                     archive.open(hit)
@@ -143,7 +143,7 @@ struct SidebarView: View {
                 }
             } else {
                 if !archive.conversations.isEmpty || archive.filter.isActive {
-                    HistoryFilterBar(archive: archive).padding(.horizontal, 16).padding(.top, 12)
+                    HistoryFilterBar(archive: archive, searching: false).padding(.horizontal, 16).padding(.top, 12)
                 }
                 HistoryList(archive: archive, destination: $destination)
             }
@@ -665,6 +665,9 @@ struct HistoryGroup: Identifiable {
 /// scope's conversations they show (Docs/history-filters-2026-10-19.md).
 private struct HistoryFilterBar: View {
     @Bindable var archive: ArchiveModel
+    /// Search results are shown: Export takes their conversations.
+    let searching: Bool
+    @State private var exporting = false
 
     var body: some View {
         let active = archive.filter.isActive
@@ -675,6 +678,15 @@ private struct HistoryFilterBar: View {
                     : "History")
                     .font(Theme.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
+                Button { exporting = true } label: { Label("Export Listed Conversations", systemImage: "square.and.arrow.up.on.square") }
+                    .buttonStyle(.arenaIcon(width: 26, height: 22))
+                    .disabled(archive.bulkTargets(searching: searching).isEmpty && archive.bulkProgress == nil && archive.bulkOutcome == nil)
+                    .help(searching ? "Export the conversations of these search results" : "Export every conversation listed below")
+                    .sheet(isPresented: $exporting) { BulkExportSheet(archive: archive, searching: searching) }
+                #if DEBUG
+                    // `--preview-bulk-export` opens the sheet, for screenshots of this window only.
+                    .onAppear { if CommandLine.arguments.contains("--preview-bulk-export") { exporting = true } }
+                #endif
                 if active {
                     Button("Clear") { archive.filter = HistoryFilter() }
                         .buttonStyle(.plain).font(Theme.caption).foregroundStyle(.secondary)
@@ -912,5 +924,124 @@ extension ConversationSummary: @retroactive Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(account.rawValue)
         hasher.combine(remoteID)
+    }
+}
+
+// MARK: - Bulk export
+
+/// Exports what the sidebar lists, in one new folder (Docs/bulk-export-2026-10-21.md). The scope and
+/// format are the single export's, remembered with it. Exact raw bodies are not offered here.
+private struct BulkExportSheet: View {
+    @Bindable var archive: ArchiveModel
+    let searching: Bool
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("exportScope") private var scopeChoice = ExportScope.wholeConversation.rawValue
+    @AppStorage("exportFormat") private var formatChoice = ExportFormat.markdown.rawValue
+
+    private var scope: ExportScope { ExportScope(rawValue: scopeChoice) ?? .wholeConversation }
+    private var format: ExportFormat { ExportFormat(rawValue: formatChoice) ?? .markdown }
+    private var available: Bool { scope == .wholeConversation || format.supportsLastAnswer }
+
+    var body: some View {
+        let targets = archive.bulkTargets(searching: searching)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Export Listed Conversations").font(Theme.heading)
+            if let progress = archive.bulkProgress {
+                ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                Text("\(progress.done) of \(progress.total) conversations").font(Theme.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Stop") { archive.stopBulkExport() }.buttonStyle(.arenaPill)
+                }
+            } else if let outcome = archive.bulkOutcome {
+                result(outcome)
+            } else {
+                options(targets)
+            }
+        }
+        .padding(20)
+        .frame(width: 440, alignment: .leading)
+        .departureMono()
+        .arenaPalette()
+    }
+
+    @ViewBuilder private func options(_ targets: [BulkExportService.Target]) -> some View {
+        let listedOnly = archive.listedOnly(targets)
+        Text(summary(targets.count, listedOnly: listedOnly)).fixedSize(horizontal: false, vertical: true)
+        Picker("Scope", selection: $scopeChoice) {
+            ForEach(ExportScope.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+        }
+        .pickerStyle(.radioGroup)
+        Picker("Format", selection: $formatChoice) {
+            ForEach(ExportFormat.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        Text(available
+            ? "Each conversation's latest snapshot becomes one file, the same as exporting it alone, in a new folder with a manifest.json listing every file and every conversation left out."
+            : "Raw JSON is one recorded response, so it always holds the whole conversation. Choose Whole conversation.")
+            .font(Theme.caption)
+            .foregroundStyle(available ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+            .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 6) {
+            Button("Cancel") { dismiss() }
+            Spacer()
+            Button("Export to Downloads") { archive.bulkExport(targets, format: format, scope: scope, to: nil) }
+            Button("Export to Folder…") {
+                if let folder = ArchivePane.chooseFolder() { archive.bulkExport(targets, format: format, scope: scope, to: folder) }
+            }
+        }
+        .buttonStyle(.arenaPill)
+        .disabled(!available || targets.count == listedOnly)
+    }
+
+    private func summary(_ count: Int, listedOnly: Int) -> String {
+        let what = searching ? "conversation\(count == 1 ? "" : "s") in these search results" : "conversation\(count == 1 ? "" : "s") listed"
+        var text = "\(count.formatted()) \(what)."
+        if listedOnly == 1 {
+            text += " One of them is listed on Arena only, with no transcript, and is left out."
+        } else if listedOnly > 1 {
+            text += " \(listedOnly.formatted()) of them are listed on Arena only, with no transcript, and are left out."
+        }
+        if searching && archive.hits.count >= ArchiveModel.searchLimit {
+            text += " The search stopped at \(ArchiveModel.searchLimit.formatted()) results, so more conversations may match."
+        }
+        return text
+    }
+
+    @ViewBuilder private func result(_ outcome: ArchiveModel.BulkOutcome) -> some View {
+        switch outcome {
+        case .saved(let result):
+            Text("Exported \(result.exported.formatted()) conversation\(result.exported == 1 ? "" : "s") (\(result.bytes.formatted(.byteCount(style: .file)))) to “\(result.folder.lastPathComponent)”.")
+                .fixedSize(horizontal: false, vertical: true)
+            if !result.skipped.isEmpty {
+                let reasons = Dictionary(grouping: result.skipped, by: \.reason).sorted { $0.key.rawValue < $1.key.rawValue }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Left out (named in manifest.json):").font(Theme.caption).foregroundStyle(.secondary)
+                    ForEach(reasons, id: \.key) { reason, items in
+                        Text("\(items.count) · \(ArchiveModel.describe(reason))").font(Theme.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            HStack {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([result.folder]) }
+                Spacer()
+                Button("Done") {
+                    archive.dismissBulkOutcome()
+                    dismiss()
+                }
+            }
+            .buttonStyle(.arenaPill)
+        case .refused(let text):
+            Text(text).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Done") {
+                    archive.dismissBulkOutcome()
+                    dismiss()
+                }
+            }
+            .buttonStyle(.arenaPill)
+        }
     }
 }

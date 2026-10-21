@@ -449,6 +449,78 @@ final class ArchiveModel {
         }
     }
 
+    // MARK: Bulk export (Docs/bulk-export-2026-10-21.md)
+
+    enum BulkOutcome: Equatable {
+        case saved(BulkExportService.Result)
+        case refused(String)
+    }
+
+    /// (handled, total) while a bulk export runs.
+    private(set) var bulkProgress: (done: Int, total: Int)?
+    private(set) var bulkOutcome: BulkOutcome?
+    private var bulkTask: Task<Void, Never>?
+
+    /// What the sidebar lists: the conversations of the search results shown (in result order,
+    /// within the filters), or the filtered history.
+    func bulkTargets(searching: Bool) -> [BulkExportService.Target] {
+        if searching {
+            var seen = Set<ConversationKey>()
+            return visibleHits.compactMap { hit in
+                let key = ConversationKey(account: hit.account, remoteID: hit.conversationID)
+                return seen.insert(key).inserted ? BulkExportService.Target(account: hit.account, remoteID: hit.conversationID) : nil
+            }
+        }
+        return visibleConversations.map { BulkExportService.Target(account: $0.account, remoteID: $0.remoteID) }
+    }
+
+    /// Conversations among `targets` with no transcript to export (listed on Arena only).
+    func listedOnly(_ targets: [BulkExportService.Target]) -> Int {
+        let held = Dictionary(conversations.map { (ConversationKey(account: $0.account, remoteID: $0.remoteID), $0) }, uniquingKeysWith: { a, _ in a })
+        return targets.filter { held[ConversationKey(account: $0.account, remoteID: $0.remoteID)]?.latestSnapshotSequence == nil }.count
+    }
+
+    /// `directory` nil = Downloads.
+    func bulkExport(_ targets: [BulkExportService.Target], format: ExportFormat, scope: ExportScope, to directory: URL?) {
+        guard let archive, bulkTask == nil else { return }
+        bulkOutcome = nil
+        bulkProgress = (0, targets.count)
+        let destination = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        bulkTask = Task { [weak self] in
+            let outcome: BulkOutcome
+            do {
+                let result = try await BulkExportService(archive: archive).export(
+                    targets, options: ExportOptions(format: format, scope: scope), into: destination
+                ) { done, total in
+                    Task { @MainActor in self?.bulkProgress = (done, total) }
+                }
+                outcome = .saved(result)
+            } catch ExportError.cancelled {
+                outcome = .refused("Export stopped. Nothing was written.")
+            } catch {
+                outcome = .refused(Self.describe(error, writing: true))
+            }
+            self?.bulkOutcome = outcome
+            self?.bulkProgress = nil
+            self?.bulkTask = nil
+        }
+    }
+
+    func stopBulkExport() { bulkTask?.cancel() }
+
+    func dismissBulkOutcome() { bulkOutcome = nil }
+
+    static func describe(_ reason: BulkExportService.SkipReason) -> String {
+        switch reason {
+        case .notInArchive: "no longer in the archive"
+        case .noSnapshot: "listed on Arena only, no transcript"
+        case .noLastAnswer: "no last answer recorded"
+        case .lastMessageNotInSnapshot: "last answer not in the snapshot"
+        case .lastMessagesUnreadable: "last-message list unreadable (rebuild the index)"
+        case .rawRecordUnavailable: "raw record unreadable"
+        }
+    }
+
     /// Whether the detail on screen is the selection's, so there is a snapshot to export.
     var canExport: Bool { displayedSnapshot != nil && !exporting }
 

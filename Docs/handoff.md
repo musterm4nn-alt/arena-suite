@@ -182,8 +182,9 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
   - **Milestone roadmap:** `Docs/roadmap.html`, published as an artifact
     (https://claude.ai/artifact/DHEdvNVA77gL6h8xTV6Kkv). Update and republish it after every
     milestone. Reviews are skipped by the user's decision (2026-10-21).
-  - **Next:** bulk export of the filtered history, then a clearer Maintenance page, then the §14
-    Maintenance tools.
+  - **Bulk export (2026-10-21):** `Docs/bulk-export-2026-10-21.md`; `BulkExportService`
+    (ApplicationActions), `BulkExportSheet` (SidebarView).
+  - **Next:** a clearer Maintenance page, then the §14 Maintenance tools.
 
     Import of arena-exporter folders (the second half of item 7) is not to be built: the user
     chose "Skip import" on 2026-10-20. GitHub backup stays a separate decision: it sends private
