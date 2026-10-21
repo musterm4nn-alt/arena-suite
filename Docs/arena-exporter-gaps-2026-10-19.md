@@ -67,6 +67,6 @@ This order puts the cheapest local work first and the work that needs new protoc
 - [x] **Archive encryption and import (7):** add an encrypted backup format (done) and import of AE archive folders (not to be built: the user chose "Skip import" on 2026-10-20). GitHub backup is a separate decision because it sends private conversations off the Mac.
 - [x] **Vote correction (6):** store it as a local note beside Arena's recorded vote. Never send it to Arena: plan §1 limits voting to Track B.
 - [x] **Attachments (2):** observed (N-019) and downloaded after each detail fetch, plan §9.4 (`Docs/attachments-2026-10-20.md`). Old conversations' files arrive with their next Refresh.
-- [ ] **Agent detail (1):** observe a native detail route for `agentic` entries in `Tools/NativeAuthProof` first. AE's backfill gives leads, not evidence.
+- [x] **Agent detail (1):** observed (N-022: the `/agent/{id}` page holds the transcript) and fetched by sync and Refresh (`Docs/agent-detail-2026-10-21.md`). Only the page's first 20 messages; longer transcripts are marked partial.
 
 Items 3, 4, 5 and per-turn saving need the page read while it streams. ADR 0006 forbids that in AS, and the embedded arena.ai view can't run extensions. Using AE alongside AS in Chrome or Firefox keeps that evidence, but in a separate archive.

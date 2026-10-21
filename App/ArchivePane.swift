@@ -372,7 +372,8 @@ private struct TranscriptView: View {
                     intro
                     ForEach(layout.turns) { turn in
                         TurnView(
-                            turn: turn, names: archive.revealedNames, highlighted: archive.highlightedMessage,
+                            turn: turn, names: archive.revealedNames, agent: detail.summary.kind == "agentic",
+                            highlighted: archive.highlightedMessage,
                             notes: archive.canWriteNotes ? archive.voteNotes : nil,
                             notesUnavailable: archive.canWriteNotes ? archive.notesUnavailable : "Notes are unavailable: the archive index could not be opened.",
                             savingNotes: archive.savingNotes
@@ -455,7 +456,9 @@ private struct TranscriptView: View {
                 }
                 if detail.messages.isEmpty {
                     Text(detail.summary.latestSnapshotSequence == nil
-                        ? "Only listed on Arena; no transcript is available for this conversation type yet."
+                        ? (detail.summary.kind == "agentic"
+                            ? "Not fetched yet. Sync History fetches this Agent conversation's transcript."
+                            : "Only listed on Arena; no transcript is available for this conversation type yet.")
                         : "No messages in this snapshot.")
                         .foregroundStyle(.secondary)
                 }
@@ -482,6 +485,8 @@ private struct LaneBadge: View {
 private struct TurnView: View {
     let turn: TranscriptLayout.Turn
     let names: [String: String]
+    /// An Agent conversation: its replies are the agent's, with no lanes.
+    let agent: Bool
     let highlighted: String?
     /// Your local notes in this conversation; nil when they cannot be read or written.
     let notes: [VoteNote]?
@@ -601,6 +606,7 @@ private struct TurnView: View {
 
     private func laneTitle(_ lane: String?, _ message: DetailMessage) -> String {
         if let model = message.modelRemoteID.map({ names[$0] ?? $0 }) { return model }
+        if agent, lane == nil { return "Agent" }
         return lane.map { "Assistant \($0.uppercased())" } ?? "Response (lane not exposed)"
     }
 }

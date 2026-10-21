@@ -98,6 +98,24 @@ and no vote. Across the live index, the latest snapshots of 3 conversations hold
 entry, including `updatedAt`, does not change when responses finish or a vote is cast (server-side caching is not
 excluded). So a snapshot taken before either is never refreshed by the incremental sync.
 
+N-022 (2026-10-21, `verified_observation` + `assumption`, counts and key names only; announced, `Tools/NativeAuthProof
+--agent-detail`, slot A's saved session from 2026-09-24 still verified): one history page held 5 `agentic` entries
+with keys `archivedAt`, `codingSessionStatus`, `createdAt`, `id`, `isMaxRouter`, `productMode`, `title`, `type`,
+`updatedAt`. For the first: `GET /api/evaluation/{id}` → `404` JSON `{error}`; `GET /agent/{id}` → `200`
+`text/html; charset=utf-8`, 246 462 bytes, 42 Next.js flight chunks (`self.__next_f.push([1,"…"])`, all decodable).
+One flight row holds the transcript object: `taskId`, `triggerAddress` (equal to the page's `sessionId` and to the
+conversation ID), `messages[]` (`id`, `role` `user`/`assistant`, `metadata` with `nodeId`, `manifestNodeId`,
+`pending`, `requiresReview`, `feedback`, and `timing` on replies, `parts[]`), `pagination` (`hasMore` `false`,
+`cursor` `null`, `limit` `20`), `transcriptReadStrategy` `bounded`, `session` (`publicAccessToken`: a JWT,
+`lastEventId`, `taskId`, `triggerAddress`), `productMode`, `feedbackType`, `customFeedbackArm`, `connectorsEnabled`,
+`arenaFeedbackEnabled`, `rubricsEnabled`, `pinnedModel`. Part types (AI SDK message parts): `text`, `reasoning`
+(`state` `done`), `step-start`, `tool-write_file` and `tool-present_file` (`toolCallId`, `input`, `output`, `state`
+`output-available`). The page's only JWT-shaped string is that token. The page loads Cloudflare's
+`challenge-platform` script without being a challenge. arena-exporter's lead (`{"messages":[` at an object's
+start) does not match this page. **`assumption`:** `triggerAddress` names the conversation on every page; the
+first 20 messages are what the page serves (`bounded`), and how to read more (`hasMore: true`) is not observed;
+no `/api/…` route for the transcript appears in the page. Not observed: the realtime stream, `workspace/latest`.
+
 N-021 (2026-10-20, `design_decision` + `assumption`; no new live observation): attachment downloads
 (`Docs/attachments-2026-10-20.md`). Downloads accept only `https` links on a host ending in
 `.r2.cloudflarestorage.com` with no user, password or port (the only host N-019 observed); other links are kept

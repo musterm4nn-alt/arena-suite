@@ -512,12 +512,12 @@ private func warnings(_ decoded: [DecodedRecord]) -> [String] {
             kind: "exchange", payload: battle("g1"), accountID: a.accounts[0].rawValue,
             metadata: [
                 "role": .string("detail"), "status": .integer(200), "transfer_end": .string("complete"),
-                "entry_id": .string("g1"), "entry_type": .string("agentic"),
+                "entry_id": .string("g1"), "entry_type": .string("other"),
             ]))
     try writer.synchronize()
     _ = try await a.archive.project(a.accounts[0])
     let held = try #require(try a.archive.conversation(account: a.accounts[0], remoteID: "g1")?.summary)
-    #expect(held.kind == "agentic" && held.latestSnapshotSequence != nil)
+    #expect(held.kind == "other" && held.latestSnapshotSequence != nil)
     let refresh = ConversationRefreshService(sync: a.sync, archive: a.archive, kinds: ArenaHistorySync.refreshableKinds)
     #expect(!refresh.canRefresh(kind: held.kind, latestSnapshot: held.latestSnapshotSequence))
     await #expect(throws: RefreshError.notRefreshable) { _ = try await refresh.refresh(account: a.accounts[0], conversation: "g1") }

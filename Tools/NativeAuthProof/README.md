@@ -46,6 +46,9 @@ only HTTP/transport status, byte count and a provisional count/partiality summar
 remain unverified. No pagination occurs. The automatic workflow now follows successful listing
 with a separate identity-checked fresh list and one detail GET for its first `evaluation` entry;
 see `Docs/native-detail-experiment.md`. Only relationship counts and match flags are reported.
+`--agent-detail` instead reads history pages until the first `agentic` entry, then GETs
+`/api/evaluation/{id}` and `/agent/{id}` for it (1 s apart) and writes counts and key names to
+`DerivedData/AgentDetailResult-<slot>.json`; the page bytes go to a git-ignored local candidate file (N-022).
 
 The retained generation experiment implementation, **Test One Native Prompt**, attempted the fixed C-001 prompt once,
 following S-002's null-token fallback. See `Docs/conversation-observation-2026-09-22.md`.

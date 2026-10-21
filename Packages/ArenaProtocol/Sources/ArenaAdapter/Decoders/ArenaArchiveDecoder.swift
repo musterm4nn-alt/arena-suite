@@ -28,8 +28,9 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
     /// /2: structured payloads (tool args and results, sources, reasoning, opaque blocks) mask
     /// `metadata` and drop `providerOptions` at any depth. /3: attachments carry their object key
     /// and link lifetime, and `attachment.download` records are projected
-    /// (Docs/attachments-2026-10-20.md). A version change rebuilds the index.
-    public let version = "arena-decoder/3"
+    /// (Docs/attachments-2026-10-20.md). /4: `agentic` conversations' pages are decoded
+    /// (Docs/agent-detail-2026-10-21.md). A version change rebuilds the index.
+    public let version = "arena-decoder/4"
 
     public init() {}
 
@@ -39,13 +40,14 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
         guard envelope.kind == "exchange" else { return DecodedRecord() }
         let role = envelope.metadata["role"]?.stringValue
         let status = envelope.metadata["status"]?.intValue
-        if role == "detail", status == 404 {
+        if let role, SyncJob.detailRoles.contains(role), status == 404 {
             guard let entryID = envelope.metadata["entry_id"]?.stringValue else { return DecodedRecord() }
             return DecodedRecord(events: [.absent(remoteID: entryID)])
         }
         guard status == 200, envelope.metadata["transfer_end"] == .string("complete") else {
             return DecodedRecord()
         }
+        if role == SyncJob.agentDetailRole { return Self.decodeAgentPage(record.payload, metadata: envelope.metadata) }
         guard let json = try? JSONSerialization.jsonObject(with: record.payload) else {
             return DecodedRecord(events: [.warning(code: "body_unrecognized", detail: role ?? "unknown")])
         }
@@ -265,6 +267,106 @@ public struct ArenaArchiveDecoder: ArchiveDecoding {
         let snapshot = ConversationSnapshot(
             facts: facts, messages: messages, lastMessageIDs: lastMessageIDs, claims: claims, feedback: feedback)
         return f.record([.snapshot(snapshot)])
+    }
+
+    // MARK: Agent page (N-022)
+
+    private static let agentTopKeys: Set<String> = [
+        "taskId", "triggerAddress", "messages", "pagination", "transcriptReadStrategy", "session", "productMode",
+        "feedbackType", "customFeedbackArm", "connectorsEnabled", "arenaFeedbackEnabled", "rubricsEnabled", "pinnedModel",
+    ]
+    private static let agentSessionKeys: Set<String> = ["publicAccessToken", "lastEventId", "taskId", "triggerAddress"]
+    private static let agentMessageKeys: Set<String> = ["id", "role", "parts", "metadata"]
+    private static let agentPartKeys: Set<String> = ["type", "text", "state", "toolCallId", "input", "output"]
+
+    /// An `agentic` conversation's page: the transcript object in its flight data, which must name
+    /// this conversation. Paths start with `agent:` so they never mix with `/api/evaluation` paths.
+    private static func decodeAgentPage(_ payload: Data, metadata: [String: JournalValue]) -> DecodedRecord {
+        var f = Findings()
+        guard let id = metadata["entry_id"]?.stringValue, let transcript = AgentPage.transcript(payload) else {
+            f.warn("agent_page_unrecognized", "agent:$")
+            return f.record([])
+        }
+        guard transcript["triggerAddress"] as? String == id else {
+            f.warn("agent_page_unrecognized", "agent:$.triggerAddress")
+            return f.record([])
+        }
+        f.checkKeys(transcript, known: agentTopKeys, path: "agent:$")
+        if let session = transcript["session"] as? [String: Any] {
+            f.checkKeys(session, known: agentSessionKeys, path: "agent:$.session")
+        }
+        if let pagination = transcript["pagination"] as? [String: Any] {
+            f.checkKeys(pagination, known: paginationKeys, path: "agent:$.pagination")
+            // Only the first page is fetched; how to read further pages is not observed.
+            if pagination["hasMore"] as? Bool != false { f.warn("agent_transcript_partial", "agent:$.pagination.hasMore") }
+        } else {
+            f.warn("agent_transcript_partial", "agent:$.pagination")
+        }
+        let facts = ConversationFacts(
+            remoteID: id, kind: metadata["entry_type"]?.stringValue ?? "agentic", title: nil, mode: nil, modality: nil,
+            visibility: nil, createdAt: nil, updatedAt: nil, updatedOrder: nil, archivedAt: nil, deletedAt: nil)
+        var messages: [ArchivedMessage] = []
+        var seen = Set<String>()
+        for raw in f.array(transcript["messages"], "agent:$.messages") {
+            let path = "agent:$.messages[]"
+            guard let message = raw as? [String: Any] else {
+                f.warn("element_skipped", path)
+                continue
+            }
+            f.checkKeys(message, known: agentMessageKeys, path: path)
+            guard let messageID = f.string(message, "id", path), !messageID.isEmpty else {
+                f.warn("element_skipped", "\(path).id")
+                continue
+            }
+            guard seen.insert(messageID).inserted else {
+                f.warn("duplicate_message_id", "\(path).id")
+                continue
+            }
+            messages.append(
+                ArchivedMessage(
+                    remoteID: messageID, role: f.string(message, "role", path), status: nil, lane: nil, parentIDs: [],
+                    modelRemoteID: nil, createdAt: nil, updatedAt: nil, failureReason: nil,
+                    blocks: decodeAgentParts(message["parts"], &f), attachments: []))
+        }
+        let snapshot = ConversationSnapshot(facts: facts, messages: messages, lastMessageIDs: [], claims: [], feedback: [])
+        return f.record([.snapshot(snapshot)])
+    }
+
+    /// AI SDK message parts: `text`, `reasoning`, `tool-<name>` (a call with `input`, and a result
+    /// when `output` is present). `step-start` marks a step boundary and carries nothing else; it
+    /// is not projected (the journal keeps it). Any other part is kept as an opaque block.
+    private static func decodeAgentParts(_ raw: Any?, _ f: inout Findings) -> [ArchivedBlock] {
+        var blocks: [ArchivedBlock] = []
+        for (index, item) in f.array(raw, "agent:$.messages[].parts").enumerated() {
+            let pointer = "agent:$.messages[].parts[\(index)]"
+            let path = "agent:$.messages[].parts[]"
+            guard let part = item as? [String: Any] else {
+                blocks.append(ArchivedBlock(kind: .opaque, payload: canonicalJSON(item), pointer: pointer))
+                continue
+            }
+            f.checkKeys(part, known: agentPartKeys, path: path)
+            let type = part["type"] as? String ?? ""
+            switch type {
+            case "text":
+                blocks.append(ArchivedBlock(kind: .text, text: f.string(part, "text", path), pointer: pointer))
+            case "reasoning":
+                blocks.append(ArchivedBlock(kind: .reasoning, text: f.string(part, "text", path), pointer: pointer))
+            case "step-start":
+                continue
+            case _ where type.hasPrefix("tool-") && type.count > 5:
+                let name = String(type.dropFirst(5))
+                let callID = f.string(part, "toolCallId", path)
+                blocks.append(
+                    ArchivedBlock(kind: .toolCall, toolName: name, toolCallID: callID, payload: canonicalJSON(part["input"]), pointer: pointer))
+                if let output = part["output"] {
+                    blocks.append(
+                        ArchivedBlock(kind: .toolResult, toolName: name, toolCallID: callID, payload: canonicalJSON(output), pointer: pointer))
+                }
+            default:
+                blocks.append(ArchivedBlock(kind: .opaque, payload: canonicalJSON(part), pointer: pointer))
+            }
+        }
+        return blocks
     }
 
     // MARK: Blocks / attachments

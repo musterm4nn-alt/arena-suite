@@ -31,7 +31,7 @@ private func detailReply(_ id: String) -> HTTPExchange {
 }
 
 private let page1 = [("e1", "evaluation", "2026-09-24T10:00:00Z"), ("e2", "evaluation", "2026-09-23T10:00:00Z")]
-private let page2 = [("e3", "evaluation", "2026-09-22T10:00:00Z"), ("a1", "agentic", "2026-09-21T10:00:00Z")]
+private let page2 = [("e3", "evaluation", "2026-09-22T10:00:00Z"), ("a1", "other", "2026-09-21T10:00:00Z")]
 
 /// Records sleeps; optional hook runs at the n-th sleep.
 private actor Sleeps {
@@ -102,12 +102,12 @@ extension FakeTransport {
     let manifest = await h.run()
     #expect(manifest.outcome == .completed)
     #expect(manifest.pagesListed == 2 && manifest.entriesListed == 4)
-    #expect(manifest.entryTypes == ["evaluation": 3, "agentic": 1])
+    #expect(manifest.entryTypes == ["evaluation": 3, "other": 1])
     #expect(manifest.detailsFetched == 3 && manifest.listOnlyEntries == 1 && manifest.detailsFailed == 0)
     #expect(manifest.listingEnd == "hasMore=false")
 
     let paths = h.transport.paths
-    #expect(paths.filter { $0 == "/api/evaluation/a1" }.isEmpty, "agentic entries have no observed detail route")
+    #expect(paths.filter { $0 == "/api/evaluation/a1" }.isEmpty, "a kind without an observed detail route is list-only")
     let queries = h.transport.requests.compactMap { $0.url?.query }
     #expect(queries == ["limit=20&includeArchived=true", "limit=20&includeArchived=true&cursor=cur%2Bsor%2F1"])
 
@@ -805,4 +805,56 @@ extension Harness {
     h.script([listReply(page1, hasMore: true, cursor: "c1")])
     let after = await h.run()
     #expect(after.outcome == .completed && after.detailsFetched == 0 && after.unfinishedLeft == 0)
+}
+
+// MARK: - Agent pages (N-022)
+
+private let agentList = [("e1", "evaluation", "2026-09-24T10:00:00Z"), ("a1", "agentic", "2026-09-23T10:00:00Z")]
+
+@Test func anAgentConversationIsFetchedFromItsPageWithoutItsToken() async throws {
+    let h = try await Harness([listReply(agentList, hasMore: false, cursor: nil), detailReply("e1"), agentReply(agentPage("a1"))])
+    let manifest = await h.run()
+    #expect(manifest.outcome == .completed)
+    #expect(manifest.detailsFetched == 2 && manifest.listOnlyEntries == 0 && manifest.detailsFailed == 0)
+    #expect(h.transport.paths.suffix(2) == ["/api/evaluation/e1", "/agent/a1"])
+    let page = try #require(h.exchanges("agent_detail").first)
+    #expect(page.envelope.transformations == ["credential_omitted", "token_omitted"])
+    #expect(page.envelope.metadata["tokens_omitted"] == .integer(1))
+    #expect(page.envelope.metadata["route"] == .string("/agent/{id}") && page.envelope.metadata["entry_type"] == .string("agentic"))
+    #expect(page.payload.range(of: Data(agentToken.utf8)) == nil)
+    #expect(page.payload == AgentPage.withoutTokens(agentPage("a1")).body, "every other byte kept")
+
+    // The journaled page (without its token) is the snapshot: an unchanged listing fetches nothing.
+    h.script([listReply(agentList, hasMore: false, cursor: nil)])
+    let next = await h.run()
+    #expect(next.outcome == .completed && next.detailsFetched == 0 && next.detailsUnchanged == 2)
+
+    // A Refresh fetches the page again.
+    h.script([agentReply(agentPage("a1"))])
+    let refreshed = await h.refresh("a1")
+    #expect(refreshed.outcome == .completed && refreshed.detailsFetched == 1)
+    #expect(h.transport.paths.last == "/agent/a1")
+}
+
+@Test func anUnrecognizedAgentPageIsAWarningAndAChallengeStops() async throws {
+    let other = [("a1", "agentic", "2026-09-23T10:00:00Z")]
+    let drift = try await Harness([listReply(other, hasMore: false, cursor: nil), agentReply(Data("<html>new layout</html>".utf8))])
+    let changed = await drift.run()
+    #expect(changed.outcome != .blocked && changed.detailsFailed == 1 && changed.detailsFetched == 0)
+    #expect(changed.warnings.contains { $0.hasPrefix("agent page HTTP 200 without a recognized transcript") })
+    #expect(drift.exchanges("agent_detail").count == 1, "the page is journaled before it is judged")
+
+    let mismatch = try await Harness([listReply(other, hasMore: false, cursor: nil), agentReply(agentPage("zz"))])
+    #expect(await mismatch.run().detailsFailed == 1, "a page naming another conversation is not its snapshot")
+
+    let gone = try await Harness([listReply(other, hasMore: false, cursor: nil), agentReply(Data(), status: 404)])
+    let absent = await gone.run()
+    #expect(absent.detailsAbsent == 1 && absent.detailsFetched == 0)
+    gone.script([listReply(other, hasMore: false, cursor: nil)])
+    #expect(await gone.run().detailsAbsent == 0, "a 404 for the same version is remembered")
+
+    let challenged = try await Harness([
+        listReply(other, hasMore: false, cursor: nil), agentReply(Data("<title>Just a moment...</title>".utf8)),
+    ])
+    #expect(await challenged.run().outcome == .blocked)
 }

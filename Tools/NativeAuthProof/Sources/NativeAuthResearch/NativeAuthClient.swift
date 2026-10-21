@@ -262,6 +262,23 @@ public actor NativeAuthClient {
         do { return try await executor.perform(request) } catch { throw ResearchFailure.transportFailed }
     }
 
+    /// Agent detail lead (arena-exporter backfill): the `/agent/{id}` page for an `agentic` ID taken
+    /// from a verified native list page. Unverified route; no automatic retry; redirects refused.
+    public func agentPage(id: String) async throws -> HTTPReply {
+        guard !inFlight else { throw ResearchFailure.busy }
+        guard !quarantined else { throw ResearchFailure.identityMismatch }
+        guard identity != nil else { throw ResearchFailure.notAuthenticated }
+        guard let detail = HistoryDetailRecipe.request(for: id), let detailURL = detail.url else {
+            throw ResearchFailure.inputMissing
+        }
+        inFlight = true
+        defer { inFlight = false }
+        var request = URLRequest(url: URL(string: "https://arena.ai/agent/" + detailURL.lastPathComponent)!)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do { return try await executor.perform(request) } catch { throw ResearchFailure.transportFailed }
+    }
+
     /// A5: identity request from a fresh, empty cookie jar. Reports shape only.
     public static func anonymousIdentityProbe(executor: any HTTPExecuting = NativeHTTPExecutor()) async
         -> AnonymousIdentityResult

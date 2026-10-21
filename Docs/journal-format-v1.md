@@ -140,6 +140,16 @@ not the file. `JournalVerifier` doesn't read the store; the app's Verify checks 
 against its name and size, and backups (`arena-suite-backup/2`) copy and check every named file.
 First user: `attachment.download` records (`Docs/attachments-2026-10-20.md`).
 
+## Declared transformations in use
+
+- `credential_omitted`: session material (`Set-Cookie` values, sign-in passwords) is not recorded.
+- `signed_query_omitted`: an `attachment.download` record doesn't repeat the link's signed query, and
+  a redirect's `Location`/`Content-Location` query is replaced by `[omitted]`.
+- `token_omitted`: an `agent_detail` exchange's body has every JWT-shaped string (`eyJ…`, three
+  dot-separated base64url segments of at least 8 bytes each) replaced by the 9 bytes `[omitted]`;
+  metadata `tokens_omitted` gives the count. Every other byte is exact
+  (`Docs/agent-detail-2026-10-21.md`).
+
 ## Verification
 
 `JournalVerifier` is read-only. It checks every record's structure and digest, sequence

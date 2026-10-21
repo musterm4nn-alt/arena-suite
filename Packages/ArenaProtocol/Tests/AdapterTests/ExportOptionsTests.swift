@@ -271,7 +271,7 @@ private func object(_ data: Data) throws -> [String: Any] {
         .normalizedJSON: "ae6e90f0906231377f5be3ac22edefcda2314c18566c2b85854fe2ada7f60279",
         .markdown: "72df1b2738c901ee4c9992d4edc61beda5d64443ceaa25bf515757aadfe707d7",
     ]
-    #expect(evidence.decoderVersion == "arena-decoder/3")
+    #expect(evidence.decoderVersion == "arena-decoder/4")
     for (format, expected) in golden {
         let text = String(decoding: try await h.render(format), as: UTF8.self)
             .replacingOccurrences(of: evidence.digest, with: "<record digest>")

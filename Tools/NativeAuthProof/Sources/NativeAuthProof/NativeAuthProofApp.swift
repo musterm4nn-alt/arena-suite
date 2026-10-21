@@ -14,6 +14,8 @@ enum LaunchMode {
     }
     static let phase0A = arguments.contains("--phase0a")
     static let isolation = arguments.contains("--isolation")
+    /// `--agent-detail`: after restore or sign-in, observe one `agentic` entry's detail routes.
+    static let agentDetail = arguments.contains("--agent-detail")
     /// After a verified restore, delete and re-add the Keychain item so its access control is
     /// created by this (identity-signed) build rather than inherited from an older one (A6).
     static let rekey = arguments.contains("--rekey")
@@ -203,6 +205,8 @@ private struct ProofView: View {
                 try await client.saveSession()
                 if LaunchMode.phase0A {
                     await runPhase0A(preflight: (.notFound, 0), restored: false)
+                } else if LaunchMode.agentDetail {
+                    await runAgentDetail()
                 } else {
                     await automaticHistory()
                 }
@@ -239,6 +243,8 @@ private struct ProofView: View {
             try await client.saveSession()
             if LaunchMode.phase0A {
                 await runPhase0A(preflight: preflight, restored: true)
+            } else if LaunchMode.agentDetail {
+                await runAgentDetail()
             } else {
                 await automaticHistory()
             }
@@ -282,6 +288,17 @@ private struct ProofView: View {
         writeJSON(result, to: directory.appendingPathComponent("Phase0AResult-\(LaunchMode.slot).json"))
         status = result.stoppedEarly.map { "Phase 0-A stopped: \($0)" } ?? "Phase 0-A checks finished (\(result.requestsSent) requests)."
         report(result.stoppedEarly == nil ? "phase0aFinished" : "failed", summary: status)
+    }
+
+    @MainActor private func runAgentDetail() async {
+        status = "Observing one agent conversation's detail routes (one request at a time, 1 s apart)…"
+        report("agentDetailRunning", summary: status)
+        let directory = Bundle.main.bundleURL.deletingLastPathComponent()
+        let result = await AgentDetailRunner.run(
+            client: client, candidate: directory.appendingPathComponent("agent-detail-candidate-\(LaunchMode.slot).html"))
+        writeJSON(result, to: directory.appendingPathComponent("AgentDetailResult-\(LaunchMode.slot).json"))
+        status = result.stoppedEarly.map { "Agent detail stopped: \($0)" } ?? "Agent detail observation finished (\(result.requestsSent) requests)."
+        report(result.stoppedEarly == nil ? "agentDetailFinished" : "failed", summary: status)
     }
 
     @MainActor private func runIsolation() async {

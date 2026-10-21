@@ -173,12 +173,17 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
     (`arena-suite-backup/2`, `BackupCheck.objects`, `digestCompared`) use only the metadata
     convention. The app reads files through `ArchiveService.attachmentData` (`AttachmentFileError`);
     MCP may not (boundary deny-list). Not yet run against Arena. Review:
-    `Docs/reviews/2026-10-20-attachments.md`; every finding fixed and tested, but the re-review
-    of the fixes was cut off by opencode's rate limit (free models) and is still to be done:
-    rerun the prompt in that record's last section.
-  - **Next, from the user's gap analysis** (`Docs/arena-exporter-gaps-2026-10-19.md`, "Closing the
-    gaps", in order):
-    1. Agent detail (observe a native detail route in `Tools/NativeAuthProof` first).
+    `Docs/reviews/2026-10-20-attachments.md`; every finding fixed and tested. The re-review was
+    dropped: on 2026-10-21 the user said to skip reviews from now on.
+  - **Agent conversations (2026-10-21):** `Docs/agent-detail-2026-10-21.md`, ledger N-022. Sync
+    and Refresh fetch `/agent/{id}` (`AgentPage`, role `agent_detail`) for `agentic` entries;
+    the journaled page has its session JWT replaced (`token_omitted`). Decoder `arena-decoder/4`.
+    Proof tool mode: `open -n DerivedData/NativeAuthProof.app --args --agent-detail`.
+  - **Milestone roadmap:** `Docs/roadmap.html`, published as an artifact
+    (https://claude.ai/artifact/DHEdvNVA77gL6h8xTV6Kkv). Update and republish it after every
+    milestone. Reviews are skipped by the user's decision (2026-10-21).
+  - **Next:** bulk export of the filtered history, then a clearer Maintenance page, then the §14
+    Maintenance tools.
 
     Import of arena-exporter folders (the second half of item 7) is not to be built: the user
     chose "Skip import" on 2026-10-20. GitHub backup stays a separate decision: it sends private

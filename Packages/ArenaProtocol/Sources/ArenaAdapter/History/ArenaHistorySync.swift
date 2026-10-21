@@ -9,9 +9,10 @@ import SuiteDomain
 public struct ArenaHistorySync: HistorySyncing {
     public typealias Sleeper = @Sendable (Duration) async throws -> Void
 
-    /// Conversation kinds whose detail route is observed (N-007, N-008): the only ones fetched in
-    /// detail, so the only ones Refresh can fetch again. Arena vocabulary, passed to the app.
-    public static let refreshableKinds: Set<String> = ["evaluation"]
+    /// Conversation kinds whose detail route is observed: `evaluation` (`/api/evaluation/{id}`, N-007,
+    /// N-008) and `agentic` (`/agent/{id}`, N-022). The only ones fetched in detail, so the only ones
+    /// Refresh can fetch again. Arena vocabulary, passed to the app.
+    public static let refreshableKinds: Set<String> = ["evaluation", "agentic"]
 
     private let sessions: ArenaAccountSessions
     private let downloads: any HTTPTransporting
@@ -142,7 +143,7 @@ struct ArchivedState {
                     if let gap = page.incompleteness { interrupted.incompletePages.append("page \(interrupted.pages): \(gap)") }
                     open[job] = interrupted
                 }
-            case "exchange" where role == "detail" && envelope.metadata["status"] == .integer(404):
+            case "exchange" where SyncJob.detailRoles.contains(role ?? "") && envelope.metadata["status"] == .integer(404):
                 guard case .string(let id) = envelope.metadata["entry_id"] else { return }
                 if case .string(let updated) = envelope.metadata["source_updated_at"] {
                     state.absent[id] = updated
@@ -157,6 +158,18 @@ struct ArchivedState {
                     case .integer(let size) = envelope.metadata[ObjectStore.sizeKey], size >= 0
                 else { return }
                 state.storedFiles[key] = ObjectStore.Stored(sha256: digest, size: Int(size))
+            case "exchange" where role == SyncJob.agentDetailRole:
+                guard case .string(let id) = envelope.metadata["entry_id"],
+                    envelope.metadata["status"] == .integer(200),
+                    envelope.metadata["transfer_end"] == .string("complete"),
+                    AgentPage.isValid(record.payload, id: id)
+                else { return }
+                state.absent[id] = nil
+                if case .string(let value) = envelope.metadata["source_updated_at"] {
+                    state.snapshots[id] = value
+                } else {
+                    state.snapshots[id] = String?.none
+                }
             case "exchange" where role == "detail":
                 guard case .string(let id) = envelope.metadata["entry_id"],
                     envelope.metadata["status"] == .integer(200),
@@ -186,11 +199,12 @@ struct ArchivedState {
 
     func isUnchanged(_ entry: ListEntry) -> Bool {
         guard let updated = entry.updatedAt, listed[entry.id] == updated else { return false }
-        return entry.type != "evaluation" || snapshots[entry.id] == updated || absent[entry.id] == updated
+        return !ArenaHistorySync.refreshableKinds.contains(entry.type) || snapshots[entry.id] == updated
+            || absent[entry.id] == updated
     }
 
     func needsDetail(_ entry: ListEntry) -> Bool {
-        guard entry.type == "evaluation" else { return false }
+        guard ArenaHistorySync.refreshableKinds.contains(entry.type) else { return false }
         // Without `updatedAt` a change is undetectable, so such conversations are always refetched.
         guard let updated = entry.updatedAt else { return true }
         if snapshots[entry.id] == updated { return refetchesUnfinished(entry) }
@@ -236,6 +250,9 @@ final class SyncJob {
     }
 
     static let refreshKind = "conversation_refresh"
+    /// The `/agent/{id}` page of an `agentic` conversation (N-022).
+    static let agentDetailRole = "agent_detail"
+    static let detailRoles: Set<String> = ["detail", agentDetailRole]
     /// One attachment file request and its response (Docs/attachments-2026-10-20.md).
     static let downloadKind = "attachment.download"
 
@@ -490,7 +507,7 @@ final class SyncJob {
     private func tally(_ entries: [ListEntry]) {
         manifest.entriesListed = entries.count
         manifest.entryTypes = entries.reduce(into: [:]) { $0[$1.type, default: 0] += 1 }
-        manifest.listOnlyEntries = entries.filter { $0.type != "evaluation" }.count
+        manifest.listOnlyEntries = entries.filter { !ArenaHistorySync.refreshableKinds.contains($0.type) }.count
     }
 
     /// Early stop is only safe if the page is visibly ordered by `updatedAt`, newest first.
@@ -508,7 +525,7 @@ final class SyncJob {
         // Unfinished conversations this listing didn't reach are fetched by ID, as a refresh would.
         let listedIDs = Set(entries.map(\.id))
         let unlisted = state.unfinishedToRevisit.filter { !listedIDs.contains($0) }
-        manifest.detailsUnchanged = entries.filter { $0.type == "evaluation" }.count - needed.count
+        manifest.detailsUnchanged = entries.filter { ArenaHistorySync.refreshableKinds.contains($0.type) }.count - needed.count
         let total = needed.count + unlisted.count
         let unstamped = needed.filter { $0.updatedAt == nil }.count
         if unstamped > 0 {
@@ -516,15 +533,10 @@ final class SyncJob {
         }
         for (index, entry) in needed.enumerated() {
             report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: index, detailsNeeded: total))
-            guard let request = HistoryRoutes.detail(id: entry.id) else {
-                manifest.detailsFailed += 1
-                manifest.warnings.append("detail skipped: ID not path-safe")
-                continue
-            }
             var extra: [String: JournalValue] = ["entry_id": .string(entry.id), "entry_type": .string(entry.type)]
             if let updated = entry.updatedAt { extra["source_updated_at"] = .string(updated) }
             let refetch = state.refetchesUnfinished(entry)
-            if try await fetchDetail(request, id: entry.id, extra: extra), refetch { manifest.detailsRefetchedUnfinished += 1 }
+            if try await fetchDetail(entry.id, kind: entry.type, extra: extra), refetch { manifest.detailsRefetchedUnfinished += 1 }
         }
         for (index, id) in unlisted.enumerated() {
             report(SyncProgress(stage: .details, pages: manifest.pagesListed, entries: entries.count, detailsDone: needed.count + index, detailsNeeded: total))
@@ -538,11 +550,6 @@ final class SyncJob {
     /// it in the journal and says where those values came from. True when a valid detail arrived.
     @discardableResult
     private func refreshDetail(_ id: String, state: ArchivedState) async throws -> Bool {
-        guard let request = HistoryRoutes.detail(id: id) else {
-            manifest.detailsFailed += 1
-            manifest.warnings.append("detail skipped: ID not path-safe")
-            return false
-        }
         var extra: [String: JournalValue] = ["entry_id": .string(id)]
         if let type = state.types[id] {
             extra["entry_type"] = .string(type)
@@ -552,12 +559,18 @@ final class SyncJob {
             extra["source_updated_at"] = .string(updated)
             extra["source_updated_at_origin"] = .string("last_listed")
         }
-        return try await fetchDetail(request, id: id, extra: extra)
+        return try await fetchDetail(id, kind: state.types[id] ?? "evaluation", extra: extra)
     }
 
     /// True when a valid detail arrived (counted in `detailsFetched`). Its attachments' files are
     /// downloaded before anything else is requested: their links are fresh only now (N-019).
-    private func fetchDetail(_ request: URLRequest, id: String, extra: [String: JournalValue]) async throws -> Bool {
+    private func fetchDetail(_ id: String, kind: String, extra: [String: JournalValue]) async throws -> Bool {
+        if kind == "agentic" { return try await fetchAgentDetail(id, extra: extra) }
+        guard let request = HistoryRoutes.detail(id: id) else {
+            manifest.detailsFailed += 1
+            manifest.warnings.append("detail skipped: ID not path-safe")
+            return false
+        }
         let exchange = try await fetch(request, role: "detail", route: HistoryRoutes.detailTemplate, extra: extra, allowNotFound: true)
         if exchange.status == 404 {
             manifest.detailsAbsent += 1  // plan §9.5: an observation of absence; local evidence kept
@@ -570,6 +583,29 @@ final class SyncJob {
         } else {
             manifest.detailsFailed += 1
             manifest.warnings.append("detail HTTP \(exchange.status.map(String.init) ?? "none") or unrecognized body")
+        }
+        return false
+    }
+
+    /// An `agentic` conversation's page (N-022). Journaled without its access token; counted as
+    /// fetched only if its transcript names this conversation.
+    private func fetchAgentDetail(_ id: String, extra: [String: JournalValue]) async throws -> Bool {
+        guard let request = AgentPage.request(id: id) else {
+            manifest.detailsFailed += 1
+            manifest.warnings.append("detail skipped: ID not path-safe")
+            return false
+        }
+        let exchange = try await fetch(request, role: Self.agentDetailRole, route: AgentPage.template, extra: extra, allowNotFound: true)
+        if exchange.status == 404 {
+            manifest.detailsAbsent += 1
+        } else if exchange.status == 200 && AgentPage.isValid(exchange.body, id: id) {
+            manifest.detailsFetched += 1
+            return true
+        } else if exchange.status == 200 && AgentPage.looksLikeChallenge(exchange.body) {
+            throw Stop.outcome(.blocked, "agent page is a challenge")
+        } else {
+            manifest.detailsFailed += 1
+            manifest.warnings.append("agent page HTTP \(exchange.status.map(String.init) ?? "none") without a recognized transcript")
         }
         return false
     }
@@ -795,9 +831,18 @@ struct ExchangeRecorder: Sendable {
         metadata["route"] = .string(route)
         metadata["path"] = .string(request.url?.path ?? "")
         metadata["query"] = request.url?.query.map(JournalValue.string) ?? .null
+        var payload = exchange.body
+        var transformations = ["credential_omitted"]
+        if role == SyncJob.agentDetailRole {
+            // The agent page carries a session access token (N-022); it never enters the journal.
+            let cleaned = AgentPage.withoutTokens(exchange.body)
+            payload = cleaned.body
+            transformations.append("token_omitted")
+            metadata["tokens_omitted"] = .integer(Int64(cleaned.omitted))
+        }
         return try append(
-            kind: "exchange", exchange, payload: exchange.body, representation: "foundation_decoded_entity",
-            transformations: ["credential_omitted"], metadata: metadata)
+            kind: "exchange", exchange, payload: payload, representation: "foundation_decoded_entity",
+            transformations: transformations, metadata: metadata)
     }
 
     /// An attachment file request (`attachment.download`). A stored body is in the object store and

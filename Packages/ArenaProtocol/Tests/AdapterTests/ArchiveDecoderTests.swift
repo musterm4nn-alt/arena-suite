@@ -57,7 +57,7 @@ private let detailMetadata: [String: JournalValue] = [
     let harness = try RecordHarness()
     let record = try harness.record(payload: try fixtureDetailBody(), metadata: detailMetadata, account: account)
     let decoder = ArenaArchiveDecoder()
-    #expect(decoder.version == "arena-decoder/3")
+    #expect(decoder.version == "arena-decoder/4")
 
     let decoded = decoder.decode(record, account: account)
     #expect(decoded.unknownFields.isEmpty, "the fixture uses only known keys")
