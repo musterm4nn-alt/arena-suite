@@ -58,6 +58,12 @@ extension Theme {
 /// bar in the top band, where the window buttons sit (centered 16 pt from the top, ending near
 /// x = 68; measured on macOS 26, 2026-10-18). The band stays draggable like a title bar.
 extension Theme {
+    /// A share symbol for an icon button. Its box sits lower in the frame than other symbols' ink
+    /// (measured 0.5–0.75 pt below Refresh's), so it is raised 1 pt to line up in a row of icons.
+    static func shareIcon(_ name: String = "square.and.arrow.up") -> some View {
+        Image(systemName: name).offset(y: -1)
+    }
+
     static let barHeight: CGFloat = 32
     /// What the window buttons cover at the top-left, with a margin.
     static let windowButtonsWidth: CGFloat = 80

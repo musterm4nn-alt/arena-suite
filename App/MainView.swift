@@ -60,7 +60,7 @@ struct MainView: View {
                         archive: archive, accounts: accounts, siteName: profiles.siteName, showingInspector: $showingInspector,
                         destination: $destination)
                 case .site(let account):
-                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, open: openSite) {
+                    ArenaWebPane(accountID: account, accounts: accounts, profiles: profiles, archive: archive, open: openSite) {
                         accounts.pendingAdd = true
                         destination = .accounts
                     }

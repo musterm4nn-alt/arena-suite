@@ -225,6 +225,24 @@ final class ArchiveModel {
         loadDetail()
     }
 
+    /// Shows the conversation at its latest snapshot (Export on the site pane).
+    func show(_ key: ConversationKey) {
+        select(key)
+        selectSnapshot(nil)
+    }
+
+    /// The account's archived conversation whose ID is one of `remoteIDs` (a site page's address
+    /// segments, last first), if any.
+    func locate(account: AccountID, among remoteIDs: [String]) async -> ConversationSummary? {
+        guard let archive else { return nil }
+        return await Task.detached {
+            for id in remoteIDs {
+                if let found = try? archive.conversation(account: account, remoteID: id) { return found.summary }
+            }
+            return nil
+        }.value
+    }
+
     func selectSnapshot(_ sequence: UInt64?) {
         guard sequence != snapshotSequence else { return }
         highlightedMessage = nil

@@ -51,3 +51,29 @@ func otherWebPagesAreOnlyOffered(_ text: String) {
     #expect(policy.siteDomains == ["example.org"])
     #expect(policy == WebSitePolicy(home: url("https://example.org"), siteDomains: ["EXAMPLE.org"]))
 }
+
+@Test func onlyASitePagesAddressGivesSegments() {
+    #expect(policy.pageSegments(url("https://example.org/c/abc-123?x=1#f")) == ["abc-123", "c"])
+    #expect(policy.pageSegments(url("https://www.example.org/code/c/9/")) == ["9", "c", "code"])
+    #expect(policy.pageSegments(url("https://example.org/")) == [])
+    #expect(policy.pageSegments(url("https://evil.com/c/abc-123")) == [])
+    #expect(policy.pageSegments(url("http://example.org/c/abc-123")) == [])
+    #expect(policy.pageSegments(nil) == [])
+}
+
+@Test func downloadsMayComeFromThePageItself() {
+    for text in ["https://example.org/f.zip", "http://cdn.example.net/f", "blob:https://example.org/6f1c", "data:application/zip;base64,UEs="] {
+        #expect(policy.isDownloadable(url(text)), "\(text)")
+    }
+    for text in ["file:///etc/passwd", "javascript:alert(1)", "about:blank", "mailto:a@example.org"] {
+        #expect(!policy.isDownloadable(url(text)), "\(text)")
+    }
+}
+
+@Test func onlyTheSitesOwnBlobsLoad() {
+    #expect(policy.mainFrame(url("blob:https://example.org/6f1c")) == .load)
+    #expect(policy.newWindow(url("blob:https://www.example.org/6f1c")) == .load)
+    #expect(policy.mainFrame(url("blob:https://evil.com/6f1c")) == .ignore)
+    #expect(policy.mainFrame(url("blob:http://example.org/6f1c")) == .ignore)
+    #expect(policy.newWindow(url("blob:null/6f1c")) == .ignore)
+}

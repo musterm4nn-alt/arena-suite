@@ -184,6 +184,10 @@ Updated 2026-10-20, after unfinished conversations and Refresh, and the site's a
     milestone. Reviews are skipped by the user's decision (2026-10-21).
   - **Bulk export (2026-10-21):** `Docs/bulk-export-2026-10-21.md`; `BulkExportService`
     (ApplicationActions), `BulkExportSheet` (SidebarView).
+  - **Site fixes (2026-11-04):** ADR 0006 amendment "Export from the site, and page-made
+    downloads". `PageExportButton` (`App/PageExport.swift`) in the site header; the web view keeps
+    only the address's path segments (`ArenaWebPage.addressSegments`). `Theme.shareIcon` raises
+    share symbols 1 pt. Not yet tried live: a battle's Export and the code-battle zip download.
   - **Next:** a clearer Maintenance page, then the §14 Maintenance tools.
 
     Import of arena-exporter folders (the second half of item 7) is not to be built: the user

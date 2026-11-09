@@ -21,7 +21,7 @@ struct ArchivePane: View {
                 header
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(alignment: .bottom) { exportNotice }
+                    .overlay(alignment: .bottom) { ExportNotice(archive: archive) }
             }
             if showingInspector, archive.detail != nil {
                 Theme.border.frame(width: 1)
@@ -38,13 +38,7 @@ struct ArchivePane: View {
             if archive.detail != nil, CommandLine.arguments.contains("--preview-export-popover") { showingExport = true }
         }
         #endif
-        .confirmationDialog("Export the whole conversation's raw bodies exactly?", isPresented: $confirmExactRaw) {
-            Button("Export Exact Raw JSON to Downloads") {
-                Task { await archive.export(.rawJSON, scope: .wholeConversation, exactRawBodies: true, to: nil) }
-            }
-        } message: {
-            Text("Raw JSON is the recorded response, so it holds the whole conversation of the snapshot shown. Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
-        }
+        .exactRawConfirmation(isPresented: $confirmExactRaw, archive: archive)
     }
 
     // MARK: Header
@@ -136,7 +130,7 @@ struct ArchivePane: View {
 
     private func exportMenu(_ detail: ConversationDetail) -> some View {
         Button { showingExport.toggle() } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
+            Label { Text("Export") } icon: { Theme.shareIcon() }
         }
         .buttonStyle(.arenaIcon(width: 28, height: 24, selected: showingExport))
         .keyboardShortcut("e", modifiers: [.shift, .command])
@@ -233,7 +227,28 @@ struct ArchivePane: View {
         }
     }
 
-    @ViewBuilder private var exportNotice: some View {
+}
+
+// MARK: - Export
+
+extension View {
+    /// The confirmation before exporting exact raw bodies, which hold Arena's telemetry about the user.
+    func exactRawConfirmation(isPresented: Binding<Bool>, archive: ArchiveModel) -> some View {
+        confirmationDialog("Export the whole conversation's raw bodies exactly?", isPresented: isPresented) {
+            Button("Export Exact Raw JSON to Downloads") {
+                Task { await archive.export(.rawJSON, scope: .wholeConversation, exactRawBodies: true, to: nil) }
+            }
+        } message: {
+            Text("Raw JSON is the recorded response, so it holds the whole conversation of the snapshot shown. Exact bodies include Arena's per-message metadata: bot and reCAPTCHA scores, browser-fingerprint ratios, coarse location and a hashed IP about you. The default export masks them.")
+        }
+    }
+}
+
+/// What the last export or copy did, over the bottom of the pane it was made from.
+struct ExportNotice: View {
+    let archive: ArchiveModel
+
+    var body: some View {
         if let outcome = archive.exportOutcome {
             HStack(spacing: 10) {
                 switch outcome {
@@ -265,11 +280,9 @@ struct ArchivePane: View {
     }
 }
 
-// MARK: - Export
-
 /// What and how to export, like arena-exporter's popup: a scope, a format, then copy or save. The
 /// choices are remembered between launches. Exact raw bodies stay behind their own confirmation.
-private struct ExportPopover: View {
+struct ExportPopover: View {
     @Bindable var archive: ArchiveModel
     let confirmExactRaw: () -> Void
     let close: () -> Void

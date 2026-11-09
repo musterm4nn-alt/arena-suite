@@ -678,7 +678,9 @@ private struct HistoryFilterBar: View {
                     : "History")
                     .font(Theme.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Button { exporting = true } label: { Label("Export Listed Conversations", systemImage: "square.and.arrow.up.on.square") }
+                Button { exporting = true } label: {
+                    Label { Text("Export Listed Conversations") } icon: { Theme.shareIcon("square.and.arrow.up.on.square") }
+                }
                     .buttonStyle(.arenaIcon(width: 26, height: 22))
                     .disabled(archive.bulkTargets(searching: searching).isEmpty && archive.bulkProgress == nil && archive.bulkOutcome == nil)
                     .help(searching ? "Export the conversations of these search results" : "Export every conversation listed below")

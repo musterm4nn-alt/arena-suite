@@ -124,6 +124,9 @@ final class ArenaWebPage {
     fileprivate(set) var canGoForward = false
     fileprivate(set) var isLoading = false
     fileprivate(set) var host: String?
+    /// The address's path segments, last first, for Export (ADR 0006, amendment 2026-11-04): the
+    /// address WebKit reports, never the page's content.
+    fileprivate(set) var addressSegments: [String] = []
     /// A page (not a click) asked to leave the site; the user decides.
     var offered: URL?
     var problem: String?
@@ -160,6 +163,7 @@ struct ArenaWebPane: View {
     let accountID: AccountID
     @Bindable var accounts: AccountsModel
     let profiles: ArenaWebProfiles
+    let archive: ArchiveModel
     /// The user's click on Open or a tab: the main window opens the session, and collapses its
     /// sidebar when coming from outside the site.
     let open: (AccountID) -> Void
@@ -175,6 +179,7 @@ struct ArenaWebPane: View {
                 header(account, page: session.page)
                 ArenaWebHost(session: session)
                     .safeAreaInset(edge: .top, spacing: 0) { banners(session.page) }
+                    .overlay(alignment: .bottom) { ExportNotice(archive: archive) }
                     .confirmationDialog(
                         "Clear web data for \(account.displayName)'s web profile?", isPresented: $confirmingClear
                     ) {
@@ -312,6 +317,7 @@ struct ArenaWebPane: View {
                             ? "Archive this account's Arena history with its own Arena Suite sign-in (the account signed in on this page is not checked)"
                             : "Sign this account in under Manage Accounts to archive it")
             }
+            PageExportButton(account: account, candidates: page.addressSegments, archive: archive, accounts: accounts)
             Menu {
                 Button("Open Page in Browser") { if let url = page.currentURL { NSWorkspace.shared.open(url) } }
                     .disabled(page.currentURL == nil)
@@ -421,6 +427,7 @@ extension ArenaWebSession {
             page.canGoForward = webView.canGoForward
             page.isLoading = webView.isLoading
             page.host = webView.url?.host(percentEncoded: false)
+            page.addressSegments = policy.pageSegments(webView.url)
         }
 
         /// The window the page is shown in, if it is on screen: nil while the archive or another
@@ -448,15 +455,17 @@ extension ArenaWebSession {
             decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
         ) {
             // Each request is decided first, and only then acted on.
+            let url = action.request.url
+            if action.shouldPerformDownload, policy.isDownloadable(url) {
+                // In any frame, a new window's too; always through a save panel. `blob:` and `data:`
+                // are files the page made itself, such as a zip it built.
+                return decisionHandler(.download)
+            }
             guard let target = action.targetFrame else {
                 // A new-window request: handled here so that no second web view is ever created.
                 decisionHandler(.cancel)
                 apply(policy.newWindow(action.request.url), to: action.request.url, in: webView)
                 return
-            }
-            let url = action.request.url
-            if action.shouldPerformDownload, ["http", "https"].contains(url?.scheme?.lowercased() ?? "") {
-                return decisionHandler(.download)  // in any frame; always through a save panel
             }
             // Subframes (challenge frames, embeds) load as the page asks, as in any browser.
             guard target.isMainFrame, let url else { return decisionHandler(.allow) }
@@ -515,6 +524,11 @@ extension ArenaWebSession {
             _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
+            if action.shouldPerformDownload, policy.isDownloadable(action.request.url) {
+                // A download link that targets a new window: downloaded from this page instead.
+                webView.startDownload(using: action.request) { [weak self] in $0.delegate = self }
+                return nil
+            }
             apply(policy.newWindow(action.request.url), to: action.request.url, in: webView)
             return nil
         }

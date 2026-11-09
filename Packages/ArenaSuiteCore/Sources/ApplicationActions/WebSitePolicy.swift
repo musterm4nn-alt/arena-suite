@@ -35,16 +35,37 @@ public struct WebSitePolicy: Sendable, Equatable {
         if url.scheme?.lowercased() == "about", ["blank", "srcdoc"].contains(url.absoluteString.dropFirst(6).lowercased()) {
             return .load
         }
-        if isSitePage(url) { return .load }
+        if isSitePage(url) || isSiteBlob(url) { return .load }
         return external(url)
+    }
+
+    /// A `blob:` address the site's own page made (`blob:https://<site>/<uuid>`), for example a zip
+    /// it built for download. WebKit shows it or, when it can't, hands it to the save panel.
+    func isSiteBlob(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "blob", let inner = URL(string: String(url.absoluteString.dropFirst(5))) else { return false }
+        return isSitePage(inner)
     }
 
     /// A request for a new window (`target=_blank`, `window.open`). The window never opens a second
     /// web view: site pages load in place, everything else is offered or dropped.
     public func newWindow(_ url: URL?) -> Decision {
         guard let url else { return .ignore }
-        if isSitePage(url) { return .load }
+        if isSitePage(url) || isSiteBlob(url) { return .load }
         return external(url)
+    }
+
+    /// The path segments of a site page's address, last first: what Export on the site pane matches
+    /// against the archive's conversation IDs (ADR 0006 amendment, 2026-11-04). Only the address
+    /// WebKit reports for the page is used, never its content; anything but a site page has none.
+    public func pageSegments(_ url: URL?) -> [String] {
+        guard let url, isSitePage(url) else { return [] }
+        return url.path(percentEncoded: false).split(separator: "/").map(String.init).filter { !$0.isEmpty }.reversed()
+    }
+
+    /// A download the page asked for (a link with `download`, or a response it can't show). Besides
+    /// web addresses, `blob:` and `data:` hold files the page made itself, such as a zip it built.
+    public func isDownloadable(_ url: URL?) -> Bool {
+        ["http", "https", "blob", "data"].contains(url?.scheme?.lowercased() ?? "")
     }
 
     private func external(_ url: URL) -> Decision {

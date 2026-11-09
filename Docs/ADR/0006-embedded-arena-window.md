@@ -99,6 +99,27 @@ The user asked that Arena Suite always be one window ("not pop out a second one 
   drawn off-screen: a session not shown is simply not in any view hierarchy, like a background
   tab.
 
+## Amendment: Export from the site, and page-made downloads (2026-11-04)
+
+The user asked to export the conversation shown on the site while in a battle, and reported that a
+zip offered by an `arena.ai/code` battle did not download.
+
+- **The page's address, on the user's click.** The site header gets Export (⇧⌘E). The app keeps
+  the path segments of the address WebKit reports for the shown page (`WebSitePolicy.pageSegments`,
+  `https` site pages only), as it already kept the host. Only a click on Export uses them: they
+  are matched against that account's archived conversation IDs, so no page route is assumed.
+  Nothing from the page's content, cookies or storage is read, and nothing is journaled from the
+  web view.
+- **What Export fetches.** The conversation is brought up to date by the existing native actions
+  with the account's own Arena Suite sign-in (plan v3 §2 applies): Refresh if it is archived,
+  Sync History if it isn't yet. Then the archive's export choices are shown for it, as in the
+  transcript. If the page is signed in to another Arena account, the conversation is not in this
+  account's history and Export says so.
+- **Downloads.** A download link is honoured for `blob:` and `data:` addresses as well as web
+  addresses, in any frame and for new-window links; a `blob:` address of the site's own origin may
+  also load in the page, where WebKit hands what it can't show to the save panel. Every download
+  still goes through a save panel the user confirms, and only while the page is shown.
+
 ## Consequences
 
 - **Supersedes:**

@@ -3,7 +3,7 @@
 Single source of truth for where the project stands (plan v3 §17). Dated observation files in
 `Docs/` are the evidence behind it; this page is replaced, not appended to.
 
-Updated 2026-10-21.
+Updated 2026-11-09.
 
 | Phase | State | Notes |
 |---|---|---|
@@ -33,6 +33,7 @@ Updated 2026-10-21.
 | Agent conversations (2026-10-21) | **Done** (no review: the user stopped reviews on 2026-10-21) | Item 1 of the user's arena-exporter gap analysis. Observed (N-022): `/api/evaluation/{id}` is 404 for `agentic` entries; `/agent/{id}` is an HTML page whose Next.js flight data holds the transcript (AI SDK message parts, first 20 messages, `triggerAddress` = conversation ID, a session JWT). Sync and Refresh fetch it (role `agent_detail`), journal it with every JWT-shaped string replaced (`token_omitted`), and count it only if it names the conversation. Decoder `arena-decoder/4` (one index rebuild): text, reasoning, tool calls and results; `hasMore` warns `agent_transcript_partial`. Later pages, the realtime stream and workspace files are not fetched. Real page: decodes with 0 unknown fields. `Docs/agent-detail-2026-10-21.md` |
 | Bulk export (2026-10-21) | **Done** (no review: the user stopped reviews on 2026-10-21) | The history header's export button exports every conversation listed (or the conversations of the search results shown), latest snapshots frozen at the start, each file byte-equal to its single export, into one new `Arena Suite export <date time>` folder with `manifest.json` (`arena-suite-bulk-export/1`: per-file SHA-256, every conversation left out with its reason). The folder appears only when complete; Stop or a failure leaves nothing. `Docs/bulk-export-2026-10-21.md` |
 | Fixes (2026-11-09) | **Done** | A site banner (page failed to load, a link leaving the site) no longer covers the site's header: its background stayed out of the window's top band. When the Keychain refuses to delete a removed account's saved session, the row offers Remove Anyway: the account is removed, the session's ID goes to `accounts/leftover-sessions.json`, deletion is retried at each launch and on Try Again, and the Accounts page says how to delete it in Keychain Access. The Accounts page's error text can be dismissed. Debug-only `--preview-site-home <url>` and `--preview-removal-blocked` for screenshots. |
+| Site fixes (2026-11-04) | **Done** (no review: the user stopped reviews on 2026-10-21); live check by the user pending | From the user's notes: the share icons sit 1 pt higher so header icons line up; the site header has Export (⇧⌘E), which matches the shown page's address against the account's archived conversation IDs, refreshes it (or syncs, if it isn't archived yet) with the account's own sign-in, then offers the archive's export choices; page-made downloads (`blob:`, `data:`, download links opening a new window) reach the save panel. ADR 0006 amended. |
 | Track B Generation | Blocked | reCAPTCHA v3 (N-004). Starts only under plan §1 conditions |
 
 ## What needs you next
