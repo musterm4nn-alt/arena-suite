@@ -355,7 +355,9 @@ struct ArenaWebPane: View {
             actions().buttonStyle(.arenaPill)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(Theme.raised)
+        // Only behind the banner: by default the color would spread into the window's top band and
+        // cover the header bar above it.
+        .background(Theme.raised, ignoresSafeAreaEdges: [])
         .overlay(alignment: .bottom) { Theme.border.frame(height: 1) }
     }
 }

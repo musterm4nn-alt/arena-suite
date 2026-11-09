@@ -291,6 +291,41 @@ func reauthenticationFindsItsAccountAgainAfterSuspending(_ count: Int) async thr
     #expect(await fake.forgotten == [account.id, account.id])
 }
 
+@Test func removingAnywayListsTheSavedSessionUntilItCanBeDeleted() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    let other = try await service.addAccount(email: "b@x", password: "p", displayName: nil)
+    await fake.setForgetFails(true)
+    try await service.remove(account.id, leavingSavedSession: true)
+    #expect(try store.load().map(\.id) == [other.id])
+    #expect(try await service.leftoverSessions() == [account.id])
+    #expect(try await service.retryLeftoverSessions() == [account.id], "still refused")
+
+    // The next launch deletes it; the other account's session is untouched.
+    await fake.setForgetFails(false)
+    let relaunched = AccountService(registry: store, sessions: fake)
+    try await relaunched.load()
+    #expect(try await relaunched.retryLeftoverSessions().isEmpty)
+    #expect(try await relaunched.leftoverSessions().isEmpty)
+    let persisted = await fake.persisted
+    #expect(persisted[account.id] == nil && persisted[other.id] != nil)
+    #expect(!FileManager.default.fileExists(
+        atPath: store.url.deletingLastPathComponent().appendingPathComponent("leftover-sessions.json").path))
+}
+
+@Test func aLeftoverSessionOfAnAccountListedAgainIsKept() async throws {
+    let fake = FakeSessions()
+    let (service, store) = try makeService(fake)
+    let account = try await service.addAccount(email: "a@x", password: "p", displayName: nil)
+    // As after restoring a backup that still lists the account.
+    try store.saveLeftovers([account.id])
+    #expect(try await service.leftoverSessions().isEmpty)
+    #expect(try await service.retryLeftoverSessions().isEmpty)
+    #expect(await fake.forgotten.isEmpty)
+    #expect(await fake.persisted[account.id] != nil)
+}
+
 @Test func removalWhoseRegistrySaveFailsLeavesTheAccountUnableToSync() async throws {
     let fake = FakeSessions()
     let (service, store) = try makeService(fake)

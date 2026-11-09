@@ -28,6 +28,10 @@ final class AccountsModel {
     var pendingSignIn: AccountID?
     /// The Accounts page should open the Add Account form (the home screen's "Add Account…").
     var pendingAdd = false
+    /// An account whose removal stopped because the Keychain refused to delete its saved session.
+    var removalBlocked: AccountID?
+    /// Removed accounts whose saved session is still in the Keychain.
+    private(set) var leftoverSessions: [AccountID] = []
     var message: String?
 
     private let service: AccountService
@@ -149,6 +153,7 @@ final class AccountsModel {
         do {
             try await service.load()
             await service.restoreAll()
+            await retryLeftoverSessions()
             message = nil
         } catch {
             message = "The account list could not be read. Nothing was changed."
@@ -167,6 +172,7 @@ final class AccountsModel {
             try await service.load()
             accounts = await service.accounts()
             await service.restoreAll()
+            await retryLeftoverSessions()
         } catch {
             message = "The account list could not be read. Nothing was changed."
         }
@@ -219,11 +225,46 @@ final class AccountsModel {
         }
     }
 
-    func remove(_ id: AccountID) async {
-        if await run(id, { try await $0.remove(id) }) {
-            syncErrors[id] = nil
-            sessionErrors.remove(id)
-            await onAccountRemoved?(id)
+    /// `leavingSavedSession` is the user's "Remove Anyway" after the Keychain refused to delete the
+    /// account's saved session.
+    func remove(_ id: AccountID, leavingSavedSession: Bool = false) async {
+        removalBlocked = nil
+        working.insert(id)
+        defer { working.remove(id) }
+        do {
+            try await service.remove(id, leavingSavedSession: leavingSavedSession)
+            message = nil
+        } catch AccountError.sessionDeletionFailed {
+            // Asked in the account's row instead of a message: keep it, or remove it anyway.
+            removalBlocked = id
+            await refresh()
+            return
+        } catch {
+            message = Self.describe(error)
+            await refresh()
+            return
+        }
+        await refresh()
+        syncErrors[id] = nil
+        sessionErrors.remove(id)
+        await onAccountRemoved?(id)
+    }
+
+    #if DEBUG
+    /// Development: `--preview-removal-blocked` shows the first account's blocked removal and a
+    /// made-up leftover session, for screenshots (nothing is removed).
+    func previewRemovalBlocked() {
+        removalBlocked = accounts.first?.id
+        leftoverSessions = [AccountID(rawValue: UUID(uuidString: "00000000-0000-4000-8000-000000000001")!)]
+    }
+    #endif
+
+    /// Tries again to delete the saved sessions of removed accounts (at launch and on request).
+    func retryLeftoverSessions() async {
+        if let left = try? await service.retryLeftoverSessions() {
+            leftoverSessions = left
+        } else {
+            leftoverSessions = (try? await service.leftoverSessions()) ?? []
         }
     }
 

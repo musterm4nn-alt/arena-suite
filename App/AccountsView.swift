@@ -44,7 +44,14 @@ struct AccountsView: View {
                         }
                     }
                     if let message = model.message {
-                        Text(message).foregroundStyle(.red).textSelection(.enabled)
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(message).foregroundStyle(.red).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Dismiss") { model.message = nil }.buttonStyle(.arenaPill)
+                        }
+                    }
+                    if !model.leftoverSessions.isEmpty {
+                        leftovers
                     }
                     Text("Read-only archiver. Your password is sent to Arena once and never stored; session cookies are kept in your Keychain.")
                         .font(Theme.caption)
@@ -73,6 +80,26 @@ struct AccountsView: View {
         .onAppear(perform: openPendingSheet)
         .onChange(of: model.pendingSignIn) { openPendingSheet() }
         .onChange(of: model.pendingAdd) { openPendingSheet() }
+    }
+
+    /// Saved sign-ins of removed accounts that the Keychain would not delete yet.
+    private var leftovers: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(
+                model.leftoverSessions.count == 1
+                    ? "A removed account's saved sign-in is still in your Keychain."
+                    : "\(model.leftoverSessions.count) removed accounts' saved sign-ins are still in your Keychain.")
+            Text("Arena Suite tries to delete it each time it starts. To delete it yourself, open Keychain Access, search for “Arena Suite session”, and delete the item whose Account is:")
+                .foregroundStyle(.secondary)
+            ForEach(model.leftoverSessions, id: \.self) { id in
+                Text(id.rawValue.uuidString).textSelection(.enabled)
+            }
+            Button("Try Again") { Task { await model.retryLeftoverSessions() } }
+                .buttonStyle(.arenaPill)
+                .padding(.top, 2)
+        }
+        .font(Theme.caption)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Another view asked for the Add Account form or an account's sign-in form.
@@ -113,6 +140,14 @@ struct AccountsView: View {
             HStack(spacing: 6) {
                 if model.working.contains(account.id) {
                     ProgressView().controlSize(.small)
+                } else if model.removalBlocked == account.id {
+                    Text("Its saved sign-in can't be deleted from the Keychain.").font(Theme.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Remove Anyway removes the account and keeps trying to delete the saved sign-in each time Arena Suite starts.")
+                    Button("Remove Anyway", role: .destructive) {
+                        Task { await model.remove(account.id, leavingSavedSession: true) }
+                    }
+                    Button("Cancel") { model.removalBlocked = nil }
                 } else if confirmRemoval == account.id {
                     Text("Remove from this Mac?").font(Theme.caption)
                     Button("Remove", role: .destructive) {

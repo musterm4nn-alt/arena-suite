@@ -97,6 +97,20 @@ enum AppComposition {
             refresh: archive.map { ConversationRefreshService(sync: sync, archive: $0, kinds: ArenaHistorySync.refreshableKinds) },
             unfinishedStatuses: ArenaArchiveDecoder.unfinishedStatuses,
             maintenance: maintenance,
-            website: ArenaWebsite.policy)
+            website: website)
+    }
+
+    /// The site's policy, or for development `--preview-site-home <url>`: a stand-in home page (for
+    /// screenshots of the window with a page that fails to load, without contacting the site).
+    private static var website: WebSitePolicy {
+        #if DEBUG
+        let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--preview-site-home"), arguments.indices.contains(index + 1),
+            let home = URL(string: arguments[index + 1]), let host = home.host()
+        {
+            return WebSitePolicy(home: home, siteDomains: [host])
+        }
+        #endif
+        return ArenaWebsite.policy
     }
 }

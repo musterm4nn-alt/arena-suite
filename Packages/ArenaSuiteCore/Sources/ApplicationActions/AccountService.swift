@@ -249,8 +249,10 @@ public actor AccountService {
 
     /// Deletes saved session material, then the registry entry. Local archive data is not deleted.
     /// If the saved session cannot be deleted, the account is kept (so the removal can be retried
-    /// and the credentials stay reachable) and `sessionDeletionFailed` is thrown.
-    public func remove(_ id: AccountID) async throws {
+    /// and the credentials stay reachable) and `sessionDeletionFailed` is thrown, unless the user
+    /// chose `leavingSavedSession`: then the account is removed anyway and its saved session is
+    /// listed in `leftoverSessions()`, to be deleted later.
+    public func remove(_ id: AccountID, leavingSavedSession: Bool = false) async throws {
         guard records.contains(where: { $0.id == id }) else { throw AccountError.unknownAccount }
         guard busy.insert(id).inserted else { throw AccountError.busy }
         defer { busy.remove(id) }
@@ -260,7 +262,11 @@ public actor AccountService {
             // The in-memory session may be gone already, so nothing may sync with it; a new sign-in
             // or the next launch's restore brings the account back.
             if records.contains(where: { $0.id == id }) { states[id] = .needsSignIn }
-            throw AccountError.sessionDeletionFailed
+            guard leavingSavedSession else { throw AccountError.sessionDeletionFailed }
+            // Listed first: a removed account's session is never forgotten about.
+            var leftovers = try registry.loadLeftovers()
+            if !leftovers.contains(id) { leftovers.append(id) }
+            try registry.saveLeftovers(leftovers)
         }
         let remaining = records.filter { $0.id != id }
         do { try registry.save(remaining) } catch {
@@ -270,6 +276,23 @@ public actor AccountService {
         }
         records = remaining
         states[id] = nil
+    }
+
+    /// Saved sessions of removed accounts that could not be deleted yet.
+    public func leftoverSessions() throws -> [AccountID] {
+        try registry.loadLeftovers().filter { id in !records.contains { $0.id == id } }
+    }
+
+    /// Tries again to delete each leftover saved session; returns those still left. An account in
+    /// the list again (a restored backup) keeps its session.
+    @discardableResult
+    public func retryLeftoverSessions() async throws -> [AccountID] {
+        var left: [AccountID] = []
+        for id in try registry.loadLeftovers() where !records.contains(where: { $0.id == id }) && !busy.contains(id) {
+            do { try await sessions.forget(account: id) } catch { left.append(id) }
+        }
+        try registry.saveLeftovers(left)
+        return left
     }
 
     private func summary(_ record: AccountRecord) -> AccountSummary {
@@ -322,6 +345,38 @@ public struct AccountRegistryStore: Sendable {
             throw AccountError.registryUnavailable
         }
         return file.accounts
+    }
+
+    /// `leftover-sessions.json` beside the registry: removed accounts whose saved session could not
+    /// be deleted. IDs only.
+    private var leftoversURL: URL { url.deletingLastPathComponent().appendingPathComponent("leftover-sessions.json") }
+
+    private struct Leftovers: Codable {
+        let format: Int
+        let accounts: [AccountID]
+    }
+
+    public func loadLeftovers() throws -> [AccountID] {
+        let data: Data?
+        do { data = try PrivateFile.read(leftoversURL) } catch { throw AccountError.registryUnavailable }
+        guard let data else { return [] }
+        guard let file = try? JSONDecoder().decode(Leftovers.self, from: data), file.format == 1 else {
+            throw AccountError.registryUnavailable
+        }
+        return file.accounts
+    }
+
+    public func saveLeftovers(_ ids: [AccountID]) throws {
+        do {
+            if ids.isEmpty {
+                guard FileManager.default.fileExists(atPath: leftoversURL.path) else { return }
+                try FileManager.default.removeItem(at: leftoversURL)
+            } else {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+                try PrivateFile.write(try encoder.encode(Leftovers(format: 1, accounts: ids)), to: leftoversURL)
+            }
+        } catch { throw AccountError.registryUnavailable }
     }
 
     public func save(_ accounts: [AccountRecord]) throws {

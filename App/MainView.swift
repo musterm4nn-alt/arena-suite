@@ -121,7 +121,13 @@ struct MainView: View {
             {
                 destination = .site(first.id)
             }
+            // `--preview-site-home <url>` opens the first account's session on that stand-in page.
+            if arguments.contains("--preview-site-home"), let first = accounts.accounts.first { openSite(first.id) }
             if arguments.contains("--preview-accounts") { destination = .accounts }
+            if arguments.contains("--preview-removal-blocked") {
+                accounts.previewRemovalBlocked()
+                destination = .accounts
+            }
             if arguments.contains("--preview-insights") { destination = .insights }
             // `--preview-filter "<mode>"` filters the history to that mode and to conversations with a vote.
             if let index = arguments.firstIndex(of: "--preview-filter"), arguments.indices.contains(index + 1) {
