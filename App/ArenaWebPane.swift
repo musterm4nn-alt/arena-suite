@@ -35,6 +35,12 @@ final class ArenaWebProfiles {
             pending: saved,
             persist: { UserDefaults.standard.set($0.map(\.rawValue.uuidString), forKey: Self.pendingKey) },
             remover: { account in
+                // At launch no web view exists yet, and removing a profile before WebKit has set
+                // itself up crashes inside WebKit (seen on macOS 27.3). Creating a data store object
+                // sets it up; this one is in memory only and writes nothing.
+                _ = WKWebsiteDataStore.nonPersistent()
+                // A profile that was never created (or is already gone) needs no removal.
+                guard await WKWebsiteDataStore.allDataStoreIdentifiers.contains(account.rawValue) else { return true }
                 do {
                     try await WKWebsiteDataStore.remove(forIdentifier: account.rawValue)
                     return true
